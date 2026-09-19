@@ -135,6 +135,7 @@ extern volatile int8_t dacEn;
 extern unsigned long upTimeStamp;
 extern double VBat;
 extern bool VBat_Flag;
+extern uint16_t blnSentCount[9];
 
 #ifdef OLED
 #ifdef SH1106
@@ -340,7 +341,8 @@ void setMainPage(AsyncWebServerRequest *request)
 	strcat(webString, "tr.innerHTML = `\n");
 	strcat(webString, "<td>${row.time}</td>\n");
 	strcat(webString, "<td><img src=\"http://aprs.nakhonthai.net/symbols/icons/${row.icon}\"></td>\n");
-	strcat(webString, "<td>${row.callsign}</td>\n");
+	// Clickable callsign -> aprs.fi - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+	strcat(webString, "<td><a style=\"text-decoration:underline;\" href=\"https://www.qrz.com/db/${encodeURIComponent(row.callsign.split('-')[0])}\" target=\"_blank\" rel=\"noopener\">${row.callsign}</a> <a href=\"https://aprs.fi/#!z=12&call=a%2F${encodeURIComponent(row.callsign)}&timerange=3600&tail=3600\" target=\"_blank\" rel=\"noopener\" title=\"Ver en aprs.fi\">🗺</a></td>\n");
 	strcat(webString, "<td align=\"left\">${row.path}</td>\n");
 	strcat(webString, "<td>${row.dx !== null ? row.dx : \"-\"}</td>\n");
 	strcat(webString, "<td>${row.packet}</td>\n");
@@ -1078,10 +1080,15 @@ void handle_sysinfo(AsyncWebServerRequest *request)
 	snprintf(temp_buffer, sizeof(temp_buffer), "<td><b>%d</b></td>\n", ESP.getCpuFreqMHz());
 	strcat(html, temp_buffer);
 
-	ESPCPUTemp tempSensor;
-	if (tempSensor.begin())
+	// CPU temp dashboard fix - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+	// The ESPCPUTemp lib refuses classic ESP32 (D0WD/D0WD-V3) outright ("not found" - unsupported
+	// by the official IDF driver on this chip), so we read the raw Arduino core sensor directly
+	// instead, same as the earlier v1.6H build did. Not officially calibrated on classic ESP32,
+	// but gives a usable relative reading instead of a permanent N/A.
+	float cpuTempC = temperatureRead();
+	if (!isnan(cpuTempC) && cpuTempC > -40.0f && cpuTempC < 125.0f)
 	{
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td><b>%.1f</b></td>\n", tempSensor.getTemp());
+		snprintf(temp_buffer, sizeof(temp_buffer), "<td><b>%.1f</b></td>\n", cpuTempC);
 		strcat(html, temp_buffer);
 	}
 	else
@@ -3284,6 +3291,84 @@ void handle_msg(AsyncWebServerRequest *request)
 			free(html);							   // Free the allocated memory
 		}
 	}
+	else if (request->hasArg("commitBLN"))
+	{
+		bool blnEn[9] = {false};
+		char blnText[9][STATUS_SIZE];
+		uint16_t blnInterval[9];
+		uint16_t blnLimit[9];
+		for (uint8_t bi = 0; bi < 9; bi++)
+		{
+			blnText[bi][0] = 0;
+			blnInterval[bi] = config.bln_interval[bi];
+			blnLimit[bi] = 0; // Empty field = unlimited
+		}
+
+		for (uint8_t i = 0; i < request->args(); i++)
+		{
+			String argName = request->argName(i);
+			for (uint8_t bi = 0; bi < 9; bi++)
+			{
+				char fieldEn[10], fieldText[10], fieldInt[12], fieldLimit[12];
+				snprintf(fieldEn, sizeof(fieldEn), "blnEn%d", bi + 1);
+				snprintf(fieldText, sizeof(fieldText), "blnText%d", bi + 1);
+				snprintf(fieldInt, sizeof(fieldInt), "blnInv%d", bi + 1);
+				snprintf(fieldLimit, sizeof(fieldLimit), "blnLim%d", bi + 1);
+
+				if (argName == fieldEn)
+				{
+					if (request->arg(i) == "OK")
+						blnEn[bi] = true;
+				}
+				if (argName == fieldText)
+				{
+					strlcpy(blnText[bi], request->arg(i).c_str(), sizeof(blnText[bi]));
+				}
+				if (argName == fieldInt)
+				{
+					if (isValidNumber(request->arg(i)))
+						blnInterval[bi] = request->arg(i).toInt();
+				}
+				if (argName == fieldLimit)
+				{
+					// Left blank by the user = unlimited (0); a number = hard stop after that many sends
+					if (isValidNumber(request->arg(i)))
+						blnLimit[bi] = request->arg(i).toInt();
+					else
+						blnLimit[bi] = 0;
+				}
+			}
+		}
+
+		for (uint8_t bi = 0; bi < 9; bi++)
+		{
+			// Enable was OFF and is now being turned ON: start a fresh send count
+			if (!config.bln_en[bi] && blnEn[bi])
+			{
+				blnSentCount[bi] = 0;
+			}
+			config.bln_en[bi] = blnEn[bi];
+			strlcpy(config.bln_text[bi], blnText[bi], sizeof(config.bln_text[bi]));
+			config.bln_interval[bi] = blnInterval[bi];
+			config.bln_limit[bi] = blnLimit[bi];
+		}
+
+		char *html = allocateStringMemory(256);
+		if (html)
+		{
+			if (saveConfiguration("/default.cfg", config))
+			{
+				strcpy(html, "Setup completed successfully");
+				request->send(200, "text/html", html);
+			}
+			else
+			{
+				strcpy(html, "Save config failed.");
+				request->send(501, "text/html", html);
+			}
+			free(html);
+		}
+	}
 	else if (request->hasArg("commitMSG"))
 	{
 		bool msgEn = false;
@@ -3392,7 +3477,7 @@ void handle_msg(AsyncWebServerRequest *request)
 	else
 	{
 		// Using dynamic memory allocation instead of String
-		char *html = allocateStringMemory(8192); // Initial buffer size, adjust as needed
+		char *html = allocateStringMemory(16384); // Initial buffer size, adjust as needed
 		if (!html)
 		{
 			return; // Memory allocation failed
@@ -3403,6 +3488,7 @@ void handle_msg(AsyncWebServerRequest *request)
 		strcat(html, "e.preventDefault();\n");
 		strcat(html, "var data = new FormData(e.currentTarget);\n");
 		strcat(html, "if(e.currentTarget.id===\"formMSG\") document.getElementById(\"submitMSG\").disabled=true;\n");
+		strcat(html, "if(e.currentTarget.id===\"formBLN\") document.getElementById(\"submitBLN\").disabled=true;\n");
 		// strcat(html, "if(e.currentTarget.id===\"formChat\") document.getElementById(\"submitI2C0\").disabled=true;\n");
 		strcat(html, "$.ajax({\n");
 		strcat(html, "url: '/msg',\n");
@@ -3412,9 +3498,11 @@ void handle_msg(AsyncWebServerRequest *request)
 		strcat(html, "processData: false,\n");
 		strcat(html, "success: function (data) {\n");
 		strcat(html, "if(e.currentTarget.id===\"formMSG\") alert(\"Submited Successfully\");\n");
+		strcat(html, "if(e.currentTarget.id===\"formBLN\") alert(\"Submited Successfully\");\n");
 		strcat(html, "},\n");
 		strcat(html, "error: function (data) {\n");
 		strcat(html, "if(e.currentTarget.id===\"formMSG\") alert(\"An error occurred.\");\n");
+		strcat(html, "if(e.currentTarget.id===\"formBLN\") alert(\"An error occurred.\");\n");
 		strcat(html, "}\n");
 		strcat(html, "});\n");
 		strcat(html, "});\n");
@@ -3559,7 +3647,56 @@ void handle_msg(AsyncWebServerRequest *request)
 		strcat(html, "</td></tr></table>\n");
 		strcat(html, "</form><br />\n");
 
-		strcat(html, "</td></tr></table>");
+		strcat(html, "</td></tr></table><br />\n");
+
+		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formBLN\" method=\"post\">\n");
+		strcat(html, "<table width=\"90%\" style=\"table-layout:fixed;border-collapse:collapse;\">\n");
+		// Bulletins BLN1-BLN9 UI - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+	strcat(html, "<th colspan=\"6\" style=\"background-color: #070ac2;\"><span><b>Bulletins BLN1-BLN9</b></span></th>\n");
+		strcat(html, "<tr><td colspan=\"6\"><i>Uses the same TX Channel/PATH as Message Configuration above.</i></td></tr>\n");
+		strcat(html, "<tr>");
+		strcat(html, "<td align=\"center\" style=\"width:6%;\"><b>#</b></td>");
+		strcat(html, "<td align=\"center\" style=\"width:8%;\"><b>Enable</b></td>");
+		strcat(html, "<td align=\"center\" style=\"width:50%;\"><b>Text</b></td>");
+		strcat(html, "<td align=\"center\" style=\"width:12%;\"><b>Interval (Sec.)</b></td>");
+		strcat(html, "<td align=\"center\" style=\"width:16%;\"><b>Limit</b><br /><i style=\"font-weight:normal;font-size:8pt;\">0 = unlimited</i></td>");
+		strcat(html, "<td align=\"center\" style=\"width:8%;\"><b>Sent</b></td>");
+		strcat(html, "</tr>\n");
+		for (uint8_t bi = 0; bi < 9; bi++)
+		{
+			strcat(html, "<tr>\n");
+			snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><b>BLN%d</b></td>\n", bi + 1);
+			strcat(html, temp_buffer);
+
+			if (config.bln_en[bi])
+			{
+				snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><label class=\"switch\"><input type=\"checkbox\" name=\"blnEn%d\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n", bi + 1);
+			}
+			else
+			{
+				snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><label class=\"switch\"><input type=\"checkbox\" name=\"blnEn%d\" value=\"OK\"><span class=\"slider round\"></span></label></td>\n", bi + 1);
+			}
+			strcat(html, temp_buffer);
+
+			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:96%%;box-sizing:border-box;\" maxlength=\"%d\" name=\"blnText%d\" type=\"text\" value=\"%s\" /></td>\n", STATUS_SIZE - 1, bi + 1, config.bln_text[bi]);
+			strcat(html, temp_buffer);
+
+			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:90%%;box-sizing:border-box;\" min=\"30\" max=\"86400\" name=\"blnInv%d\" type=\"number\" value=\"%d\" /></td>\n", bi + 1, config.bln_interval[bi]);
+			strcat(html, temp_buffer);
+
+			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:90%%;box-sizing:border-box;\" min=\"0\" max=\"65535\" name=\"blnLim%d\" type=\"number\" value=\"%d\" /></td>\n", bi + 1, config.bln_limit[bi]);
+			strcat(html, temp_buffer);
+
+			snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\">%u</td>\n", blnSentCount[bi]);
+			strcat(html, temp_buffer);
+
+			strcat(html, "</tr>\n");
+		}
+		strcat(html, "<tr><td colspan=\"6\" align=\"right\">\n");
+		strcat(html, "<div><button class=\"button\" type='submit' id='submitBLN' name=\"commitBLN\"> Apply Change </button></div>\n");
+		strcat(html, "<input type=\"hidden\" name=\"commitBLN\"/>\n");
+		strcat(html, "</td></tr></table><br />\n");
+		strcat(html, "</form><br />\n");
 
 		// request->send(200, "text/html", html); // send to someones browser when asked
 		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
@@ -11685,6 +11822,20 @@ void handle_about(AsyncWebServerRequest *request)
 
 	strcat(webString, "</table>");
 	strcat(webString, "</td></tr></table><br />");
+
+	strcat(webString, "<table>\n");
+	strcat(webString, "<tr><td align=\"right\"><b>Contributor: </b></td><td align=\"left\">LU6JMF Marcelo</td></tr>\n");
+	strcat(webString, "<tr><td align=\"right\"><b>Version: </b></td><td align=\"left\">Custom mods on top of V");
+	strcat(webString, VERSION);
+	strcat(webString, VERSION_BUILD);
+	strcat(webString, "</td></tr>\n");
+	strcat(webString, "<tr><td align=\"right\" style=\"vertical-align:top;\"><b>Changes: </b></td><td align=\"left\" style=\"white-space:normal;\">\n");
+	strcat(webString, "- Fixed CPU temperature display in web interface (sensor was reinitialized on every dashboard refresh)<br />\n");
+	strcat(webString, "- Added recurring Bulletins BLN1-BLN9 (MSG tab): auto-repeat with per-bulletin Interval and optional send-count Limit (0=unlimited)<br />\n");
+	strcat(webString, "- Bulletins never retry (nobody ACKs a BLN), unlike normal messages<br />\n");
+	strcat(webString, "- Dashboard LAST HEARD: Callsign links to QRZ.com, plus a small map icon linking to aprs.fi (both open in a new tab)<br />\n");
+	strcat(webString, "</td></tr>\n");
+	strcat(webString, "</table><br />\n");
 
 	strcat(webString, "<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;\"><td width=\"49%\" style=\"border:unset;\">");
 

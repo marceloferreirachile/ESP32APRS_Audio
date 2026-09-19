@@ -544,6 +544,20 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     doc["msgRetry"] = config.msg_retry;
     doc["msgInterval"] = config.msg_interval;
 
+    // Bulletins BLN1-BLN9 - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+    for (uint8_t bi = 0; bi < 9; bi++)
+    {
+        char key[20];
+        snprintf(key, sizeof(key), "blnEn%d", bi + 1);
+        doc[key] = config.bln_en[bi];
+        snprintf(key, sizeof(key), "blnText%d", bi + 1);
+        doc[key] = config.bln_text[bi];
+        snprintf(key, sizeof(key), "blnInterval%d", bi + 1);
+        doc[key] = config.bln_interval[bi];
+        snprintf(key, sizeof(key), "blnLimit%d", bi + 1);
+        doc[key] = config.bln_limit[bi];
+    }
+
     // Serialize JSON to file
     File file = LITTLEFS.open(filename, FILE_WRITE);
     if (file)
@@ -1068,6 +1082,30 @@ bool loadConfiguration(const char *filename, Configuration &config)
             config.msg_interval = doc["msgInterval"];
             strlcpy(config.msg_key, doc["msgAESKey"] | "", sizeof(config.msg_key));
             strlcpy(config.msg_mycall, doc["msgMycall"] | "", sizeof(config.msg_mycall));
+        }
+
+        // Bulletins BLN1-BLN9 - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+        for (uint8_t bi = 0; bi < 9; bi++)
+        {
+            char key[20];
+            snprintf(key, sizeof(key), "blnEn%d", bi + 1);
+            if (doc[key].isNull())
+            {
+                config.bln_en[bi] = false;
+                config.bln_text[bi][0] = 0;
+                config.bln_interval[bi] = 1800;
+                config.bln_limit[bi] = 0;
+            }
+            else
+            {
+                config.bln_en[bi] = doc[key];
+                snprintf(key, sizeof(key), "blnText%d", bi + 1);
+                strlcpy(config.bln_text[bi], doc[key] | "", sizeof(config.bln_text[bi]));
+                snprintf(key, sizeof(key), "blnInterval%d", bi + 1);
+                config.bln_interval[bi] = doc[key] | 1800;
+                snprintf(key, sizeof(key), "blnLimit%d", bi + 1);
+                config.bln_limit[bi] = doc[key] | 0;
+            }
         }
 
         // Close the file (Curiously, File's destructor doesn't close the file)

@@ -366,7 +366,7 @@ int pkgMsgUpdate(const char *call, const char *raw, uint16_t msg_id, int8_t ack,
 }
 
 // ===== ส่งข้อความ APRS =====
-void sendAPRSMessage(const String &toCall, const String &message, bool encrypt)
+void sendAPRSMessage(const String &toCall, const String &message, bool encrypt, bool noRetry)
 {
     ++msgID;
     if (toCall == "")
@@ -428,8 +428,8 @@ void sendAPRSMessage(const String &toCall, const String &message, bool encrypt)
         SendMode |= INET_CHANNEL;
     pkgTxPush(packet.c_str(), packet.length(), 0, SendMode);
     log_d("Send APRS Message to %s msgID %d TNC2: %s", toCall.c_str(), msgID, packet.c_str());
-    if (config.msg_retry == 0)
-        pkgMsgUpdate(toCall.c_str(), message.c_str(), msgID, -2, false); // -2=No retry
+    if (config.msg_retry == 0 || noRetry)
+        pkgMsgUpdate(toCall.c_str(), message.c_str(), msgID, -2, false); // -2=No retry (also forced for bulletins: nobody ACKs a BLN)
     else
         pkgMsgUpdate(toCall.c_str(), message.c_str(), msgID, config.msg_retry, false);
     event_chatMessage(false);
