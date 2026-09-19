@@ -18,6 +18,7 @@
 #include "esp_wifi.h"
 #include "esp_heap_caps.h"
 #include <ArduinoJson.h>
+#include <WiFiClientSecure.h>
 
 extern SemaphoreHandle_t psramMutex;
 extern bool psramLock(TickType_t timeout = portMAX_DELAY);
@@ -11914,7 +11915,7 @@ void handle_about(AsyncWebServerRequest *request)
 	strcat(webString, "- Added recurring Bulletins BLN1-BLN9 (MSG tab): auto-repeat with per-bulletin Interval and optional send-count Limit (0=unlimited)<br />\n");
 	strcat(webString, "- Bulletins never retry (nobody ACKs a BLN), unlike normal messages<br />\n");
 	strcat(webString, "- Dashboard LAST HEARD: Callsign links to QRZ.com, plus a small map icon linking to aprs.fi (both open in a new tab)<br />\n");
-	strcat(webString, "- Dashboard LAST HEARD icons now work without internet: loads from the internet first, falls back to a local copy stored on the device, then to a simple drawn icon (never blank). See the \"Instalar Icones\" button below to install the local copy<br />\n");
+	strcat(webString, "- Dashboard LAST HEARD icons now work without internet: loads from the internet first, falls back to a local copy stored on the device, then to a simple drawn icon (never blank). See the \"Install Icons\" button below to install the local copy<br />\n");
 	strcat(webString, "</td></tr>\n");
 	strcat(webString, "</table><br />\n");
 
@@ -12163,11 +12164,23 @@ void handle_about(AsyncWebServerRequest *request)
 					  "});"
 					  "</script>");
 
-	strcat(webString, "<table><tr><td colspan=\"2\"><p style=\"font-size:9pt;color:#555;\">Os icones do Dashboard sao carregados da internet por padrao. Se voce quer que eles continuem aparecendo mesmo sem internet, instale uma copia local (uma vez so) com o botao abaixo.</p></td></tr><tr><td colspan=\"2\" align=\"center\"><button type=\"button\" class=\"btn btn-success\" onclick=\"updateIconsFromInternet()\">Instalar Icones (para usar sem internet)</button></td></tr></table><br />\n");
+	strcat(webString, "<table>");
+	strcat(webString, "<th colspan=\"2\"><span><b>Install Icons (for offline use)</b></span></th>\n");
+	{
+		bool iconsInstalled = LITTLEFS.exists("/symbols/icons/dot.png");
+		char iconStatusBuf[220];
+		snprintf(iconStatusBuf, sizeof(iconStatusBuf),
+			"<tr><td colspan=\"2\" align=\"center\"><b>Current status:</b> %s</td></tr>\n",
+			iconsInstalled ? "<span style=\"color:green;\">Installed</span>" : "<span style=\"color:#a00;\">Not installed</span>");
+		strcat(webString, iconStatusBuf);
+	}
+	strcat(webString, "<tr><td colspan=\"2\" style=\"word-wrap:break-word;white-space:normal;\"><p style=\"font-size:9pt;margin:4px 0;\">Dashboard icons are loaded from the internet by default. If you want them to keep showing even without internet, install a local copy (one time only) with the button below.</p></td></tr>\n");
+	strcat(webString, "<tr><td colspan=\"2\" align=\"center\"><button type=\"button\" class=\"btn btn-success\" onclick=\"updateIconsFromInternet()\">Install</button></td></tr>\n");
+	strcat(webString, "</table><br />\n");
 	strcat(webString, "<script>"
 					  "function updateIconsFromInternet(){"
-					  "if(!confirm('Baixar e instalar os icones locais agora? O dispositivo vai reiniciar sozinho ao terminar.'))return;"
-					  "fetch('/update_icons').then(function(r){return r.text();}).then(function(t){alert('Instalando... aguarde o reboot automatico (pode levar 1-2 minutos).');}).catch(function(e){alert('Erro ao iniciar: '+e);});"
+					  "if(!confirm('Download and install the local icons now? The device will reboot automatically when done.'))return;"
+					  "fetch('/update_icons').then(function(r){return r.text();}).then(function(t){alert('Installing... wait for the automatic reboot (may take 1-2 minutes).');}).catch(function(e){alert('Error starting: '+e);});"
 					  "}"
 					  "</script>");
 
