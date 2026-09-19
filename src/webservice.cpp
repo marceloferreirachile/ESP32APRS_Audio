@@ -171,8 +171,105 @@ void serviceHandle()
 	// server.handleClient();
 }
 
+// custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+// APRS symbol icons are packed into a single LittleFS file (data/symbols/icons.dat,
+// built by pack_icons.py) instead of ~190 separate tiny files: LittleFS allocates a
+// full 4KB block per file, and our 128KB partition only has 32 blocks total - not
+// enough for 190 files, but plenty for one ~60KB archive (~15 blocks).
+#define ICON_PACK_PATH "/symbols/icons.dat"
+#define ICON_PACK_MAX_ENTRIES 250
+struct IconPackEntry
+{
+	char name[12];
+	uint32_t offset;
+	uint32_t length;
+};
+static IconPackEntry iconPackIndex[ICON_PACK_MAX_ENTRIES];
+static int iconPackCount = -1; // -1 = not loaded yet, 0 = loaded but empty/missing
+static uint32_t iconPackDataStart = 0;
+
+static void loadIconPackIndex()
+{
+	iconPackCount = 0;
+	if (!LITTLEFS.exists(ICON_PACK_PATH))
+		return;
+	File f = LITTLEFS.open(ICON_PACK_PATH, "r");
+	if (!f)
+		return;
+	uint8_t hdr[6];
+	if (f.read(hdr, 6) != 6 || hdr[0] != 'I' || hdr[1] != 'C' || hdr[2] != 'P' || hdr[3] != 'K')
+	{
+		f.close();
+		return;
+	}
+	uint16_t count = hdr[4] | (hdr[5] << 8);
+	if (count > ICON_PACK_MAX_ENTRIES)
+		count = ICON_PACK_MAX_ENTRIES;
+	for (uint16_t i = 0; i < count; i++)
+	{
+		uint8_t rec[20];
+		if (f.read(rec, 20) != 20)
+			break;
+		memcpy(iconPackIndex[i].name, rec, 12);
+		iconPackIndex[i].name[11] = '\0';
+		iconPackIndex[i].offset = (uint32_t)rec[12] | ((uint32_t)rec[13] << 8) | ((uint32_t)rec[14] << 16) | ((uint32_t)rec[15] << 24);
+		iconPackIndex[i].length = (uint32_t)rec[16] | ((uint32_t)rec[17] << 8) | ((uint32_t)rec[18] << 16) | ((uint32_t)rec[19] << 24);
+		iconPackCount++;
+	}
+	iconPackDataStart = 6 + (uint32_t)count * 20;
+	f.close();
+}
+
+// Returns true if it handled the request (found + served, or found + I/O error already answered).
+static bool serveIconFromPack(AsyncWebServerRequest *request, const String &fileName)
+{
+	if (iconPackCount < 0)
+		loadIconPackIndex();
+	if (iconPackCount <= 0)
+		return false;
+	for (int i = 0; i < iconPackCount; i++)
+	{
+		if (fileName.equals(iconPackIndex[i].name))
+		{
+			uint32_t entryOffset = iconPackDataStart + iconPackIndex[i].offset;
+			uint32_t entryLength = iconPackIndex[i].length;
+			AsyncWebServerResponse *response = request->beginResponse(
+				"image/png", entryLength,
+				[entryOffset, entryLength](uint8_t *buffer, size_t maxLen, size_t index) -> size_t
+				{
+					if (index >= entryLength)
+						return 0;
+					size_t remaining = entryLength - index;
+					size_t toRead = remaining < maxLen ? remaining : maxLen;
+					File pf = LITTLEFS.open(ICON_PACK_PATH, "r");
+					if (!pf)
+						return 0;
+					if (!pf.seek(entryOffset + index))
+					{
+						pf.close();
+						return 0;
+					}
+					size_t got = pf.read(buffer, toRead);
+					pf.close();
+					return got;
+				});
+			response->addHeader("Cache-Control", "public, max-age=86400");
+			request->send(response);
+			return true;
+		}
+	}
+	return false;
+}
+
 void notFound(AsyncWebServerRequest *request)
 {
+	String url = request->url();
+	if (url.startsWith("/symbols/icons/"))
+	{
+		String fileName = url.substring(strlen("/symbols/icons/"));
+		if (serveIconFromPack(request, fileName))
+			return;
+	}
 	request->send(404, "text/plain", "Not found");
 }
 
@@ -12534,10 +12631,6 @@ void webService()
 	// web client handlers
 	async_server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
 					{ setMainPage(request); });
-	// Serve APRS symbol icons locally from LittleFS - custom mod by LU6JMF (Marcelo, CdU/Entre Rios,
-	// Argentina) - Set/2026. Run the download script to populate data/symbols/icons/ before uploading
-	// the filesystem image; the Dashboard falls back to a drawn icon if a file is missing.
-	async_server.serveStatic("/symbols/icons/", LITTLEFS, "/symbols/icons/");
 	async_server.on("/symbol", HTTP_GET, [](AsyncWebServerRequest *request)
 					{ handle_symbol(request); });
 	// async_server.on("/symbol2", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
