@@ -27,7 +27,7 @@ msgType getMsgList(int idx);
 int pkgMsgUpdate(const char *call,const char *raw, uint16_t msg_id, int8_t ack, bool rxtx=false);
 String aesEncryptBase64WithIV(const String &plain, const uint8_t key[16], uint16_t msgID);
 String aesDecryptBase64WithIV(const String &b64, const uint8_t key[16], const char* callsign, uint16_t msgID);
-void sendAPRSMessage(const String &toCall, const String &message, bool encrypt);
+void sendAPRSMessage(const String &toCall, const String &message, bool encrypt, bool noRetry = false); // noRetry param added for BLN1-BLN9 - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
 void handleIncomingAPRS(const String& line);
 void sendAPRSMessageRetry();
 void pkgMsgSort(msgType a[]);

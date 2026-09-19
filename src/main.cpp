@@ -6564,6 +6564,8 @@ unsigned long WxInterval;
 bool initInterval = true;
 int trkTlmInvCount = 0;
 int igateTlmInvCount = 0;
+uint16_t blnSentCount[9] = {0}; // RAM-only counter, resets on reboot or when a bulletin is (re)enabled
+// Bulletin (BLN1-BLN9) feature + CPU-temp dashboard fix: custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
 int digiTlmInvCount = 0;
 unsigned long msgInterval = 0;
 void taskAPRS(void *pvParameters)
@@ -6576,6 +6578,7 @@ void taskAPRS(void *pvParameters)
     unsigned long igateSTSInterval = 0;
     unsigned long digiSTSInterval = 0;
     unsigned long trkSTSInterval = 0;
+    unsigned long blnSTSInterval[9] = {0};
 
     uint16_t type = 0;
     bool newIGatePkg = false;
@@ -6645,6 +6648,10 @@ void taskAPRS(void *pvParameters)
         if (initInterval)
         {
             tickInterval = WxInterval = DiGiInterval = igateSTSInterval = iGatetickInterval = digiSTSInterval = trkSTSInterval = millis() + 10000;
+            for (uint8_t bi = 0; bi < 9; bi++)
+            {
+                blnSTSInterval[bi] = millis() + 10000;
+            }
             systemTLM.ParmTimeout = millis() + 20000;
             systemTLM.TeleTimeout = millis() + 30000;
             initInterval = false;
@@ -7259,6 +7266,32 @@ void taskAPRS(void *pvParameters)
                 }else
                 {
                     status.errorCount++;
+                }
+            }
+        }
+
+        // Bulletin (BLN1-BLN9) Process - independent of IGATE/DIGI enable,
+        // reuses Message TX Channel/PATH settings (config.msg_rf/msg_inet/msg_path), but never
+        // retries (nobody ACKs a BLN) and honors an optional send-count limit (0 = unlimited).
+        for (uint8_t bi = 0; bi < 9; bi++)
+        {
+            if (config.bln_en[bi] && config.bln_interval[bi] > 10 && strlen(config.bln_text[bi]) > 0)
+            {
+                if (millis() > blnSTSInterval[bi])
+                {
+                    blnSTSInterval[bi] = millis() + ((unsigned long)config.bln_interval[bi] * 1000);
+                    char blnCall[6];
+                    snprintf(blnCall, sizeof(blnCall), "BLN%d", bi + 1);
+                    sendAPRSMessage(String(blnCall), String(config.bln_text[bi]), false, true);
+                    blnSentCount[bi]++;
+                    log_d("Bulletin %s sent (%u/%u): %s", blnCall, blnSentCount[bi], config.bln_limit[bi], config.bln_text[bi]);
+
+                    if (config.bln_limit[bi] > 0 && blnSentCount[bi] >= config.bln_limit[bi])
+                    {
+                        config.bln_en[bi] = false; // Reached the send-count limit: auto-disable, keep text/interval/limit saved
+                        saveConfiguration("/default.cfg", config);
+                        log_d("Bulletin %s reached send limit (%u), disabled", blnCall, config.bln_limit[bi]);
+                    }
                 }
             }
         }
