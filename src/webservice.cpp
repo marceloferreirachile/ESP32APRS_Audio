@@ -331,7 +331,40 @@ void setMainPage(AsyncWebServerRequest *request)
 	strcat(webString, "printLastHeard(data);\n");
 	strcat(webString, "}\n\n");
 
-	strcat(webString, "function printLastHeard(data) {\n");
+	strcat(webString, "function iconFallback(imgEl, iconFile, initial) {\n");
+strcat(webString, "  imgEl.style.display='none';\n");
+strcat(webString, "  var span = imgEl.nextElementSibling;\n");
+strcat(webString, "  if (!span) return;\n");
+strcat(webString, "  span.style.display='inline-flex';\n");
+strcat(webString, "  span.style.alignItems='center';\n");
+strcat(webString, "  span.style.justifyContent='center';\n");
+strcat(webString, "  var code = parseInt(iconFile.split('-')[0], 10);\n");
+strcat(webString, "  var shapes = {\n");
+strcat(webString, "    62: \"<svg viewBox='0 0 24 24' width='18' height='18'><rect x='2' y='10' width='20' height='8' rx='2' fill='#1565c0'/><circle cx='7' cy='19' r='2' fill='#333'/><circle cx='17' cy='19' r='2' fill='#333'/></svg>\",\n");
+strcat(webString, "    45: \"<svg viewBox='0 0 24 24' width='18' height='18'><polygon points='12,3 22,12 19,12 19,21 5,21 5,12 2,12' fill='#8d6e63'/></svg>\",\n");
+strcat(webString, "    35: \"<svg viewBox='0 0 24 24' width='18' height='18'><polygon points='12,2 15,9 22,9 16,14 18,21 12,17 6,21 8,14 2,9 9,9' fill='#fbc02d'/></svg>\",\n");
+strcat(webString, "    95: \"<svg viewBox='0 0 24 24' width='18' height='18'><ellipse cx='12' cy='13' rx='9' ry='6' fill='#90a4ae'/></svg>\"\n");
+strcat(webString, "  };\n");
+strcat(webString, "  if (shapes[code]) {\n");
+strcat(webString, "    span.innerHTML = shapes[code];\n");
+strcat(webString, "  } else {\n");
+strcat(webString, "    span.style.width='18px'; span.style.height='18px'; span.style.borderRadius='50%';\n");
+strcat(webString, "    span.style.background='#607d8b'; span.style.color='#fff'; span.style.fontSize='11px'; span.style.fontWeight='bold';\n");
+strcat(webString, "    span.style.display='inline-flex'; span.style.alignItems='center'; span.style.justifyContent='center';\n");
+strcat(webString, "    span.textContent = (initial || '?').toUpperCase();\n");
+strcat(webString, "  }\n");
+strcat(webString, "}\n\n");
+
+strcat(webString, "function iconError(imgEl, iconFile, initial) {\n");
+strcat(webString, "  if (!imgEl.dataset.stage) {\n");
+strcat(webString, "    imgEl.dataset.stage = 'local';\n");
+strcat(webString, "    imgEl.src = '/symbols/icons/' + iconFile;\n");
+strcat(webString, "  } else {\n");
+strcat(webString, "    iconFallback(imgEl, iconFile, initial);\n");
+strcat(webString, "  }\n");
+strcat(webString, "}\n\n");
+
+strcat(webString, "function printLastHeard(data) {\n");
 	strcat(webString, "const tableBody = document.getElementById(\"aprsTableBody\");\n");
 	//strcat(webString, "const tableBody = document.querySelector(\"#aprsTable tbody\");\n");
 	strcat(webString, "if(tableBody == null) {return;}\n");
@@ -340,7 +373,7 @@ void setMainPage(AsyncWebServerRequest *request)
 	strcat(webString, "const tr = document.createElement(\"tr\");\n");
 	strcat(webString, "tr.innerHTML = `\n");
 	strcat(webString, "<td>${row.time}</td>\n");
-	strcat(webString, "<td><img src=\"http://aprs.nakhonthai.net/symbols/icons/${row.icon}\"></td>\n");
+	strcat(webString, "<td><img src=\"http://aprs.nakhonthai.net/symbols/icons/${row.icon}\" style=\"width:20px;height:20px;\" onerror=\"iconError(this, '${row.icon}', '${(row.callsign||'?').charAt(0)}');\"><span style=\"display:none;width:20px;height:20px;\"></span></td>\n");
 	// Clickable callsign -> aprs.fi - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
 	strcat(webString, "<td><a style=\"text-decoration:underline;\" href=\"https://www.qrz.com/db/${encodeURIComponent(row.callsign.split('-')[0])}\" target=\"_blank\" rel=\"noopener\">${row.callsign}</a> <a href=\"https://aprs.fi/#!z=12&call=a%2F${encodeURIComponent(row.callsign)}&timerange=3600&tail=3600\" target=\"_blank\" rel=\"noopener\" title=\"Ver en aprs.fi\">🗺</a></td>\n");
 	strcat(webString, "<td align=\"left\">${row.path}</td>\n");
@@ -12392,6 +12425,10 @@ void webService()
 	// web client handlers
 	async_server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
 					{ setMainPage(request); });
+	// Serve APRS symbol icons locally from LittleFS - custom mod by LU6JMF (Marcelo, CdU/Entre Rios,
+	// Argentina) - Set/2026. Run the download script to populate data/symbols/icons/ before uploading
+	// the filesystem image; the Dashboard falls back to a drawn icon if a file is missing.
+	async_server.serveStatic("/symbols/icons/", LITTLEFS, "/symbols/icons/");
 	async_server.on("/symbol", HTTP_GET, [](AsyncWebServerRequest *request)
 					{ handle_symbol(request); });
 	// async_server.on("/symbol2", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
