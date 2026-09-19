@@ -1,0 +1,13 @@
+@@ -490,6 +490,12 @@
+ 	uint8_t msg_retry;
+ 	uint16_t msg_interval;
+ 
++	// Bulletins BLN1-BLN9 - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
++	bool bln_en[9];
++	char bln_text[9][STATUS_SIZE];
++	uint16_t bln_interval[9];
++	uint16_t bln_limit[9]; // 0 = unlimited, send forever until disabled
++
+ } Configuration;
+ 
+ bool saveConfiguration(const char *filename, const Configuration &config);

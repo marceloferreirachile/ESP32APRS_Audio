@@ -136,6 +136,15 @@ extern unsigned long upTimeStamp;
 extern double VBat;
 extern bool VBat_Flag;
 extern uint16_t blnSentCount[9];
+// Web-visible position-beacon debug - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+extern String lastIgatePosDebug;
+extern String lastDigiPosDebug;
+extern bool lastIgatePosQueued;
+extern bool lastDigiPosQueued;
+extern unsigned long lastIgatePosAttemptMs;
+extern unsigned long lastDigiPosAttemptMs;
+extern uint32_t txInetWriteCount;
+extern String lastTxInetWrite;
 
 #ifdef OLED
 #ifdef SH1106
@@ -11836,6 +11845,38 @@ void handle_about(AsyncWebServerRequest *request)
 	strcat(webString, "- Dashboard LAST HEARD: Callsign links to QRZ.com, plus a small map icon linking to aprs.fi (both open in a new tab)<br />\n");
 	strcat(webString, "</td></tr>\n");
 	strcat(webString, "</table><br />\n");
+
+	// Position-beacon debug box - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+	// Temporary diagnostic to see, from the web (no USB/serial needed), what the IGATE/DIGI position
+	// beacon last tried to send and whether it got queued/written to APRS-IS. Safe to remove later.
+	{
+		char dbgBuf[700];
+		unsigned long nowMs = millis();
+		strcat(webString, "<table>\n");
+		strcat(webString, "<tr><td colspan=\"2\" style=\"text-align:center;\"><b>DEBUG: Position Beacon (temp)</b></td></tr>\n");
+
+		snprintf(dbgBuf, sizeof(dbgBuf), "<tr><td align=\"right\"><b>IGATE last attempt: </b></td><td align=\"left\" style=\"white-space:normal;word-break:break-all;\">%lus ago, queued=%s<br /><small>%s</small></td></tr>\n",
+			lastIgatePosAttemptMs > 0 ? (nowMs - lastIgatePosAttemptMs) / 1000 : 0,
+			lastIgatePosQueued ? "YES" : "NO",
+			lastIgatePosDebug.c_str());
+		strcat(webString, dbgBuf);
+
+		snprintf(dbgBuf, sizeof(dbgBuf), "<tr><td align=\"right\"><b>DIGI last attempt: </b></td><td align=\"left\" style=\"white-space:normal;word-break:break-all;\">%lus ago, queued=%s<br /><small>%s</small></td></tr>\n",
+			lastDigiPosAttemptMs > 0 ? (nowMs - lastDigiPosAttemptMs) / 1000 : 0,
+			lastDigiPosQueued ? "YES" : "NO",
+			lastDigiPosDebug.c_str());
+		strcat(webString, dbgBuf);
+
+		snprintf(dbgBuf, sizeof(dbgBuf), "<tr><td align=\"right\"><b>INET writes total: </b></td><td align=\"left\" style=\"white-space:normal;word-break:break-all;\">%u<br /><small>last: %s</small></td></tr>\n",
+			txInetWriteCount, lastTxInetWrite.c_str());
+		strcat(webString, dbgBuf);
+
+		snprintf(dbgBuf, sizeof(dbgBuf), "<tr><td align=\"right\"><b>APRS-IS connected: </b></td><td align=\"left\">%s</td></tr>\n",
+			aprsClient.connected() ? "YES" : "NO");
+		strcat(webString, dbgBuf);
+
+		strcat(webString, "</table><br />\n");
+	}
 
 	strcat(webString, "<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;\"><td width=\"49%\" style=\"border:unset;\">");
 
