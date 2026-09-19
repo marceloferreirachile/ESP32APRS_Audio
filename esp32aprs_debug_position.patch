@@ -1,0 +1,113 @@
+diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_predebug/src/main.cpp esp32aprs/src/main.cpp
+--- esp32aprs_predebug/src/main.cpp	2026-09-19 14:51:13.701040267 -0300
++++ esp32aprs/src/main.cpp	2026-09-19 14:45:54.873040115 -0300
+@@ -315,6 +315,18 @@
+ RTC_NOINIT_ATTR uint16_t IGATE_TLM_SEQ;
+ RTC_NOINIT_ATTR uint16_t DIGI_TLM_SEQ;
+ 
++// Web-visible position-beacon debug - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
++// Shows on the About page what the IGATE/DIGI position beacon last tried to send and whether it queued OK,
++// without needing a USB serial cable (useful when the board is physically inaccessible).
++String lastIgatePosDebug = "never (waiting for first cycle)";
++String lastDigiPosDebug = "never (waiting for first cycle)";
++bool lastIgatePosQueued = false;
++bool lastDigiPosQueued = false;
++unsigned long lastIgatePosAttemptMs = 0;
++unsigned long lastDigiPosAttemptMs = 0;
++uint32_t txInetWriteCount = 0;
++String lastTxInetWrite = "never";
++
+ TaskHandle_t taskNetworkHandle;
+ TaskHandle_t taskAPRSHandle;
+ TaskHandle_t taskAPRSPollHandle;
+@@ -2941,6 +2953,8 @@
+                         aprsClient.write(infoTmp, lenTmp); // Send binary frame packet to APRS-IS (aprsc)
+                         aprsClient.write("\r\n");           // Send CR LF the end frame packet
+                         log_d("TX->INET: %s", infoTmp);
++                        txInetWriteCount++; // web debug counter - custom mod by LU6JMF - Set/2026
++                        lastTxInetWrite = String(infoTmp);
+ 
+                         psramLock();
+                         continue;
+@@ -7503,7 +7517,10 @@
+                             SendMode |= RF_CHANNEL;
+                         if (config.igate_loc2inet)
+                             SendMode |= INET_CHANNEL;
+-                        pkgTxPush(rawData.c_str(), rawData.length(), 0, SendMode);
++                        // Web debug capture - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
++                        lastIgatePosDebug = rawData;
++                        lastIgatePosAttemptMs = millis();
++                        lastIgatePosQueued = pkgTxPush(rawData.c_str(), rawData.length(), 0, SendMode);
+ //                         if (config.igate_loc2rf)
+ //                         { // IGATE SEND POSITION TO RF
+ //                             char *rawP = (char *)calloc(rawData.length(), sizeof(char));
+@@ -7769,7 +7786,10 @@
+                             SendMode |= RF_CHANNEL;
+                         if (config.digi_loc2inet)
+                             SendMode |= INET_CHANNEL;
+-                        pkgTxPush(rawData.c_str(), rawData.length(), 0, SendMode);
++                        // Web debug capture - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
++                        lastDigiPosDebug = rawData;
++                        lastDigiPosAttemptMs = millis();
++                        lastDigiPosQueued = pkgTxPush(rawData.c_str(), rawData.length(), 0, SendMode);
+ //                         if (config.digi_loc2rf)
+ //                         { // DIGI SEND POSITION TO RF
+ //                             char *rawP = (char *)calloc(rawData.length(), sizeof(char));
+diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_predebug/src/webservice.cpp esp32aprs/src/webservice.cpp
+--- esp32aprs_predebug/src/webservice.cpp	2026-09-19 14:51:23.703040272 -0300
++++ esp32aprs/src/webservice.cpp	2026-09-19 14:46:41.164040137 -0300
+@@ -136,6 +136,15 @@
+ extern double VBat;
+ extern bool VBat_Flag;
+ extern uint16_t blnSentCount[9];
++// Web-visible position-beacon debug - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
++extern String lastIgatePosDebug;
++extern String lastDigiPosDebug;
++extern bool lastIgatePosQueued;
++extern bool lastDigiPosQueued;
++extern unsigned long lastIgatePosAttemptMs;
++extern unsigned long lastDigiPosAttemptMs;
++extern uint32_t txInetWriteCount;
++extern String lastTxInetWrite;
+ 
+ #ifdef OLED
+ #ifdef SH1106
+@@ -11837,6 +11846,38 @@
+ 	strcat(webString, "</td></tr>\n");
+ 	strcat(webString, "</table><br />\n");
+ 
++	// Position-beacon debug box - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
++	// Temporary diagnostic to see, from the web (no USB/serial needed), what the IGATE/DIGI position
++	// beacon last tried to send and whether it got queued/written to APRS-IS. Safe to remove later.
++	{
++		char dbgBuf[700];
++		unsigned long nowMs = millis();
++		strcat(webString, "<table>\n");
++		strcat(webString, "<tr><td colspan=\"2\" style=\"text-align:center;\"><b>DEBUG: Position Beacon (temp)</b></td></tr>\n");
++
++		snprintf(dbgBuf, sizeof(dbgBuf), "<tr><td align=\"right\"><b>IGATE last attempt: </b></td><td align=\"left\" style=\"white-space:normal;word-break:break-all;\">%lus ago, queued=%s<br /><small>%s</small></td></tr>\n",
++			lastIgatePosAttemptMs > 0 ? (nowMs - lastIgatePosAttemptMs) / 1000 : 0,
++			lastIgatePosQueued ? "YES" : "NO",
++			lastIgatePosDebug.c_str());
++		strcat(webString, dbgBuf);
++
++		snprintf(dbgBuf, sizeof(dbgBuf), "<tr><td align=\"right\"><b>DIGI last attempt: </b></td><td align=\"left\" style=\"white-space:normal;word-break:break-all;\">%lus ago, queued=%s<br /><small>%s</small></td></tr>\n",
++			lastDigiPosAttemptMs > 0 ? (nowMs - lastDigiPosAttemptMs) / 1000 : 0,
++			lastDigiPosQueued ? "YES" : "NO",
++			lastDigiPosDebug.c_str());
++		strcat(webString, dbgBuf);
++
++		snprintf(dbgBuf, sizeof(dbgBuf), "<tr><td align=\"right\"><b>INET writes total: </b></td><td align=\"left\" style=\"white-space:normal;word-break:break-all;\">%u<br /><small>last: %s</small></td></tr>\n",
++			txInetWriteCount, lastTxInetWrite.c_str());
++		strcat(webString, dbgBuf);
++
++		snprintf(dbgBuf, sizeof(dbgBuf), "<tr><td align=\"right\"><b>APRS-IS connected: </b></td><td align=\"left\">%s</td></tr>\n",
++			aprsClient.connected() ? "YES" : "NO");
++		strcat(webString, dbgBuf);
++
++		strcat(webString, "</table><br />\n");
++	}
++
+ 	strcat(webString, "<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;\"><td width=\"49%\" style=\"border:unset;\">");
+ 
+ 	strcat(webString, "<table>\n");

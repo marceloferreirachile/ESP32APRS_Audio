@@ -315,6 +315,18 @@ RTC_NOINIT_ATTR uint16_t TLM_SEQ;
 RTC_NOINIT_ATTR uint16_t IGATE_TLM_SEQ;
 RTC_NOINIT_ATTR uint16_t DIGI_TLM_SEQ;
 
+// Web-visible position-beacon debug - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+// Shows on the About page what the IGATE/DIGI position beacon last tried to send and whether it queued OK,
+// without needing a USB serial cable (useful when the board is physically inaccessible).
+String lastIgatePosDebug = "never (waiting for first cycle)";
+String lastDigiPosDebug = "never (waiting for first cycle)";
+bool lastIgatePosQueued = false;
+bool lastDigiPosQueued = false;
+unsigned long lastIgatePosAttemptMs = 0;
+unsigned long lastDigiPosAttemptMs = 0;
+uint32_t txInetWriteCount = 0;
+String lastTxInetWrite = "never";
+
 TaskHandle_t taskNetworkHandle;
 TaskHandle_t taskAPRSHandle;
 TaskHandle_t taskAPRSPollHandle;
@@ -2941,6 +2953,8 @@ bool pkgTxSend()
                         aprsClient.write(infoTmp, lenTmp); // Send binary frame packet to APRS-IS (aprsc)
                         aprsClient.write("\r\n");           // Send CR LF the end frame packet
                         log_d("TX->INET: %s", infoTmp);
+                        txInetWriteCount++; // web debug counter - custom mod by LU6JMF - Set/2026
+                        lastTxInetWrite = String(infoTmp);
 
                         psramLock();
                         continue;
@@ -7503,7 +7517,10 @@ void taskAPRS(void *pvParameters)
                             SendMode |= RF_CHANNEL;
                         if (config.igate_loc2inet)
                             SendMode |= INET_CHANNEL;
-                        pkgTxPush(rawData.c_str(), rawData.length(), 0, SendMode);
+                        // Web debug capture - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+                        lastIgatePosDebug = rawData;
+                        lastIgatePosAttemptMs = millis();
+                        lastIgatePosQueued = pkgTxPush(rawData.c_str(), rawData.length(), 0, SendMode);
 //                         if (config.igate_loc2rf)
 //                         { // IGATE SEND POSITION TO RF
 //                             char *rawP = (char *)calloc(rawData.length(), sizeof(char));
@@ -7769,7 +7786,10 @@ void taskAPRS(void *pvParameters)
                             SendMode |= RF_CHANNEL;
                         if (config.digi_loc2inet)
                             SendMode |= INET_CHANNEL;
-                        pkgTxPush(rawData.c_str(), rawData.length(), 0, SendMode);
+                        // Web debug capture - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+                        lastDigiPosDebug = rawData;
+                        lastDigiPosAttemptMs = millis();
+                        lastDigiPosQueued = pkgTxPush(rawData.c_str(), rawData.length(), 0, SendMode);
 //                         if (config.digi_loc2rf)
 //                         { // DIGI SEND POSITION TO RF
 //                             char *rawP = (char *)calloc(rawData.length(), sizeof(char));

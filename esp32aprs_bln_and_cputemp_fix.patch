@@ -83,8 +83,36 @@ diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/config.cpp esp32a
          return true;
 diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/main.cpp esp32aprs/src/main.cpp
 --- esp32aprs_orig/src/main.cpp	2026-09-19 09:14:27.142030632 -0300
-+++ esp32aprs/src/main.cpp	2026-09-19 12:10:58.779035682 -0300
-@@ -6564,6 +6564,8 @@
++++ esp32aprs/src/main.cpp	2026-09-19 14:45:54.873040115 -0300
+@@ -315,6 +315,18 @@
+ RTC_NOINIT_ATTR uint16_t IGATE_TLM_SEQ;
+ RTC_NOINIT_ATTR uint16_t DIGI_TLM_SEQ;
+ 
++// Web-visible position-beacon debug - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
++// Shows on the About page what the IGATE/DIGI position beacon last tried to send and whether it queued OK,
++// without needing a USB serial cable (useful when the board is physically inaccessible).
++String lastIgatePosDebug = "never (waiting for first cycle)";
++String lastDigiPosDebug = "never (waiting for first cycle)";
++bool lastIgatePosQueued = false;
++bool lastDigiPosQueued = false;
++unsigned long lastIgatePosAttemptMs = 0;
++unsigned long lastDigiPosAttemptMs = 0;
++uint32_t txInetWriteCount = 0;
++String lastTxInetWrite = "never";
++
+ TaskHandle_t taskNetworkHandle;
+ TaskHandle_t taskAPRSHandle;
+ TaskHandle_t taskAPRSPollHandle;
+@@ -2941,6 +2953,8 @@
+                         aprsClient.write(infoTmp, lenTmp); // Send binary frame packet to APRS-IS (aprsc)
+                         aprsClient.write("\r\n");           // Send CR LF the end frame packet
+                         log_d("TX->INET: %s", infoTmp);
++                        txInetWriteCount++; // web debug counter - custom mod by LU6JMF - Set/2026
++                        lastTxInetWrite = String(infoTmp);
+ 
+                         psramLock();
+                         continue;
+@@ -6564,6 +6578,8 @@
  bool initInterval = true;
  int trkTlmInvCount = 0;
  int igateTlmInvCount = 0;
@@ -93,7 +121,7 @@ diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/main.cpp esp32apr
  int digiTlmInvCount = 0;
  unsigned long msgInterval = 0;
  void taskAPRS(void *pvParameters)
-@@ -6576,6 +6578,7 @@
+@@ -6576,6 +6592,7 @@
      unsigned long igateSTSInterval = 0;
      unsigned long digiSTSInterval = 0;
      unsigned long trkSTSInterval = 0;
@@ -101,7 +129,7 @@ diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/main.cpp esp32apr
  
      uint16_t type = 0;
      bool newIGatePkg = false;
-@@ -6645,6 +6648,10 @@
+@@ -6645,6 +6662,10 @@
          if (initInterval)
          {
              tickInterval = WxInterval = DiGiInterval = igateSTSInterval = iGatetickInterval = digiSTSInterval = trkSTSInterval = millis() + 10000;
@@ -112,11 +140,10 @@ diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/main.cpp esp32apr
              systemTLM.ParmTimeout = millis() + 20000;
              systemTLM.TeleTimeout = millis() + 30000;
              initInterval = false;
-@@ -7262,6 +7269,32 @@
-                 }
+@@ -7263,6 +7284,32 @@
              }
          }
-+
+ 
 +        // Bulletin (BLN1-BLN9) Process - independent of IGATE/DIGI enable,
 +        // reuses Message TX Channel/PATH settings (config.msg_rf/msg_inet/msg_path), but never
 +        // retries (nobody ACKs a BLN) and honors an optional send-count limit (0 = unlimited).
@@ -142,9 +169,34 @@ diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/main.cpp esp32apr
 +                }
 +            }
 +        }
- 
++
          // IGate Process
          if (config.igate_en)
+         {
+@@ -7470,7 +7517,10 @@
+                             SendMode |= RF_CHANNEL;
+                         if (config.igate_loc2inet)
+                             SendMode |= INET_CHANNEL;
+-                        pkgTxPush(rawData.c_str(), rawData.length(), 0, SendMode);
++                        // Web debug capture - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
++                        lastIgatePosDebug = rawData;
++                        lastIgatePosAttemptMs = millis();
++                        lastIgatePosQueued = pkgTxPush(rawData.c_str(), rawData.length(), 0, SendMode);
+ //                         if (config.igate_loc2rf)
+ //                         { // IGATE SEND POSITION TO RF
+ //                             char *rawP = (char *)calloc(rawData.length(), sizeof(char));
+@@ -7736,7 +7786,10 @@
+                             SendMode |= RF_CHANNEL;
+                         if (config.digi_loc2inet)
+                             SendMode |= INET_CHANNEL;
+-                        pkgTxPush(rawData.c_str(), rawData.length(), 0, SendMode);
++                        // Web debug capture - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
++                        lastDigiPosDebug = rawData;
++                        lastDigiPosAttemptMs = millis();
++                        lastDigiPosQueued = pkgTxPush(rawData.c_str(), rawData.length(), 0, SendMode);
+ //                         if (config.digi_loc2rf)
+ //                         { // DIGI SEND POSITION TO RF
+ //                             char *rawP = (char *)calloc(rawData.length(), sizeof(char));
 diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/message.cpp esp32aprs/src/message.cpp
 --- esp32aprs_orig/src/message.cpp	2026-09-19 09:14:27.142030632 -0300
 +++ esp32aprs/src/message.cpp	2026-09-19 12:00:59.538035397 -0300
@@ -170,16 +222,25 @@ diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/message.cpp esp32
      event_chatMessage(false);
 diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/webservice.cpp esp32aprs/src/webservice.cpp
 --- esp32aprs_orig/src/webservice.cpp	2026-09-19 09:14:27.144030632 -0300
-+++ esp32aprs/src/webservice.cpp	2026-09-19 13:38:22.434038183 -0300
-@@ -135,6 +135,7 @@
++++ esp32aprs/src/webservice.cpp	2026-09-19 14:46:41.164040137 -0300
+@@ -135,6 +135,16 @@
  extern unsigned long upTimeStamp;
  extern double VBat;
  extern bool VBat_Flag;
 +extern uint16_t blnSentCount[9];
++// Web-visible position-beacon debug - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
++extern String lastIgatePosDebug;
++extern String lastDigiPosDebug;
++extern bool lastIgatePosQueued;
++extern bool lastDigiPosQueued;
++extern unsigned long lastIgatePosAttemptMs;
++extern unsigned long lastDigiPosAttemptMs;
++extern uint32_t txInetWriteCount;
++extern String lastTxInetWrite;
  
  #ifdef OLED
  #ifdef SH1106
-@@ -340,7 +341,8 @@
+@@ -340,7 +350,8 @@
  	strcat(webString, "tr.innerHTML = `\n");
  	strcat(webString, "<td>${row.time}</td>\n");
  	strcat(webString, "<td><img src=\"http://aprs.nakhonthai.net/symbols/icons/${row.icon}\"></td>\n");
@@ -189,7 +250,7 @@ diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/webservice.cpp es
  	strcat(webString, "<td align=\"left\">${row.path}</td>\n");
  	strcat(webString, "<td>${row.dx !== null ? row.dx : \"-\"}</td>\n");
  	strcat(webString, "<td>${row.packet}</td>\n");
-@@ -1078,10 +1080,15 @@
+@@ -1078,10 +1089,15 @@
  	snprintf(temp_buffer, sizeof(temp_buffer), "<td><b>%d</b></td>\n", ESP.getCpuFreqMHz());
  	strcat(html, temp_buffer);
  
@@ -208,7 +269,7 @@ diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/webservice.cpp es
  		strcat(html, temp_buffer);
  	}
  	else
-@@ -3284,6 +3291,84 @@
+@@ -3284,6 +3300,84 @@
  			free(html);							   // Free the allocated memory
  		}
  	}
@@ -293,7 +354,7 @@ diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/webservice.cpp es
  	else if (request->hasArg("commitMSG"))
  	{
  		bool msgEn = false;
-@@ -3392,7 +3477,7 @@
+@@ -3392,7 +3486,7 @@
  	else
  	{
  		// Using dynamic memory allocation instead of String
@@ -302,7 +363,7 @@ diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/webservice.cpp es
  		if (!html)
  		{
  			return; // Memory allocation failed
-@@ -3403,6 +3488,7 @@
+@@ -3403,6 +3497,7 @@
  		strcat(html, "e.preventDefault();\n");
  		strcat(html, "var data = new FormData(e.currentTarget);\n");
  		strcat(html, "if(e.currentTarget.id===\"formMSG\") document.getElementById(\"submitMSG\").disabled=true;\n");
@@ -310,7 +371,7 @@ diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/webservice.cpp es
  		// strcat(html, "if(e.currentTarget.id===\"formChat\") document.getElementById(\"submitI2C0\").disabled=true;\n");
  		strcat(html, "$.ajax({\n");
  		strcat(html, "url: '/msg',\n");
-@@ -3412,9 +3498,11 @@
+@@ -3412,9 +3507,11 @@
  		strcat(html, "processData: false,\n");
  		strcat(html, "success: function (data) {\n");
  		strcat(html, "if(e.currentTarget.id===\"formMSG\") alert(\"Submited Successfully\");\n");
@@ -322,7 +383,7 @@ diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/webservice.cpp es
  		strcat(html, "}\n");
  		strcat(html, "});\n");
  		strcat(html, "});\n");
-@@ -3559,7 +3647,56 @@
+@@ -3559,7 +3656,56 @@
  		strcat(html, "</td></tr></table>\n");
  		strcat(html, "</form><br />\n");
  
@@ -380,7 +441,7 @@ diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/webservice.cpp es
  
  		// request->send(200, "text/html", html); // send to someones browser when asked
  		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
-@@ -11686,6 +11823,20 @@
+@@ -11686,6 +11832,52 @@
  	strcat(webString, "</table>");
  	strcat(webString, "</td></tr></table><br />");
  
@@ -397,6 +458,38 @@ diff -ruN '--exclude=.git' '--exclude=.pio' esp32aprs_orig/src/webservice.cpp es
 +	strcat(webString, "- Dashboard LAST HEARD: Callsign links to QRZ.com, plus a small map icon linking to aprs.fi (both open in a new tab)<br />\n");
 +	strcat(webString, "</td></tr>\n");
 +	strcat(webString, "</table><br />\n");
++
++	// Position-beacon debug box - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
++	// Temporary diagnostic to see, from the web (no USB/serial needed), what the IGATE/DIGI position
++	// beacon last tried to send and whether it got queued/written to APRS-IS. Safe to remove later.
++	{
++		char dbgBuf[700];
++		unsigned long nowMs = millis();
++		strcat(webString, "<table>\n");
++		strcat(webString, "<tr><td colspan=\"2\" style=\"text-align:center;\"><b>DEBUG: Position Beacon (temp)</b></td></tr>\n");
++
++		snprintf(dbgBuf, sizeof(dbgBuf), "<tr><td align=\"right\"><b>IGATE last attempt: </b></td><td align=\"left\" style=\"white-space:normal;word-break:break-all;\">%lus ago, queued=%s<br /><small>%s</small></td></tr>\n",
++			lastIgatePosAttemptMs > 0 ? (nowMs - lastIgatePosAttemptMs) / 1000 : 0,
++			lastIgatePosQueued ? "YES" : "NO",
++			lastIgatePosDebug.c_str());
++		strcat(webString, dbgBuf);
++
++		snprintf(dbgBuf, sizeof(dbgBuf), "<tr><td align=\"right\"><b>DIGI last attempt: </b></td><td align=\"left\" style=\"white-space:normal;word-break:break-all;\">%lus ago, queued=%s<br /><small>%s</small></td></tr>\n",
++			lastDigiPosAttemptMs > 0 ? (nowMs - lastDigiPosAttemptMs) / 1000 : 0,
++			lastDigiPosQueued ? "YES" : "NO",
++			lastDigiPosDebug.c_str());
++		strcat(webString, dbgBuf);
++
++		snprintf(dbgBuf, sizeof(dbgBuf), "<tr><td align=\"right\"><b>INET writes total: </b></td><td align=\"left\" style=\"white-space:normal;word-break:break-all;\">%u<br /><small>last: %s</small></td></tr>\n",
++			txInetWriteCount, lastTxInetWrite.c_str());
++		strcat(webString, dbgBuf);
++
++		snprintf(dbgBuf, sizeof(dbgBuf), "<tr><td align=\"right\"><b>APRS-IS connected: </b></td><td align=\"left\">%s</td></tr>\n",
++			aprsClient.connected() ? "YES" : "NO");
++		strcat(webString, dbgBuf);
++
++		strcat(webString, "</table><br />\n");
++	}
 +
  	strcat(webString, "<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;\"><td width=\"49%\" style=\"border:unset;\">");
  
