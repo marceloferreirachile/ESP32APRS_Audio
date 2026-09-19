@@ -11601,6 +11601,53 @@ void handle_test(AsyncWebServerRequest *request)
 	free(webString); // Free the allocated memory
 }
 
+// custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+// Fixed URL of the icons filesystem image published on our GitHub Release, so
+// club members can install it with a single click - no file picking needed.
+#define ICONS_FS_URL "https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/download/v1.8-lu6jmf-icons/littlefs.bin"
+
+static void ota_url_task_fs(void *pvParameters)
+{
+	(void)pvParameters;
+	WiFiClientSecure client;
+	client.setInsecure(); // skip cert validation - simple fetch of a known public binary
+	HTTPClient http;
+	http.begin(client, ICONS_FS_URL);
+	http.setTimeout(30000);
+	int httpCode = http.GET();
+	if (httpCode == HTTP_CODE_OK) {
+		int contentLength = http.getSize();
+		WiFiClient *stream = http.getStreamPtr();
+		if (contentLength > 0 && Update.begin(contentLength, U_SPIFFS)) {
+			disableLoopWDT();
+			disableCore0WDT();
+			Update.writeStream(*stream);
+			if (Update.end(true)) {
+				log_i("Icons filesystem update success, rebooting");
+				delay(500);
+				esp_restart();
+			} else {
+				Update.printError(Serial);
+			}
+		} else {
+			log_e("Icons update: bad content length or Update.begin failed");
+		}
+	} else {
+		log_e("Icons update: HTTP GET failed, code=%d", httpCode);
+	}
+	http.end();
+	vTaskDelete(NULL);
+}
+
+void handle_update_icons(AsyncWebServerRequest *request)
+{
+	if (!request->authenticate(config.http_username, config.http_password)) {
+		return request->requestAuthentication();
+	}
+	request->send(200, "text/plain", "Icons update started, wait for reboot");
+	xTaskCreate(ota_url_task_fs, "ota_url_task_fs", 8192, NULL, 5, NULL);
+}
+
 static void ota_url_task(void *pvParameters)
 {
 	char *url = (char *)pvParameters;
@@ -11867,6 +11914,7 @@ void handle_about(AsyncWebServerRequest *request)
 	strcat(webString, "- Added recurring Bulletins BLN1-BLN9 (MSG tab): auto-repeat with per-bulletin Interval and optional send-count Limit (0=unlimited)<br />\n");
 	strcat(webString, "- Bulletins never retry (nobody ACKs a BLN), unlike normal messages<br />\n");
 	strcat(webString, "- Dashboard LAST HEARD: Callsign links to QRZ.com, plus a small map icon linking to aprs.fi (both open in a new tab)<br />\n");
+	strcat(webString, "- Dashboard LAST HEARD icons now work without internet: loads from the internet first, falls back to a local copy stored on the device, then to a simple drawn icon (never blank). See the \"Instalar Icones\" button below to install the local copy<br />\n");
 	strcat(webString, "</td></tr>\n");
 	strcat(webString, "</table><br />\n");
 
@@ -12073,6 +12121,54 @@ void handle_about(AsyncWebServerRequest *request)
 					  "}"
 					  "});"
 					  "});"
+					  "</script>");
+
+	strcat(webString, "<form method='POST' action='#' enctype='multipart/form-data' id='updatefs_form' class=\"form-horizontal\">\n");
+	strcat(webString, "<table>");
+	strcat(webString, "<th colspan=\"2\"><span><b>Manual Filesystem Update (icons/data)</b></span></th>\n");
+	strcat(webString, "<tr><td align=\"right\"><b>File:</b></td><td align=\"left\"><input id=\"filefs\" name=\"updatefs\" type=\"file\" /></td></tr>\n");
+	strcat(webString, "<tr><td align=\"right\"><b>Progress:</b></td><td><div id='prgbarfs'><div id='barfs' style=\"width: 0px;\"><label id='prgfs'></label></div></div></td></tr>\n");
+	strcat(webString, "<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\"><input type='submit' class=\"btn btn-danger\" id=\"updatefs_sumbit\" value='Filesystem UpLoad'></div></td></tr>\n");
+	strcat(webString, "</table><br />\n");
+	strcat(webString, "</form>\n");
+
+	strcat(webString, "<script>"
+					  "$('#updatefs_form').submit(function(e){"
+					  "e.preventDefault();"
+					  "var form = $('#updatefs_form')[0];"
+					  "var data = new FormData(form);"
+					  "document.getElementById('updatefs_sumbit').disabled = true;"
+					  "$.ajax({"
+					  "url: '/updatefs',"
+					  "type: 'POST',"
+					  "data: data,"
+					  "contentType: false,"
+					  "processData:false,"
+					  "xhr: function() {"
+					  "var xhr = new window.XMLHttpRequest();"
+					  "xhr.upload.addEventListener('progress', function(evt) {"
+					  "if (evt.lengthComputable) {"
+					  "var per = evt.loaded / evt.total;"
+					  "$('#prgfs').html(Math.round(per*100) + '%');"
+					  "$('#barfs').css('width',Math.round(per*100) + '%');"
+					  "}"
+					  "}, false);"
+					  "return xhr;"
+					  "},"
+					  "success:function(d, s) {"
+					  "alert('Wait for system reboot 10sec');"
+					  "},"
+					  "error: function (a, b, c) {"
+					  "}"
+					  "});"
+					  "</script>");
+
+	strcat(webString, "<table><tr><td colspan=\"2\"><p style=\"font-size:9pt;color:#555;\">Os icones do Dashboard sao carregados da internet por padrao. Se voce quer que eles continuem aparecendo mesmo sem internet, instale uma copia local (uma vez so) com o botao abaixo.</p></td></tr><tr><td colspan=\"2\" align=\"center\"><button type=\"button\" class=\"btn btn-success\" onclick=\"updateIconsFromInternet()\">Instalar Icones (para usar sem internet)</button></td></tr></table><br />\n");
+	strcat(webString, "<script>"
+					  "function updateIconsFromInternet(){"
+					  "if(!confirm('Baixar e instalar os icones locais agora? O dispositivo vai reiniciar sozinho ao terminar.'))return;"
+					  "fetch('/update_icons').then(function(r){return r.text();}).then(function(t){alert('Instalando... aguarde o reboot automatico (pode levar 1-2 minutos).');}).catch(function(e){alert('Erro ao iniciar: '+e);});"
+					  "}"
 					  "</script>");
 
 	{
@@ -12553,8 +12649,54 @@ void webService()
 			}
 		});
 
+	async_server.on(
+		"/updatefs", HTTP_POST, [](AsyncWebServerRequest *request)
+		{
+  		bool espShouldReboot = !Update.hasError();
+  		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", espShouldReboot ? "<h1><strong>Filesystem Update DONE</strong></h1><br><a href='/'>Return Home</a>" : "<h1><strong>Filesystem Update FAILED</strong></h1><br><a href='/about'>Retry?</a>");
+  		response->addHeader("Connection", "close");
+  		request->send(response); },
+		[](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final)
+		{
+			if (!index)
+			{
+				log_d("Filesystem Update Start: %s\n", filename.c_str());
+				// custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+				// Same Update lib as firmware OTA, but targets the "spiffs" (LittleFS) partition
+				// instead of the app partition - lets us push data/symbols/icons/* over the web
+				// when there is no physical USB access to the board.
+				if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_SPIFFS))
+				{
+					Update.printError(Serial);
+				}
+			}
+			if (!Update.hasError())
+			{
+				if (Update.write(data, len) != len)
+				{
+					Update.printError(Serial);
+				}
+			}
+			if (final)
+			{
+				if (Update.end(true))
+				{
+					log_d("Filesystem Update Success: %uByte\n", index + len);
+					delay(1000);
+					esp_restart();
+				}
+				else
+				{
+					Update.printError(Serial);
+				}
+			}
+		});
+
 	async_server.on("/ota_url", HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_ota_url(request); });
+	async_server.on("/update_icons", HTTP_GET, [](AsyncWebServerRequest *request)
+					{ handle_update_icons(request); });
+
 
 	async_server.on("/check_version", HTTP_GET, [](AsyncWebServerRequest *request)
 					{ handle_check_version(request); });		
