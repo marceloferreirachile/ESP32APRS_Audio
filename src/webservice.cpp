@@ -11796,62 +11796,6 @@ void handle_test(AsyncWebServerRequest *request)
 	request->send(response);
 	free(webString); // Free the allocated memory
 }
-static void ota_url_task(void *pvParameters)
-{
-	char *url = (char *)pvParameters;
-	HTTPClient http;
-	http.begin(url);
-	http.setTimeout(30000);
-	int httpCode = http.GET();
-	if (httpCode == HTTP_CODE_OK) {
-		int contentLength = http.getSize();
-		WiFiClient *stream = http.getStreamPtr();
-		if (contentLength > 0 && Update.begin(contentLength)) {
-			disableLoopWDT();
-			disableCore0WDT();
-			Update.writeStream(*stream);
-			if (Update.end(true)) {
-				log_i("OTA URL update success, rebooting");
-				delay(500);
-				esp_restart();
-			} else {
-				Update.printError(Serial);
-			}
-		} else {
-			log_e("OTA URL: bad content length or Update.begin failed");
-		}
-	} else {
-		log_e("OTA URL: HTTP GET failed, code=%d", httpCode);
-	}
-	http.end();
-	free(url);
-	vTaskDelete(NULL);
-}
-
-void handle_ota_url(AsyncWebServerRequest *request)
-{
-	if (!request->authenticate(config.http_username, config.http_password)) {
-		return request->requestAuthentication();
-	}
-	if (!request->hasParam("url", true)) {
-		request->send(400, "text/plain", "Missing url parameter");
-		return;
-	}
-	String urlStr = request->getParam("url", true)->value();
-	if (urlStr.length() == 0) {
-		request->send(400, "text/plain", "Empty url");
-		return;
-	}
-	char *urlBuf = (char *)malloc(urlStr.length() + 1);
-	if (!urlBuf) {
-		request->send(500, "text/plain", "Out of memory");
-		return;
-	}
-	strcpy(urlBuf, urlStr.c_str());
-	request->send(200, "text/plain", "OTA update started");
-	xTaskCreate(ota_url_task, "ota_url_task", 8192, urlBuf, 5, NULL);
-}
-
 // Remote version file published by copy_firmware.py, checked against the
 // running VERSION/VERSION_BUILD to let the "about" page report new releases.
 #define VERSION_CHECK_URL "https://raw.githubusercontent.com/marceloferreirachile/ESP32APRS_Audio/master/version.json"
@@ -11893,41 +11837,18 @@ void handle_check_version(AsyncWebServerRequest *request)
 	const char *latestDate = doc["date"] | "";
 	const char *latestTag = doc["tag"] | "";
 	const char *latestFilename = doc["filename"] | "";
-	const char *latestFsVersion = doc["fs_version"] | "";
-	const char *latestFsBuild = doc["fs_build"] | "";
-	const char *latestFsDate = doc["fs_date"] | "";
-	const char *latestFsFilename = doc["fs_filename"] | "";
 
 	bool updateAvailable = (strcmp(latestVersion, VERSION) != 0) || (strcmp(latestBuild, VERSION_BUILD) != 0);
 
-	char currentFsVersion[40] = "unknown";
-	File fsVerFile = LITTLEFS.open("/fsversion.txt", "r");
-	if (fsVerFile)
-	{
-		size_t n = fsVerFile.readBytes(currentFsVersion, sizeof(currentFsVersion) - 1);
-		currentFsVersion[n] = '\0';
-		fsVerFile.close();
-		while (n > 0 && (currentFsVersion[n - 1] == '\n' || currentFsVersion[n - 1] == '\r' || currentFsVersion[n - 1] == ' '))
-		{
-			currentFsVersion[--n] = '\0';
-		}
-	}
-	char latestFsCombined[40];
-	snprintf(latestFsCombined, sizeof(latestFsCombined), "%s-%s", latestFsVersion, latestFsBuild);
-	bool fsUpdateAvailable = (strlen(latestFsVersion) > 0) && (strcmp(currentFsVersion, latestFsCombined) != 0);
-
-	char resp[700];
+	char resp[400];
 	snprintf(resp, sizeof(resp),
 			 "{\"current_version\":\"%s\",\"current_build\":\"%s\","
 			 "\"latest_version\":\"%s\",\"latest_build\":\"%s\",\"latest_date\":\"%s\","
-			 "\"latest_tag\":\"%s\",\"latest_filename\":\"%s\",\"update_available\":%s,"
-			 "\"current_fs_version\":\"%s\",\"latest_fs_version\":\"%s\",\"latest_fs_filename\":\"%s\",\"fs_update_available\":%s}",
+			 "\"latest_tag\":\"%s\",\"latest_filename\":\"%s\",\"update_available\":%s}",
 			 VERSION, VERSION_BUILD, latestVersion, latestBuild, latestDate,
-			 latestTag, latestFilename, updateAvailable ? "true" : "false",
-			 currentFsVersion, latestFsCombined, latestFsFilename, fsUpdateAvailable ? "true" : "false");
+			 latestTag, latestFilename, updateAvailable ? "true" : "false");
 	request->send(200, "application/json", resp);
 }
-
 
 void handle_about(AsyncWebServerRequest *request)
 {
@@ -12344,25 +12265,6 @@ strcat(webString, "- Fixed a buffer overflow risk in the IGATE/DIGI PHG Text fie
 		char ota_url_buf[200];
 		snprintf(ota_url_buf, sizeof(ota_url_buf), "https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/download/v%s-%s/%s", VERSION, VERSION_BUILD, FirmwareOTA);
 
-		// Derive the board-specific firmware name prefix (FirmwareOTA minus the
-		// trailing "_V<ver><build>.bin") so the client JS can rebuild the filename
-		// for a newer release once /check_version reports one is available.
-		char FirmwarePrefix[50] = "";
-		{
-			char suffix[40];
-			snprintf(suffix, sizeof(suffix), "_v%s-%s.bin", VERSION, VERSION_BUILD);
-			size_t suffixLen = strlen(suffix);
-			size_t fwLen = strlen(FirmwareOTA);
-			if (fwLen > suffixLen)
-			{
-				size_t prefixLen = fwLen - suffixLen;
-				if (prefixLen >= sizeof(FirmwarePrefix))
-					prefixLen = sizeof(FirmwarePrefix) - 1;
-				memcpy(FirmwarePrefix, FirmwareOTA, prefixLen);
-				FirmwarePrefix[prefixLen] = '\0';
-			}
-		}
-
 		strcat(webString, "<table>");
 		strcat(webString, "<th colspan=\"2\"><span><b>OTA Online Firmware Update</b></span></th>\n");
 		char ota_row[512];
@@ -12374,26 +12276,10 @@ strcat(webString, "- Fixed a buffer overflow risk in the IGATE/DIGI PHG Text fie
 			"<tr><td align=\"right\"><b>Current Version:</b></td><td align=\"left\">V%s%s</td></tr>\n",
 			VERSION, VERSION_BUILD);
 		strcat(webString, ota_row);
-		strcat(webString, "<tr><td align=\"right\"><b>Status:</b></td><td><span id='ota_prg'>Ready</span></td></tr>\n");
-	strcat(webString, "<tr><td align=\"right\"><b>Icons/Data:</b></td><td><span id='fs_prg'>Click 'Check New Version' to check</span></td></tr>\n");
-		snprintf(ota_row, sizeof(ota_row),
-			"<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\">"
-			"<input type='hidden' id='ota_url' value='%s'>"
-			"<input type='hidden' id='fw_prefix' value='%s'>"
-			"<input type='button' class=\"btn btn-danger\" id=\"check_ver_btn\" value='Check New Version'>"
-			"<input type='button' class=\"btn btn-danger\" id=\"ota_sumbit\" value='Firmware Update'>"
-			"</div></td></tr>\n",
-			ota_url_buf, FirmwarePrefix);
-		strcat(webString, ota_row);
+		strcat(webString, "<tr><td align=\"right\"><b>Status:</b></td><td><span id='ota_prg'>Click 'Check New Version' to check for updates. To install, download the file above and use Manual Firmware Update.</span></td></tr>\n");
+		strcat(webString, "<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\"><input type='button' class=\"btn btn-danger\" id=\"check_ver_btn\" value='Check New Version'></div></td></tr>\n");
 		strcat(webString, "</table><br />\n");
 	}
-
-	// strcat(webString, "<table>");
-	// strcat(webString, "<th colspan=\"2\"><span><b>Check for New Version</b></span></th>\n");
-	// strcat(webString, "<tr><td align=\"right\"><b>Update Server:</b></td><td align=\"left\"><a href=\"" VERSION_CHECK_URL "\" target=\"_blank\">" VERSION_CHECK_URL "</a></td></tr>\n");
-	// strcat(webString, "<tr><td align=\"right\"><b>Status:</b></td><td align=\"left\"><span id='ver_check_result'>-</span></td></tr>\n");
-	// strcat(webString, "<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\"><input type='button' class=\"btn btn-danger\" id=\"check_ver_btn\" value='Check New Version'></div></td></tr>\n");
-	// strcat(webString, "</table><br />\n");
 
 	strcat(webString, "<script>"
 					  "document.getElementById('check_ver_btn').addEventListener('click', function(){"
@@ -12410,42 +12296,14 @@ strcat(webString, "- Fixed a buffer overflow risk in the IGATE/DIGI PHG Text fie
 					  "var fwLink = document.getElementById('fw_file_link');"
 					  "fwLink.href = newUrl;"
 					  "fwLink.innerHTML = d.latest_filename;"
-					  "document.getElementById('ota_url').value = newUrl;"
-					  "document.getElementById('ota_prg').innerHTML = 'New version available: V' + d.latest_version + d.latest_build + ' (' + d.latest_date + ') - firmware link updated.';"
+					  "document.getElementById('ota_prg').innerHTML = 'New version available: V' + d.latest_version + d.latest_build + ' (' + d.latest_date + ') - click the link above to download, then use Manual Firmware Update below.';"
 					  "} else {"
 					  "document.getElementById('ota_prg').innerHTML = 'You are using the latest version.';"
-					  "}"
-					  "if (d.fs_update_available) {"
-					  "document.getElementById('fs_prg').innerHTML = 'New icons/data available (' + d.latest_fs_version + ') - use Manual Filesystem Update below (backup your config first), or click Update Icons.';"
-					  "} else {"
-					  "document.getElementById('fs_prg').innerHTML = 'Up to date (' + d.current_fs_version + ').';"
 					  "}"
 					  "},"
 					  "error: function(a, b, c) {"
 					  "document.getElementById('check_ver_btn').disabled = false;"
 					  "document.getElementById('ota_prg').innerHTML = 'Error checking version: ' + c;"
-					  "}"
-					  "});"
-					  "});"
-					  "</script>");
-
-	strcat(webString, "<script>"
-					  "document.getElementById('ota_sumbit').addEventListener('click', function(){"
-					  "if (!confirm('Download and install firmware from URL?\\n' + document.getElementById('ota_url').value)) return;"
-					  "document.getElementById('ota_sumbit').disabled = true;"
-					  "document.getElementById('ota_prg').innerHTML = 'Downloading... Please wait ~30 sec';"
-					  "$.ajax({"
-					  "url: '/ota_url',"
-					  "type: 'POST',"
-					  "data: { url: document.getElementById('ota_url').value },"
-					  "success: function(d, s) {"
-					  "document.getElementById('ota_prg').innerHTML = 'Update started. Rebooting...';"
-					  "alert('OTA update started. Wait for system reboot (~30sec).');"
-					  "},"
-					  "error: function(a, b, c) {"
-					  "document.getElementById('ota_prg').innerHTML = 'Error: ' + c;"
-					  "document.getElementById('ota_sumbit').disabled = false;"
-					  "alert('OTA update failed: ' + c);"
 					  "}"
 					  "});"
 					  "});"
@@ -12860,8 +12718,6 @@ void webService()
 			}
 		});
 
-	async_server.on("/ota_url", HTTP_POST, [](AsyncWebServerRequest *request)
-					{ handle_ota_url(request); });
 async_server.on("/check_version", HTTP_GET, [](AsyncWebServerRequest *request)
 					{ handle_check_version(request); });		
 
