@@ -12261,6 +12261,7 @@ strcat(webString, "- Fixed a bug where submitting Manual Filesystem Update also 
 					  "error: function (a, b, c) {"
 					  "}"
 					  "});"
+					  "});"
 					  "</script>");
 
 	
