@@ -4160,6 +4160,44 @@ void handle_mod(AsyncWebServerRequest *request)
 		String html = "OK";
 		request->send(200, "text/html", html);
 	}
+	else if (request->hasArg("commitTCPKISS"))
+	{
+		// TCP KISS Server - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+		bool En = false;
+		for (uint8_t i = 0; i < request->args(); i++)
+		{
+			if (request->argName(i) == "Enable")
+			{
+				if (request->arg(i) != "")
+				{
+					if (String(request->arg(i)) == "OK")
+						En = true;
+				}
+			}
+			if (request->argName(i) == "port1")
+			{
+				if (isValidNumber(request->arg(i)))
+				{
+					int p = request->arg(i).toInt();
+					if (p > 0 && p < 65536)
+						config.tcp_kiss_port1 = (uint16_t)p;
+				}
+			}
+			if (request->argName(i) == "port2")
+			{
+				if (isValidNumber(request->arg(i)))
+				{
+					int p = request->arg(i).toInt();
+					if (p > 0 && p < 65536)
+						config.tcp_kiss_port2 = (uint16_t)p;
+				}
+			}
+		}
+		config.tcp_kiss_enable = En;
+		saveConfiguration("/default.cfg", config);
+		String html = "OK";
+		request->send(200, "text/html", html);
+	}
 	else if (request->hasArg("commitONEWIRE"))
 	{
 		bool En = false;
@@ -4699,7 +4737,7 @@ void handle_mod(AsyncWebServerRequest *request)
 	else
 	{
 		// Allocate memory for the HTML string
-		char *html = allocateStringMemory(22000); // Start with 8KB, adjust as needed
+		char *html = allocateStringMemory(40000); // Start with 8KB, adjust as needed
 		if (html == NULL)
 		{
 			request->send(500, "text/html", "Memory allocation failed");
@@ -5680,6 +5718,64 @@ void handle_mod(AsyncWebServerRequest *request)
 		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
 		strcat(html, "<input class=\"button\" id=\"submitTNC\" name=\"commitTNC\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
 		strcat(html, "<input type=\"hidden\" name=\"commitTNC\"/>\n");
+		strcat(html, "</td></tr></table>\n");
+		strcat(html, "</form>\n");
+
+		/**************TCP KISS Server Modify******************/
+		// custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromTCPKISS\" method=\"post\">\n");
+		strcat(html, "<table>\n");
+		strcat(html, "<th colspan=\"2\"><span><b>TCP KISS Server Modify</b></span></th>\n");
+		strcat(html, "<tr>\n");
+
+		strcpy(enFlage, "");
+		if (config.tcp_kiss_enable)
+			strcpy(enFlage, "checked");
+		strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
+		strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ");
+		strcat(html, enFlage);
+		strcat(html, "><span class=\"slider round\"></span></label></td>\n");
+		strcat(html, "</tr>\n");
+
+		strcat(html, "<tr>\n");
+		strcat(html, "<td align=\"right\"><b>PORT 1:</b></td>\n");
+		strcat(html, "<td style=\"text-align: left;\"><input type=\"text\" name=\"port1\" value=\"");
+		strcat(html, String(config.tcp_kiss_port1).c_str());
+		strcat(html, "\" maxlength=\"5\" size=\"6\"/></td>\n");
+		strcat(html, "</tr>\n");
+
+		strcat(html, "<tr>\n");
+		strcat(html, "<td align=\"right\"><b>PORT 2:</b></td>\n");
+		strcat(html, "<td style=\"text-align: left;\"><input type=\"text\" name=\"port2\" value=\"");
+		strcat(html, String(config.tcp_kiss_port2).c_str());
+		strcat(html, "\" maxlength=\"5\" size=\"6\"/></td>\n");
+		strcat(html, "</tr>\n");
+
+		{
+			String tcpKissStatus1 = "Port " + String(config.tcp_kiss_port1) + ": ";
+			if (tcpKissClient1 && tcpKissClient1.connected())
+				tcpKissStatus1 += "connected (" + tcpKissClient1.remoteIP().toString() + ") RX:" + String(tcpKissRxCount[0]) + " TX:" + String(tcpKissTxCount[0]);
+			else
+				tcpKissStatus1 += "idle";
+			String tcpKissStatus2 = "Port " + String(config.tcp_kiss_port2) + ": ";
+			if (tcpKissClient2 && tcpKissClient2.connected())
+				tcpKissStatus2 += "connected (" + tcpKissClient2.remoteIP().toString() + ") RX:" + String(tcpKissRxCount[1]) + " TX:" + String(tcpKissTxCount[1]);
+			else
+				tcpKissStatus2 += "idle";
+			strcat(html, "<tr><td colspan=\"2\" align=\"center\"><b>Status:</b></td></tr>\n");
+			strcat(html, "<tr><td colspan=\"2\" align=\"center\">");
+			strcat(html, tcpKissStatus1.c_str());
+			strcat(html, "</td></tr>\n");
+			strcat(html, "<tr><td colspan=\"2\" align=\"center\">");
+			strcat(html, tcpKissStatus2.c_str());
+			strcat(html, "</td></tr>\n");
+		}
+
+		strcat(html, "<tr><td colspan=\"2\" style=\"word-wrap:break-word;white-space:normal;\"><p style=\"font-size:9pt;margin:4px 0;\">Lets PC software (Xastir, APRSIS32, etc) use this device as a KISS TNC over the local network - no cable needed. No password - anyone on this WiFi network can transmit through the radio via these ports while enabled. Port number changes need a reboot to take effect; the Enable switch does not.</p></td></tr>\n");
+
+		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
+		strcat(html, "<input class=\"button\" id=\"submitTCPKISS\" name=\"commitTCPKISS\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
+		strcat(html, "<input type=\"hidden\" name=\"commitTCPKISS\"/>\n");
 		strcat(html, "</td></tr></table>\n");
 		strcat(html, "</form>\n");
 		strcat(html, "</td></tr></table>\n");
@@ -11965,6 +12061,8 @@ void handle_about(AsyncWebServerRequest *request)
 	strcat(webString, "- Bulletins never retry (nobody ACKs a BLN), unlike normal messages<br />\n");
 	strcat(webString, "- Dashboard LAST HEARD: Callsign links to QRZ.com, plus a small map icon linking to aprs.fi (both open in a new tab)<br />\n");
 	strcat(webString, "- Dashboard LAST HEARD icons now work without internet: loads from the internet first, falls back to a local copy already included on the device, then to a simple drawn icon (never blank)<br />\n");
+	strcat(webString, "- Dashboard icons now match the aprs.fi style (previously used a different icon set)<br />\n");
+	strcat(webString, "- New: TCP KISS Server (MOD tab) lets PC software (Xastir, APRSIS32, etc) use this device as a network TNC over WiFi, 2 ports, no cable needed. Off by default<br />\n");
 	strcat(webString, "</td></tr>\n");
 	strcat(webString, "</table><br />\n");
 

@@ -446,6 +446,11 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     doc["extTNCCh"] = config.ext_tnc_channel;
     doc["extTNCMode"] = config.ext_tnc_mode;
 
+    // MOD TCP KISS Server - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+    doc["tcpKissEn"] = config.tcp_kiss_enable;
+    doc["tcpKissPort1"] = config.tcp_kiss_port1;
+    doc["tcpKissPort2"] = config.tcp_kiss_port2;
+
     // Power control
     doc["pwrEn"] = config.pwr_en;
     doc["pwrMode"] = config.pwr_mode;
@@ -975,6 +980,13 @@ bool loadConfiguration(const char *filename, Configuration &config)
         config.ext_tnc_enable = doc["extTNCEn"];
         config.ext_tnc_channel = doc["extTNCCh"];
         config.ext_tnc_mode = doc["extTNCMode"];
+
+        // MOD TCP KISS Server - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+        // Uses "| default" so devices updating from an older config file (which won't have
+        // these keys yet) get safe defaults instead of 0/false-for-everything.
+        config.tcp_kiss_enable = doc["tcpKissEn"] | false;
+        config.tcp_kiss_port1 = doc["tcpKissPort1"] | 8001;
+        config.tcp_kiss_port2 = doc["tcpKissPort2"] | 8002;
 
         // Power control
         config.pwr_en = doc["pwrEn"];

@@ -3402,6 +3402,24 @@ void RF_MODULE_CHECK()
 
 WiFiClient aprsClient;
 
+// TCP KISS Server - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+// All WiFiServer/WiFiClient access happens only from loop() (see below) to avoid a
+// cross-task race with taskAPRS - taskAPRS only pushes finished packets into
+// tcpKissTxQueue, it never touches the client/server objects directly.
+WiFiServer tcpKissServer1;
+WiFiServer tcpKissServer2;
+WiFiClient tcpKissClient1;
+WiFiClient tcpKissClient2;
+uint32_t tcpKissRxCount[2] = {0, 0};
+uint32_t tcpKissTxCount[2] = {0, 0};
+bool tcpKissServersStarted = false;
+typedef struct
+{
+    uint8_t data[500];
+    size_t len;
+} TcpKissTxItem;
+QueueHandle_t tcpKissTxQueue = NULL;
+
 boolean APRSConnect()
 {
     // Serial.println("Connect TCP Server");
@@ -3509,6 +3527,9 @@ void setup()
     memset(Telemetry, 0, sizeof(TelemetryType) * TLMLISTSIZE);
     memset(txQueue, 0, sizeof(txQueueType) * PKGTXSIZE);
     memset(msgQueue, 0, sizeof(msgType) * PKGLISTSIZE);
+
+    // TCP KISS Server - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+    tcpKissTxQueue = xQueueCreate(4, sizeof(TcpKissTxItem));
 
     pinMode(BOOT_PIN, INPUT_PULLUP); // BOOT Button
     pinMode(LED_RX, OUTPUT);
@@ -6335,6 +6356,77 @@ void taskSerial(void *pvParameters)
             // }
         }
 
+        // TCP KISS Server - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+        // Enable toggle starts/stops the servers live. Port number changes need a reboot
+        // (documented on the MOD page) - simpler and safer than rebinding a live socket.
+        if (config.tcp_kiss_enable && !tcpKissServersStarted)
+        {
+            tcpKissServer1.begin(config.tcp_kiss_port1);
+            tcpKissServer2.begin(config.tcp_kiss_port2);
+            tcpKissServersStarted = true;
+            log_i("TCP KISS Server started on ports %u and %u", config.tcp_kiss_port1, config.tcp_kiss_port2);
+        }
+        else if (!config.tcp_kiss_enable && tcpKissServersStarted)
+        {
+            tcpKissClient1.stop();
+            tcpKissClient2.stop();
+            tcpKissServer1.end();
+            tcpKissServer2.end();
+            tcpKissServersStarted = false;
+            log_i("TCP KISS Server stopped");
+        }
+
+        if (config.tcp_kiss_enable)
+        {
+            if (!tcpKissClient1 || !tcpKissClient1.connected())
+            {
+                WiFiClient newClient1 = tcpKissServer1.available();
+                if (newClient1)
+                    tcpKissClient1 = newClient1;
+            }
+            if (!tcpKissClient2 || !tcpKissClient2.connected())
+            {
+                WiFiClient newClient2 = tcpKissServer2.available();
+                if (newClient2)
+                    tcpKissClient2 = newClient2;
+            }
+
+            if (tcpKissClient1 && tcpKissClient1.connected())
+            {
+                while (tcpKissClient1.available())
+                {
+                    kiss_serial((uint8_t)tcpKissClient1.read());
+                    tcpKissRxCount[0]++;
+                }
+            }
+            if (tcpKissClient2 && tcpKissClient2.connected())
+            {
+                while (tcpKissClient2.available())
+                {
+                    kiss_serial((uint8_t)tcpKissClient2.read());
+                    tcpKissRxCount[1]++;
+                }
+            }
+
+            if (tcpKissTxQueue != NULL)
+            {
+                TcpKissTxItem tcpKissItem;
+                while (xQueueReceive(tcpKissTxQueue, &tcpKissItem, 0) == pdTRUE)
+                {
+                    if (tcpKissClient1 && tcpKissClient1.connected())
+                    {
+                        tcpKissClient1.write(tcpKissItem.data, tcpKissItem.len);
+                        tcpKissTxCount[0]++;
+                    }
+                    if (tcpKissClient2 && tcpKissClient2.connected())
+                    {
+                        tcpKissClient2.write(tcpKissItem.data, tcpKissItem.len);
+                        tcpKissTxCount[1]++;
+                    }
+                }
+            }
+        }
+
         if (config.ext_tnc_enable && (config.ext_tnc_mode > 0 && config.ext_tnc_mode < 5))
         {
             if (config.ext_tnc_mode == 1)
@@ -7119,6 +7211,16 @@ void taskAPRS(void *pvParameters)
                     type = pkgType((const char *)incomingPacket.info);
                     newIGatePkg = true;
                     newDigiPkg = true;
+                    // TCP KISS Server - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+                    // Only queues the packet here - loop() owns the actual socket writes,
+                    // to keep all WiFiClient access on a single task (see globals above).
+                    if (config.tcp_kiss_enable && tcpKissTxQueue != NULL)
+                    {
+                        TcpKissTxItem tcpKissItem;
+                        tcpKissItem.len = kiss_wrapper(tcpKissItem.data, buf, size);
+                        xQueueSend(tcpKissTxQueue, &tcpKissItem, 0);
+                    }
+
                     if (config.ext_tnc_enable)
                     {
                         if (config.ext_tnc_channel > 0 && config.ext_tnc_channel < 5)
