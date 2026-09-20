@@ -7405,7 +7405,8 @@ void handle_igate(AsyncWebServerRequest *request)
 			{
 				if (request->arg(i) != "")
 				{
-					strcpy(config.igate_phg, request->arg(i).c_str());
+					strncpy(config.igate_phg, request->arg(i).c_str(), sizeof(config.igate_phg) - 1);
+config.igate_phg[sizeof(config.igate_phg) - 1] = 0;
 				}
 			}
 
@@ -8368,7 +8369,8 @@ void handle_digi(AsyncWebServerRequest *request)
 			{
 				if (request->arg(i) != "")
 				{
-					strcpy(config.digi_phg, request->arg(i).c_str());
+					strncpy(config.digi_phg, request->arg(i).c_str(), sizeof(config.digi_phg) - 1);
+config.digi_phg[sizeof(config.digi_phg) - 1] = 0;
 				}
 			}
 			if (request->argName(i) == "digiStatus")
@@ -11899,6 +11901,7 @@ void handle_check_version(AsyncWebServerRequest *request)
 	request->send(200, "application/json", resp);
 }
 
+
 void handle_about(AsyncWebServerRequest *request)
 {
 	if (!request->authenticate(config.http_username, config.http_password))
@@ -12060,6 +12063,7 @@ void handle_about(AsyncWebServerRequest *request)
 	strcat(webString, "- Dashboard LAST HEARD icons now work without internet: loads from the internet first, falls back to a local copy already included on the device, then to a simple drawn icon (never blank)<br />\n");
 	strcat(webString, "- Dashboard icons now match the aprs.fi style (previously used a different icon set)<br />\n");
 	strcat(webString, "- New: TCP KISS Server (MOD tab) lets PC software (Xastir, APRSIS32, etc) use this device as a network TNC over WiFi, 2 ports, no cable needed. Off by default<br />\n");
+strcat(webString, "- Fixed a buffer overflow risk in the IGATE/DIGI PHG Text field (unbounded strcpy on an 8-byte buffer)<br />\n");
 	strcat(webString, "</td></tr>\n");
 	strcat(webString, "</table><br />\n");
 
