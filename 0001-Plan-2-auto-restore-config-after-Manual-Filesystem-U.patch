@@ -1,0 +1,58 @@
+From 240bcb83f9092dd4294f024c688f1a818aa61541 Mon Sep 17 00:00:00 2001
+From: Marcelo Ferreira <marcelo@fulltour.com.br>
+Date: Sun, 20 Sep 2026 17:47:20 -0300
+Subject: [PATCH] Plan 2: auto-restore config after Manual Filesystem Update
+
+Manual Filesystem Update (/updatefs) does a raw overwrite of the whole
+LittleFS partition via Update.begin(U_SPIFFS), which wiped the user's
+WiFi/APRS config (default.cfg) along with the icons/data being pushed.
+For remote users with no USB access, this could strand the device in
+AP mode with no way back in.
+
+Since the live Configuration struct stays in RAM (loaded at boot,
+untouched by the flash write), remount LittleFS after a successful
+update and write it straight back to /default.cfg before rebooting.
+No manual backup/restore needed for the common case; a manual backup
+via the File tab remains available as a safety net.
+---
+ src/webservice.cpp | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/src/webservice.cpp b/src/webservice.cpp
+index b9cc837..f27fe11 100644
+--- a/src/webservice.cpp
++++ b/src/webservice.cpp
+@@ -12709,6 +12709,30 @@ void webService()
+ 				if (Update.end(true))
+ 				{
+ 					log_d("Filesystem Update Success: %uByte\n", index + len);
++					// custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
++					// The published littlefs.bin only carries icons/fsversion.txt (no
++					// personal config), so this raw overwrite of the whole partition
++					// would otherwise wipe the user's WiFi/APRS config too - stranding
++					// remote users with no USB access in AP mode. `config` is the live
++					// in-RAM copy (loaded at boot, untouched by the flash write below),
++					// so remount the fresh filesystem and write it straight back out.
++					LITTLEFS.end();
++					if (LITTLEFS.begin(false))
++					{
++						if (saveConfiguration("/default.cfg", config))
++						{
++							log_d("Config restored to new filesystem after update\n");
++						}
++						else
++						{
++							log_e("Failed to restore config after filesystem update\n");
++						}
++						LITTLEFS.end();
++					}
++					else
++					{
++						log_e("Could not remount LITTLEFS to restore config after update\n");
++					}
+ 					delay(1000);
+ 					esp_restart();
+ 				}
+-- 
+2.34.1
+
