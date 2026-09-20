@@ -6364,7 +6364,7 @@ void taskSerial(void *pvParameters)
             tcpKissServer1.begin(config.tcp_kiss_port1);
             tcpKissServer2.begin(config.tcp_kiss_port2);
             tcpKissServersStarted = true;
-            log_i("TCP KISS Server started on ports %u and %u", config.tcp_kiss_port1, config.tcp_kiss_port2);
+            Serial.printf("[TCP KISS] Servers started on ports %u and %u\n", config.tcp_kiss_port1, config.tcp_kiss_port2);
         }
         else if (!config.tcp_kiss_enable && tcpKissServersStarted)
         {
@@ -6373,7 +6373,7 @@ void taskSerial(void *pvParameters)
             tcpKissServer1.end();
             tcpKissServer2.end();
             tcpKissServersStarted = false;
-            log_i("TCP KISS Server stopped");
+            Serial.println("[TCP KISS] Servers stopped");
         }
 
         if (config.tcp_kiss_enable)

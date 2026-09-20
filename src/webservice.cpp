@@ -4737,7 +4737,7 @@ void handle_mod(AsyncWebServerRequest *request)
 	else
 	{
 		// Allocate memory for the HTML string
-		char *html = allocateStringMemory(40000); // Start with 8KB, adjust as needed
+		char *html = allocateStringMemory(30000); // Start with 8KB, adjust as needed
 		if (html == NULL)
 		{
 			request->send(500, "text/html", "Memory allocation failed");
@@ -5771,6 +5771,12 @@ void handle_mod(AsyncWebServerRequest *request)
 			strcat(html, "</td></tr>\n");
 		}
 
+		strcat(html, "<tr><td align=\"right\">Debug:</td><td style=\"text-align: left;\">tcp_kiss_enable=");
+		strcat(html, config.tcp_kiss_enable ? "true" : "false");
+		strcat(html, " tcpKissServersStarted=");
+		extern bool tcpKissServersStarted;
+		strcat(html, tcpKissServersStarted ? "true" : "false");
+		strcat(html, "</td></tr>\n");
 		strcat(html, "<tr><td colspan=\"2\" style=\"word-wrap:break-word;white-space:normal;\"><p style=\"font-size:9pt;margin:4px 0;\">Lets PC software (Xastir, APRSIS32, etc) use this device as a KISS TNC over the local network - no cable needed. No password - anyone on this WiFi network can transmit through the radio via these ports while enabled. Port number changes need a reboot to take effect; the Enable switch does not.</p></td></tr>\n");
 
 		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
