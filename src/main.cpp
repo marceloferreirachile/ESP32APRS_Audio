@@ -5246,6 +5246,7 @@ void msgBox(String msg)
 uint8_t heapCount = 0;
 void loop()
 {
+
     if (millis() > timeTask)
     {
         timeTask = millis() + 10000;
@@ -6356,10 +6357,12 @@ void taskSerial(void *pvParameters)
             // }
         }
 
+        
+
         // TCP KISS Server - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
         // Enable toggle starts/stops the servers live. Port number changes need a reboot
         // (documented on the MOD page) - simpler and safer than rebinding a live socket.
-        if (config.tcp_kiss_enable && !tcpKissServersStarted)
+        if (config.tcp_kiss_enable && !tcpKissServersStarted && millis() > 10000)
         {
             tcpKissServer1.begin(config.tcp_kiss_port1);
             tcpKissServer2.begin(config.tcp_kiss_port2);
