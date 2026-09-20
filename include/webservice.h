@@ -99,6 +99,13 @@ extern msgType *msgQueue;
 extern TinyGPSPlus gps;
 extern float vbat;
 extern WiFiClient aprsClient;
+// TCP KISS Server - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+extern WiFiServer tcpKissServer1;
+extern WiFiServer tcpKissServer2;
+extern WiFiClient tcpKissClient1;
+extern WiFiClient tcpKissClient2;
+extern uint32_t tcpKissRxCount[2];
+extern uint32_t tcpKissTxCount[2];
 extern bool initInterval;
 extern bool webServiceBegin;
 extern fs::LITTLEFSFS LITTLEFS;

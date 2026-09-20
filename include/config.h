@@ -390,6 +390,11 @@ typedef struct Config_Struct
 	int8_t ext_tnc_channel = 0;
 	int8_t ext_tnc_mode = 0;
 
+	// TCP KISS Server - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+	bool tcp_kiss_enable = false;
+	uint16_t tcp_kiss_port1 = 8001;
+	uint16_t tcp_kiss_port2 = 8002;
+
 	// Sleep mode
 	bool pwr_en;
 	uint8_t pwr_mode;
