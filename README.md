@@ -2,6 +2,16 @@
 
 # ESP32APRS Audio(Speaker/Mic) Project
 
+## This fork: ESP32APRS_CDU (LU6JMF)
+
+This is a custom fork by LU6JMF (Marcelo, Concepcion del Uruguay, Entre Rios, Argentina), running digipeater LU6JMF-10 "ESP32APRS_CDU", built on top of the original nakhonthai/ESP32APRS_Audio base. See the [releases page](https://github.com/marceloferreirachile/ESP32APRS_Audio/releases) for the full changelog.
+
+**New device / full reset:** use the one-click browser installer, no software needed: **https://marceloferreirachile.github.io/ESP32APRS_Audio/**
+
+**Existing device (this fork or another firmware), no USB needed:** update through the device's own web panel - see "Existing device" in the [latest release notes](https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/latest). In short: About tab -> Manual Firmware Update -> Manual Filesystem Update. Your WiFi/APRS configuration is restored automatically after the filesystem step.
+
+The sections below (Feature, Hardware, PlatformIO Quick Start, raw ESP32 Flash Download Tool) are the original upstream documentation and mostly still apply, with the installer above now recommended over manual flashing for this fork.
+
 ESP32APRS Audio is a Internet Gateway(IGate)/Digital Repeater(DiGi)/Tracker/Weather(WX)/Telemetry(TLM) with AFSK/GFSK TNC Built in that is implemented for Espressif ESP32 processor.
  
 

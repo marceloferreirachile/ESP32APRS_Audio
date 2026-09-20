@@ -38,6 +38,18 @@
   <strong>Warning:</strong> this erases everything currently on the device (including WiFi/APRS configuration) and flashes from scratch. After installing, configure WiFi, callsign, and other settings through the device's own web interface (it creates its own WiFi network on first boot).
 </div>
 
+<div class="box">
+  <h2 style="font-size:1.1em;margin-top:0;">Already have a device running? Update without USB</h2>
+  <p>If the device is reachable on your WiFi network (running this firmware or another one, like the original nakhonthai base) but you don't have physical/USB access to it, you can update it entirely through its own web panel:</p>
+  <ol>
+    <li>Download <code>firmware.bin</code> and <code>littlefs.bin</code> from the <a href="https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/latest">latest release</a>.</li>
+    <li>Open the device's web panel, go to the <b>About</b> tab.</li>
+    <li>Under <b>Manual Firmware Update</b>, select <code>firmware.bin</code> and click "Firmware UpLoad". Wait for it to reboot.</li>
+    <li>Under <b>Manual Filesystem Update (icons/data)</b>, select <code>littlefs.bin</code> and click "Filesystem UpLoad". Wait for it to reboot.</li>
+  </ol>
+  <p>Your WiFi/APRS configuration is automatically restored after step 4 - no backup or re-upload needed.</p>
+</div>
+
 <p>Repository: <a href="https://github.com/marceloferreirachile/ESP32APRS_Audio">github.com/marceloferreirachile/ESP32APRS_Audio</a></p>
 
 </body>
