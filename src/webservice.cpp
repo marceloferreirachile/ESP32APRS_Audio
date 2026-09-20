@@ -11854,7 +11854,7 @@ void handle_ota_url(AsyncWebServerRequest *request)
 
 // Remote version file published by copy_firmware.py, checked against the
 // running VERSION/VERSION_BUILD to let the "about" page report new releases.
-#define VERSION_CHECK_URL "http://fw.nakhonthai.net/Audio/version.json"
+#define VERSION_CHECK_URL "https://raw.githubusercontent.com/marceloferreirachile/ESP32APRS_Audio/master/version.json"
 
 void handle_check_version(AsyncWebServerRequest *request)
 {
@@ -11891,13 +11891,40 @@ void handle_check_version(AsyncWebServerRequest *request)
 	const char *latestVersion = doc["version"] | "";
 	const char *latestBuild = doc["build"] | "";
 	const char *latestDate = doc["date"] | "";
+	const char *latestTag = doc["tag"] | "";
+	const char *latestFilename = doc["filename"] | "";
+	const char *latestFsVersion = doc["fs_version"] | "";
+	const char *latestFsBuild = doc["fs_build"] | "";
+	const char *latestFsDate = doc["fs_date"] | "";
+	const char *latestFsFilename = doc["fs_filename"] | "";
 
 	bool updateAvailable = (strcmp(latestVersion, VERSION) != 0) || (strcmp(latestBuild, VERSION_BUILD) != 0);
 
-	char resp[400];
+	char currentFsVersion[40] = "unknown";
+	File fsVerFile = LITTLEFS.open("/fsversion.txt", "r");
+	if (fsVerFile)
+	{
+		size_t n = fsVerFile.readBytes(currentFsVersion, sizeof(currentFsVersion) - 1);
+		currentFsVersion[n] = '\0';
+		fsVerFile.close();
+		while (n > 0 && (currentFsVersion[n - 1] == '\n' || currentFsVersion[n - 1] == '\r' || currentFsVersion[n - 1] == ' '))
+		{
+			currentFsVersion[--n] = '\0';
+		}
+	}
+	char latestFsCombined[40];
+	snprintf(latestFsCombined, sizeof(latestFsCombined), "%s-%s", latestFsVersion, latestFsBuild);
+	bool fsUpdateAvailable = (strlen(latestFsVersion) > 0) && (strcmp(currentFsVersion, latestFsCombined) != 0);
+
+	char resp[700];
 	snprintf(resp, sizeof(resp),
-			 "{\"current_version\":\"%s\",\"current_build\":\"%s\",\"latest_version\":\"%s\",\"latest_build\":\"%s\",\"latest_date\":\"%s\",\"update_available\":%s}",
-			 VERSION, VERSION_BUILD, latestVersion, latestBuild, latestDate, updateAvailable ? "true" : "false");
+			 "{\"current_version\":\"%s\",\"current_build\":\"%s\","
+			 "\"latest_version\":\"%s\",\"latest_build\":\"%s\",\"latest_date\":\"%s\","
+			 "\"latest_tag\":\"%s\",\"latest_filename\":\"%s\",\"update_available\":%s,"
+			 "\"current_fs_version\":\"%s\",\"latest_fs_version\":\"%s\",\"latest_fs_filename\":\"%s\",\"fs_update_available\":%s}",
+			 VERSION, VERSION_BUILD, latestVersion, latestBuild, latestDate,
+			 latestTag, latestFilename, updateAvailable ? "true" : "false",
+			 currentFsVersion, latestFsCombined, latestFsFilename, fsUpdateAvailable ? "true" : "false");
 	request->send(200, "application/json", resp);
 }
 
@@ -11936,7 +11963,7 @@ void handle_about(AsyncWebServerRequest *request)
 		*dst = '\0';
 	}
 	char ver[20];
-	sprintf(ver, "V%s%s.bin", verNoDot, VERSION_BUILD);
+	sprintf(ver, "v%s-%s.bin", VERSION, VERSION_BUILD);
 #if defined(TTGO_TWR)	
 	strcat(webString, "LiLyGo T-TWRPlus");
 	sprintf(FirmwareOTA, "ESP32S3_TWR_%s", ver);
@@ -12315,7 +12342,7 @@ strcat(webString, "- Fixed a buffer overflow risk in the IGATE/DIGI PHG Text fie
 	
 	{
 		char ota_url_buf[200];
-		snprintf(ota_url_buf, sizeof(ota_url_buf), "http://fw.nakhonthai.net/Audio/%s", FirmwareOTA);
+		snprintf(ota_url_buf, sizeof(ota_url_buf), "https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/download/v%s-%s/%s", VERSION, VERSION_BUILD, FirmwareOTA);
 
 		// Derive the board-specific firmware name prefix (FirmwareOTA minus the
 		// trailing "_V<ver><build>.bin") so the client JS can rebuild the filename
@@ -12323,7 +12350,7 @@ strcat(webString, "- Fixed a buffer overflow risk in the IGATE/DIGI PHG Text fie
 		char FirmwarePrefix[50] = "";
 		{
 			char suffix[40];
-			snprintf(suffix, sizeof(suffix), "_V%s%s.bin", verNoDot, VERSION_BUILD);
+			snprintf(suffix, sizeof(suffix), "_v%s-%s.bin", VERSION, VERSION_BUILD);
 			size_t suffixLen = strlen(suffix);
 			size_t fwLen = strlen(FirmwareOTA);
 			if (fwLen > suffixLen)
@@ -12348,6 +12375,7 @@ strcat(webString, "- Fixed a buffer overflow risk in the IGATE/DIGI PHG Text fie
 			VERSION, VERSION_BUILD);
 		strcat(webString, ota_row);
 		strcat(webString, "<tr><td align=\"right\"><b>Status:</b></td><td><span id='ota_prg'>Ready</span></td></tr>\n");
+	strcat(webString, "<tr><td align=\"right\"><b>Icons/Data:</b></td><td><span id='fs_prg'>Click 'Check New Version' to check</span></td></tr>\n");
 		snprintf(ota_row, sizeof(ota_row),
 			"<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\">"
 			"<input type='hidden' id='ota_url' value='%s'>"
@@ -12378,17 +12406,19 @@ strcat(webString, "- Fixed a buffer overflow risk in the IGATE/DIGI PHG Text fie
 					  "success: function(d) {"
 					  "document.getElementById('check_ver_btn').disabled = false;"
 					  "if (d.update_available) {"
-					  "var noDotVer = d.latest_version.replace(/\\./g, '');"
-					  "var prefix = document.getElementById('fw_prefix').value;"
-					  "var newFile = prefix + '_V' + noDotVer + d.latest_build + '.bin';"
-					  "var newUrl = 'http://fw.nakhonthai.net/Audio/' + newFile;"
+					  "var newUrl = 'https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/download/' + d.latest_tag + '/' + d.latest_filename;"
 					  "var fwLink = document.getElementById('fw_file_link');"
 					  "fwLink.href = newUrl;"
-					  "fwLink.innerHTML = newFile;"
+					  "fwLink.innerHTML = d.latest_filename;"
 					  "document.getElementById('ota_url').value = newUrl;"
 					  "document.getElementById('ota_prg').innerHTML = 'New version available: V' + d.latest_version + d.latest_build + ' (' + d.latest_date + ') - firmware link updated.';"
 					  "} else {"
 					  "document.getElementById('ota_prg').innerHTML = 'You are using the latest version.';"
+					  "}"
+					  "if (d.fs_update_available) {"
+					  "document.getElementById('fs_prg').innerHTML = 'New icons/data available (' + d.latest_fs_version + ') - use Manual Filesystem Update below (backup your config first), or click Update Icons.';"
+					  "} else {"
+					  "document.getElementById('fs_prg').innerHTML = 'Up to date (' + d.current_fs_version + ').';"
 					  "}"
 					  "},"
 					  "error: function(a, b, c) {"

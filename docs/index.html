@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>ESP32APRS_CDU - Instalador (LU6JMF)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<style>
+  body { font-family: -apple-system, Arial, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; line-height: 1.5; }
+  h1 { font-size: 1.4em; }
+  .box { border: 1px solid #ccc; border-radius: 8px; padding: 20px; margin: 20px 0; background: #f8f8f8; }
+  esp-web-install-button { display: block; margin: 20px 0; }
+  ol { padding-left: 20px; }
+  .warn { background: #fff3cd; border: 1px solid #ffe69c; border-radius: 6px; padding: 12px; margin: 16px 0; }
+</style>
+</head>
+<body>
+
+<h1>ESP32APRS_CDU (LU6JMF) — Instalador v1.9-lu6jmf</h1>
+
+<p>Firmware customizado do digipeater LU6JMF-10, baseado no ESP32APRS_Audio (nakhonthai). Grava firmware + ícones em um único clique, direto pelo navegador (Chrome ou Edge), sem instalar nada no computador.</p>
+
+<div class="box">
+  <ol>
+    <li>Conecte o ESP32 no computador via cabo USB.</li>
+    <li>Clique no botão abaixo e selecione a porta serial do dispositivo.</li>
+    <li>Aguarde a gravação terminar (~1 minuto).</li>
+  </ol>
+
+  <esp-web-install-button manifest="./manifest.json">
+    <button slot="activate">Instalar ESP32APRS_CDU v1.9-lu6jmf</button>
+    <span slot="unsupported">Seu navegador não suporta Web Serial. Use Google Chrome ou Microsoft Edge no computador (não funciona em celular).</span>
+    <span slot="not-allowed">Esta página precisa estar em HTTPS para funcionar (já está).</span>
+  </esp-web-install-button>
+</div>
+
+<div class="warn">
+  <strong>Atenção:</strong> isso apaga tudo que já estava gravado no dispositivo (configuração de WiFi/APRS incluída) e grava do zero. Depois de instalar, configure WiFi, indicativo e demais ajustes pela própria interface web do dispositivo (ele cria uma rede WiFi própria no primeiro boot).
+</div>
+
+<p>Repositório: <a href="https://github.com/marceloferreirachile/ESP32APRS_Audio">github.com/marceloferreirachile/ESP32APRS_Audio</a></p>
+
+</body>
+</html>
