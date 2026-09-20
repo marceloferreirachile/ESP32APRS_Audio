@@ -11698,6 +11698,55 @@ void handle_test(AsyncWebServerRequest *request)
 	request->send(response);
 	free(webString); // Free the allocated memory
 }
+
+// custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+// Fixed URL of the icons filesystem image published on our GitHub Release, so
+// club members can install it with a single click - no file picking needed.
+#define ICONS_FS_URL "https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/download/v1.8-lu6jmf-icons/littlefs.bin"
+
+static void ota_url_task_fs(void *pvParameters)
+{
+	(void)pvParameters;
+	WiFiClientSecure client;
+	client.setInsecure(); // skip cert validation - simple fetch of a known public binary
+	HTTPClient http;
+	http.begin(client, ICONS_FS_URL);
+	http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS); // GitHub release downloads redirect to objects.githubusercontent.com
+	http.setTimeout(30000);
+	int httpCode = http.GET();
+	if (httpCode == HTTP_CODE_OK) {
+		int contentLength = http.getSize();
+		WiFiClient *stream = http.getStreamPtr();
+		if (contentLength > 0 && Update.begin(contentLength, U_SPIFFS)) {
+			disableLoopWDT();
+			disableCore0WDT();
+			Update.writeStream(*stream);
+			if (Update.end(true)) {
+				log_i("Icons filesystem update success, rebooting");
+				delay(500);
+				esp_restart();
+			} else {
+				Update.printError(Serial);
+			}
+		} else {
+			log_e("Icons update: bad content length or Update.begin failed");
+		}
+	} else {
+		log_e("Icons update: HTTP GET failed, code=%d", httpCode);
+	}
+	http.end();
+	vTaskDelete(NULL);
+}
+
+void handle_update_icons(AsyncWebServerRequest *request)
+{
+	if (!request->authenticate(config.http_username, config.http_password)) {
+		return request->requestAuthentication();
+	}
+	request->send(200, "text/plain", "Icons update started, wait for reboot");
+	xTaskCreate(ota_url_task_fs, "ota_url_task_fs", 8192, NULL, 5, NULL);
+}
+
 static void ota_url_task(void *pvParameters)
 {
 	char *url = (char *)pvParameters;
@@ -11964,7 +12013,7 @@ void handle_about(AsyncWebServerRequest *request)
 	strcat(webString, "- Added recurring Bulletins BLN1-BLN9 (MSG tab): auto-repeat with per-bulletin Interval and optional send-count Limit (0=unlimited)<br />\n");
 	strcat(webString, "- Bulletins never retry (nobody ACKs a BLN), unlike normal messages<br />\n");
 	strcat(webString, "- Dashboard LAST HEARD: Callsign links to QRZ.com, plus a small map icon linking to aprs.fi (both open in a new tab)<br />\n");
-	strcat(webString, "- Dashboard LAST HEARD icons now work without internet: loads from the internet first, falls back to a local copy already included on the device, then to a simple drawn icon (never blank)<br />\n");
+	strcat(webString, "- Dashboard LAST HEARD icons now work without internet: loads from the internet first, falls back to a local copy stored on the device, then to a simple drawn icon (never blank). See the \"Install Icons\" button below to install the local copy<br />\n");
 	strcat(webString, "</td></tr>\n");
 	strcat(webString, "</table><br />\n");
 
@@ -12213,7 +12262,26 @@ void handle_about(AsyncWebServerRequest *request)
 					  "});"
 					  "</script>");
 
-	
+	strcat(webString, "<table>");
+	strcat(webString, "<th colspan=\"2\"><span><b>Install Icons (for offline use)</b></span></th>\n");
+	{
+		bool iconsInstalled = LITTLEFS.exists("/symbols/icons/dot.png");
+		char iconStatusBuf[220];
+		snprintf(iconStatusBuf, sizeof(iconStatusBuf),
+			"<tr><td colspan=\"2\" align=\"center\"><b>Current status:</b> %s</td></tr>\n",
+			iconsInstalled ? "<span style=\"color:green;\">Installed</span>" : "<span style=\"color:#a00;\">Not installed</span>");
+		strcat(webString, iconStatusBuf);
+	}
+	strcat(webString, "<tr><td colspan=\"2\" style=\"word-wrap:break-word;white-space:normal;\"><p style=\"font-size:9pt;margin:4px 0;\">Dashboard icons are loaded from the internet by default. If you want them to keep showing even without internet, install a local copy (one time only) with the button below.</p></td></tr>\n");
+	strcat(webString, "<tr><td colspan=\"2\" align=\"center\"><button type=\"button\" class=\"btn btn-success\" onclick=\"updateIconsFromInternet()\">Install</button></td></tr>\n");
+	strcat(webString, "</table><br />\n");
+	strcat(webString, "<script>"
+					  "function updateIconsFromInternet(){"
+					  "if(!confirm('Download and install the local icons now? The device will reboot automatically when done.'))return;"
+					  "fetch('/update_icons').then(function(r){return r.text();}).then(function(t){alert('Installing... wait for the automatic reboot (may take 1-2 minutes).');}).catch(function(e){alert('Error starting: '+e);});"
+					  "}"
+					  "</script>");
+
 	{
 		char ota_url_buf[200];
 		snprintf(ota_url_buf, sizeof(ota_url_buf), "http://fw.nakhonthai.net/Audio/%s", FirmwareOTA);
@@ -12733,7 +12801,11 @@ void webService()
 
 	async_server.on("/ota_url", HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_ota_url(request); });
-async_server.on("/check_version", HTTP_GET, [](AsyncWebServerRequest *request)
+	async_server.on("/update_icons", HTTP_GET, [](AsyncWebServerRequest *request)
+					{ handle_update_icons(request); });
+
+
+	async_server.on("/check_version", HTTP_GET, [](AsyncWebServerRequest *request)
 					{ handle_check_version(request); });		
 
 	lastheard_events.onConnect([](AsyncEventSourceClient *client)
