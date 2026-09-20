@@ -12051,10 +12051,7 @@ void handle_about(AsyncWebServerRequest *request)
 
 	strcat(webString, "<table>\n");
 	strcat(webString, "<tr><td align=\"right\"><b>Contributor: </b></td><td align=\"left\">LU6JMF Marcelo</td></tr>\n");
-	strcat(webString, "<tr><td align=\"right\"><b>Version: </b></td><td align=\"left\">Custom mods on top of V");
-	strcat(webString, VERSION);
-	strcat(webString, VERSION_BUILD);
-	strcat(webString, "</td></tr>\n");
+	strcat(webString, "<tr><td align=\"right\"><b>Version: </b></td><td align=\"left\">v1.9-lu6jmf (custom mods on top of V1.8a)</td></tr>\n");
 	strcat(webString, "<tr><td align=\"right\" style=\"vertical-align:top;\"><b>Changes: </b></td><td align=\"left\" style=\"white-space:normal;\">\n");
 	strcat(webString, "- Fixed CPU temperature display in web interface (sensor was reinitialized on every dashboard refresh)<br />\n");
 	strcat(webString, "- Added recurring Bulletins BLN1-BLN9 (MSG tab): auto-repeat with per-bulletin Interval and optional send-count Limit (0=unlimited)<br />\n");
