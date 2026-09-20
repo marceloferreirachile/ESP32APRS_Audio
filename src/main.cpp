@@ -5541,6 +5541,77 @@ void loop()
             esp_restart();
         }
     }
+
+// TCP KISS Server - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+        // Enable toggle starts/stops the servers live. Port number changes need a reboot
+        // (documented on the MOD page) - simpler and safer than rebinding a live socket.
+        if (config.tcp_kiss_enable && !tcpKissServersStarted && millis() > 10000)
+        {
+            tcpKissServer1.begin(config.tcp_kiss_port1);
+            tcpKissServer2.begin(config.tcp_kiss_port2);
+            tcpKissServersStarted = true;
+            log_i("TCP KISS Server started on ports %u and %u", config.tcp_kiss_port1, config.tcp_kiss_port2);
+        }
+        else if (!config.tcp_kiss_enable && tcpKissServersStarted)
+        {
+            tcpKissClient1.stop();
+            tcpKissClient2.stop();
+            tcpKissServer1.end();
+            tcpKissServer2.end();
+            tcpKissServersStarted = false;
+            log_i("TCP KISS Server stopped");
+        }
+
+        if (config.tcp_kiss_enable)
+        {
+            if (!tcpKissClient1 || !tcpKissClient1.connected())
+            {
+                WiFiClient newClient1 = tcpKissServer1.available();
+                if (newClient1)
+                    tcpKissClient1 = newClient1;
+            }
+            if (!tcpKissClient2 || !tcpKissClient2.connected())
+            {
+                WiFiClient newClient2 = tcpKissServer2.available();
+                if (newClient2)
+                    tcpKissClient2 = newClient2;
+            }
+
+            if (tcpKissClient1 && tcpKissClient1.connected())
+            {
+                while (tcpKissClient1.available())
+                {
+                    kiss_serial((uint8_t)tcpKissClient1.read());
+                    tcpKissRxCount[0]++;
+                }
+            }
+            if (tcpKissClient2 && tcpKissClient2.connected())
+            {
+                while (tcpKissClient2.available())
+                {
+                    kiss_serial((uint8_t)tcpKissClient2.read());
+                    tcpKissRxCount[1]++;
+                }
+            }
+
+            if (tcpKissTxQueue != NULL)
+            {
+                TcpKissTxItem tcpKissItem;
+                while (xQueueReceive(tcpKissTxQueue, &tcpKissItem, 0) == pdTRUE)
+                {
+                    if (tcpKissClient1 && tcpKissClient1.connected())
+                    {
+                        tcpKissClient1.write(tcpKissItem.data, tcpKissItem.len);
+                        tcpKissTxCount[0]++;
+                    }
+                    if (tcpKissClient2 && tcpKissClient2.connected())
+                    {
+                        tcpKissClient2.write(tcpKissItem.data, tcpKissItem.len);
+                        tcpKissTxCount[1]++;
+                    }
+                }
+            }
+        }
 }
 
 String sendIsAckMsg(String toCallSign, int msgId)
@@ -6359,76 +6430,7 @@ void taskSerial(void *pvParameters)
 
         
 
-        // TCP KISS Server - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
-        // Enable toggle starts/stops the servers live. Port number changes need a reboot
-        // (documented on the MOD page) - simpler and safer than rebinding a live socket.
-        if (config.tcp_kiss_enable && !tcpKissServersStarted && millis() > 10000)
-        {
-            tcpKissServer1.begin(config.tcp_kiss_port1);
-            tcpKissServer2.begin(config.tcp_kiss_port2);
-            tcpKissServersStarted = true;
-            Serial.printf("[TCP KISS] Servers started on ports %u and %u\n", config.tcp_kiss_port1, config.tcp_kiss_port2);
-        }
-        else if (!config.tcp_kiss_enable && tcpKissServersStarted)
-        {
-            tcpKissClient1.stop();
-            tcpKissClient2.stop();
-            tcpKissServer1.end();
-            tcpKissServer2.end();
-            tcpKissServersStarted = false;
-            Serial.println("[TCP KISS] Servers stopped");
-        }
 
-        if (config.tcp_kiss_enable)
-        {
-            if (!tcpKissClient1 || !tcpKissClient1.connected())
-            {
-                WiFiClient newClient1 = tcpKissServer1.available();
-                if (newClient1)
-                    tcpKissClient1 = newClient1;
-            }
-            if (!tcpKissClient2 || !tcpKissClient2.connected())
-            {
-                WiFiClient newClient2 = tcpKissServer2.available();
-                if (newClient2)
-                    tcpKissClient2 = newClient2;
-            }
-
-            if (tcpKissClient1 && tcpKissClient1.connected())
-            {
-                while (tcpKissClient1.available())
-                {
-                    kiss_serial((uint8_t)tcpKissClient1.read());
-                    tcpKissRxCount[0]++;
-                }
-            }
-            if (tcpKissClient2 && tcpKissClient2.connected())
-            {
-                while (tcpKissClient2.available())
-                {
-                    kiss_serial((uint8_t)tcpKissClient2.read());
-                    tcpKissRxCount[1]++;
-                }
-            }
-
-            if (tcpKissTxQueue != NULL)
-            {
-                TcpKissTxItem tcpKissItem;
-                while (xQueueReceive(tcpKissTxQueue, &tcpKissItem, 0) == pdTRUE)
-                {
-                    if (tcpKissClient1 && tcpKissClient1.connected())
-                    {
-                        tcpKissClient1.write(tcpKissItem.data, tcpKissItem.len);
-                        tcpKissTxCount[0]++;
-                    }
-                    if (tcpKissClient2 && tcpKissClient2.connected())
-                    {
-                        tcpKissClient2.write(tcpKissItem.data, tcpKissItem.len);
-                        tcpKissTxCount[1]++;
-                    }
-                }
-            }
-        }
 
         if (config.ext_tnc_enable && (config.ext_tnc_mode > 0 && config.ext_tnc_mode < 5))
         {
