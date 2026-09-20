@@ -12709,6 +12709,30 @@ void webService()
 				if (Update.end(true))
 				{
 					log_d("Filesystem Update Success: %uByte\n", index + len);
+					// custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+					// The published littlefs.bin only carries icons/fsversion.txt (no
+					// personal config), so this raw overwrite of the whole partition
+					// would otherwise wipe the user's WiFi/APRS config too - stranding
+					// remote users with no USB access in AP mode. `config` is the live
+					// in-RAM copy (loaded at boot, untouched by the flash write below),
+					// so remount the fresh filesystem and write it straight back out.
+					LITTLEFS.end();
+					if (LITTLEFS.begin(false))
+					{
+						if (saveConfiguration("/default.cfg", config))
+						{
+							log_d("Config restored to new filesystem after update\n");
+						}
+						else
+						{
+							log_e("Failed to restore config after filesystem update\n");
+						}
+						LITTLEFS.end();
+					}
+					else
+					{
+						log_e("Could not remount LITTLEFS to restore config after update\n");
+					}
 					delay(1000);
 					esp_restart();
 				}
