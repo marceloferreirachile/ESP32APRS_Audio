@@ -1,0 +1,30 @@
+{
+  "name": "ESP32APRS_CDU (LU6JMF) v1.9-lu6jmf",
+  "version": "1.9-lu6jmf",
+  "home_assistant_domain": "esphome",
+  "funding_url": "",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        {
+          "path": "https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/download/v1.9-lu6jmf/bootloader.bin",
+          "offset": 4096
+        },
+        {
+          "path": "https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/download/v1.9-lu6jmf/partitions.bin",
+          "offset": 32768
+        },
+        {
+          "path": "https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/download/v1.9-lu6jmf/ESP32_NODISP_v1.9-lu6jmf.bin",
+          "offset": 65536
+        },
+        {
+          "path": "https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/download/v1.9-lu6jmf/littlefs.bin",
+          "offset": 4014080
+        }
+      ]
+    }
+  ]
+}

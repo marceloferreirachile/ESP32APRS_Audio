@@ -34,7 +34,7 @@ def copy_firmware(source, target, env):
     os.makedirs(output_dir, exist_ok=True)
 
     src = str(target[0])
-    dst = os.path.join(output_dir, "{}_V{}{}.bin".format(prefix, version, version_build))
+    dst = os.path.join(output_dir, "{}_v{}-{}.bin".format(prefix, version_raw, version_build))
 
     shutil.copy2(src, dst)
     print("\n*** Firmware saved: {} ***\n".format(dst))
@@ -42,10 +42,22 @@ def copy_firmware(source, target, env):
     # Write version info (used by webservice.cpp handle_check_version to detect
     # new firmware releases). JSON is used instead of plain text so it can be
     # parsed easily with ArduinoJson on the device.
+    tag = "v{}-{}".format(version_raw, version_build)
+    filename = "{}_{}.bin".format(prefix, tag)
+    today = datetime.date.today().isoformat()
     version_info = {
         "version": version_raw,
         "build": version_build,
-        "date": datetime.date.today().isoformat(),
+        "date": today,
+        "tag": tag,
+        "filename": filename,
+        # Filesystem/icons version: bumped independently by hand when the
+        # data/ folder (icons) actually changes - kept equal to the firmware
+        # version by default, edit manually if only icons change.
+        "fs_version": version_raw,
+        "fs_build": version_build,
+        "fs_date": today,
+        "fs_filename": "littlefs.bin",
     }
     version_info_path = os.path.join(output_dir, "version.json")
     with open(version_info_path, "w") as f:
