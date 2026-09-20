@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>ESP32APRS_CDU - Instalador (LU6JMF)</title>
+<title>ESP32APRS_CDU - Installer (LU6JMF)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
 <style>
@@ -16,29 +16,29 @@
 </head>
 <body>
 
-<h1>ESP32APRS_CDU (LU6JMF) — Instalador v1.9-lu6jmf</h1>
+<h1>ESP32APRS_CDU (LU6JMF) — Installer v1.9-lu6jmf</h1>
 
-<p>Firmware customizado do digipeater LU6JMF-10, baseado no ESP32APRS_Audio (nakhonthai). Grava firmware + ícones em um único clique, direto pelo navegador (Chrome ou Edge), sem instalar nada no computador.</p>
+<p>Custom firmware for the LU6JMF-10 digipeater, based on ESP32APRS_Audio (nakhonthai). Flashes firmware + icons in a single click, directly from your browser (Chrome or Edge), no software installation needed.</p>
 
 <div class="box">
   <ol>
-    <li>Conecte o ESP32 no computador via cabo USB.</li>
-    <li>Clique no botão abaixo e selecione a porta serial do dispositivo.</li>
-    <li>Aguarde a gravação terminar (~1 minuto).</li>
+    <li>Connect the ESP32 to your computer via USB cable.</li>
+    <li>Click the button below and select the device's serial port.</li>
+    <li>Wait for flashing to finish (~1 minute).</li>
   </ol>
 
   <esp-web-install-button manifest="./manifest.json">
-    <button slot="activate">Instalar ESP32APRS_CDU v1.9-lu6jmf</button>
-    <span slot="unsupported">Seu navegador não suporta Web Serial. Use Google Chrome ou Microsoft Edge no computador (não funciona em celular).</span>
-    <span slot="not-allowed">Esta página precisa estar em HTTPS para funcionar (já está).</span>
+    <button slot="activate">Install ESP32APRS_CDU v1.9-lu6jmf</button>
+    <span slot="unsupported">Your browser doesn't support Web Serial. Use Google Chrome or Microsoft Edge on a computer (doesn't work on mobile).</span>
+    <span slot="not-allowed">This page needs to be served over HTTPS to work (it already is).</span>
   </esp-web-install-button>
 </div>
 
 <div class="warn">
-  <strong>Atenção:</strong> isso apaga tudo que já estava gravado no dispositivo (configuração de WiFi/APRS incluída) e grava do zero. Depois de instalar, configure WiFi, indicativo e demais ajustes pela própria interface web do dispositivo (ele cria uma rede WiFi própria no primeiro boot).
+  <strong>Warning:</strong> this erases everything currently on the device (including WiFi/APRS configuration) and flashes from scratch. After installing, configure WiFi, callsign, and other settings through the device's own web interface (it creates its own WiFi network on first boot).
 </div>
 
-<p>Repositório: <a href="https://github.com/marceloferreirachile/ESP32APRS_Audio">github.com/marceloferreirachile/ESP32APRS_Audio</a></p>
+<p>Repository: <a href="https://github.com/marceloferreirachile/ESP32APRS_Audio">github.com/marceloferreirachile/ESP32APRS_Audio</a></p>
 
 </body>
 </html>
