@@ -1844,6 +1844,11 @@ void handle_storage(AsyncWebServerRequest *request)
 					  //"var form = document.getElementById('upload_form');"
 					  "$('form').submit(function(e){"
 					  "e.preventDefault();"
+					  "if(e.currentTarget.id === 'formDownload'){"
+					  "var fd = new FormData(e.currentTarget);"
+					  "window.open('/download?FILE=' + encodeURIComponent(fd.get('FILE')), '_blank');"
+					  "return;"
+					  "}"
 					  "var data = new FormData(e.currentTarget);\n"
 					  
 					  "if(e.currentTarget.id === 'upload_form'){ document.getElementById('upload_sumbit').disabled = true;"
@@ -1961,8 +1966,15 @@ void handle_storage(AsyncWebServerRequest *request)
 			struct tm *tmstruct = localtime(&t);
 			sprintf(strTime, "<td align=\"center\">%d-%02d-%02d %02d:%02d:%02d</td>", (tmstruct->tm_year) + 1900, (tmstruct->tm_mon) + 1, tmstruct->tm_mday, tmstruct->tm_hour, tmstruct->tm_min, tmstruct->tm_sec);
 			strcat(webString, strTime);
-			snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formDelete\" method=\"post\"><input name=\"delete\" type=\"hidden\" /><input name=\"FILE\" type=\"hidden\" value=\"%s\" /><button name=\"commit\" id=\"btnDelete\" type=\"submit\" style=\"background-color:red;color:white\">X</button></form></td>\n", fName);
-			strcat(webString, temp_buffer);
+			if (strcmp(fName, "fsversion.txt") == 0)
+			{
+				strcat(webString, "<td></td>");
+			}
+			else
+			{
+				snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formDelete\" method=\"post\"><input name=\"delete\" type=\"hidden\" /><input name=\"FILE\" type=\"hidden\" value=\"%s\" /><button name=\"commit\" id=\"btnDelete\" type=\"submit\" style=\"background-color:red;color:white\">X</button></form></td>\n", fName);
+				strcat(webString, temp_buffer);
+			}
 			snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formDownload\" method=\"post\"><input name=\"download\" type=\"hidden\" /><input name=\"FILE\" type=\"hidden\" value=\"%s\" /><button name=\"commit\" id=\"btnDownload\" type=\"submit\" style=\"background-color:green;color:white\">DOWNLOAD</button></form></td></tr>\n", fName);
 			strcat(webString, temp_buffer);
 		}
@@ -2052,6 +2064,8 @@ void handle_download(AsyncWebServerRequest *request)
 		dataType = "application/pdf";
 	else if (path.endsWith(".zip"))
 		dataType = "application/zip";
+	else if (path.endsWith(".txt"))
+		dataType = "text/plain";
 	else if (path.endsWith(".cfg"))
 		dataType = "text/html";
 	else if (path.endsWith(".json"))
