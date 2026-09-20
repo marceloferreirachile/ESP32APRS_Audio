@@ -12012,6 +12012,7 @@ void handle_about(AsyncWebServerRequest *request)
 	strcat(webString, "- Dashboard icons now match the aprs.fi style (previously used a different icon set)<br />\n");
 	strcat(webString, "- New: TCP KISS Server (MOD tab) lets PC software (Xastir, APRSIS32, etc) use this device as a network TNC over WiFi, 2 ports, no cable needed. Off by default<br />\n");
 strcat(webString, "- Fixed a buffer overflow risk in the IGATE/DIGI PHG Text field (unbounded strcpy on an 8-byte buffer)<br />\n");
+strcat(webString, "- Simplified OTA Online Firmware Update: now only checks and links to the new version, no more auto-download/auto-flash. Use Manual Firmware Update to install<br />\n");
 	strcat(webString, "</td></tr>\n");
 	strcat(webString, "</table><br />\n");
 
