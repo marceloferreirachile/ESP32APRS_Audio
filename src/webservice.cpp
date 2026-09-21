@@ -17,6 +17,7 @@
 #include <ESPCPUTemp.h>
 #include "esp_wifi.h"
 #include "esp_heap_caps.h"
+#include <esp_task_wdt.h>
 #include <ArduinoJson.h>
 #include <WiFiClientSecure.h>
 
@@ -43,7 +44,9 @@ char *allocateStringMemory(size_t size)
 #endif
 	// Regular heap allocation
 	ptr = (char *)calloc(size, sizeof(char));
-	memset(ptr, 0, size); // Initialize memory to zero
+	// calloc() already returns zero-initialized memory, and may return NULL
+	// under memory pressure -- do NOT memset() an unchecked pointer here,
+	// that was the real cause of the StoreProhibited crash (write to 0x0).
 	return ptr;
 }
 
@@ -292,296 +295,297 @@ void setMainPage(AsyncWebServerRequest *request)
 		return request->requestAuthentication();
 	}
 
-	// Using dynamic memory allocation instead of String
-	char *webString = allocateStringMemory(12000); // Initial buffer size, adjust as needed
+	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+	AsyncResponseStream *webString = request->beginResponseStream("text/html", 26000);
 	if (!webString)
 	{
 		return; // Memory allocation failed
 	}
 
-	strcpy(webString, "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
-	strcat(webString, "<meta name=\"robots\" content=\"index\" />\n");
-	strcat(webString, "<meta name=\"robots\" content=\"follow\" />\n");
-	strcat(webString, "<meta name=\"language\" content=\"English\" />\n");
-	strcat(webString, "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\" />\n");
-	strcat(webString, "<meta name=\"GENERATOR\" content=\"configure 20230924\" />\n");
-	strcat(webString, "<meta name=\"Author\" content=\"Mr.Somkiat Nakhonthai (HS5TQA)\" />\n");
-	strcat(webString, "<meta name=\"Description\" content=\"Web Embedded Configuration\" />\n");
-	strcat(webString, "<meta name=\"KeyWords\" content=\"ESP32,ESP32C3,AFSK,APRS\" />\n");
-	strcat(webString, "<meta http-equiv=\"Cache-Control\" content=\"no-cache, no-store, must-revalidate\" />\n");
-	strcat(webString, "<meta http-equiv=\"pragma\" content=\"no-cache\" />\n");
-	strcat(webString, "<link rel=\"shortcut icon\" href=\"http://aprs.nakhonthai.net/favicon.ico\" type=\"image/x-icon\" />\n");
-	strcat(webString, "<meta http-equiv=\"Expires\" content=\"0\" />\n");
+	webString->print("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
+	webString->print("<meta name=\"robots\" content=\"index\" />\n");
+	webString->print("<meta name=\"robots\" content=\"follow\" />\n");
+	webString->print("<meta name=\"language\" content=\"English\" />\n");
+	webString->print("<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\" />\n");
+	webString->print("<meta name=\"GENERATOR\" content=\"configure 20230924\" />\n");
+	webString->print("<meta name=\"Author\" content=\"Mr.Somkiat Nakhonthai (HS5TQA)\" />\n");
+	webString->print("<meta name=\"Description\" content=\"Web Embedded Configuration\" />\n");
+	webString->print("<meta name=\"KeyWords\" content=\"ESP32,ESP32C3,AFSK,APRS\" />\n");
+	webString->print("<meta http-equiv=\"Cache-Control\" content=\"no-cache, no-store, must-revalidate\" />\n");
+	webString->print("<meta http-equiv=\"pragma\" content=\"no-cache\" />\n");
+	webString->print("<link rel=\"shortcut icon\" href=\"http://aprs.nakhonthai.net/favicon.ico\" type=\"image/x-icon\" />\n");
+	webString->print("<meta http-equiv=\"Expires\" content=\"0\" />\n");
 
 	char temp_buffer[512];
 	if (strlen(config.host_name) > 0)
 	{
 		snprintf(temp_buffer, sizeof(temp_buffer), "<title>%s</title>\n", config.host_name);
-		strcat(webString, temp_buffer);
+		webString->print(temp_buffer);
 	}
 	else
 	{
-		strcat(webString, "<title>ESP32APRS_Audio</title>\n");
+		webString->print("<title>ESP32APRS_Audio</title>\n");
 	}
 
-	strcat(webString, "<link rel=\"stylesheet\" type=\"text/css\" href=\"style.css\" />\n");
-	strcat(webString, "<script src=\"/jquery-3.7.1.js\"></script>\n");
-	strcat(webString, "<script type=\"text/javascript\">\n");
-	strcat(webString, "function selectTab(evt, tabName) {\n");
-	strcat(webString, "var i, tabcontent, tablinks;\n");
-	strcat(webString, "tablinks = document.getElementsByClassName(\"nav-tabs\");\n");
-	strcat(webString, "for (i = 0; i < tablinks.length; i++) {\n");
-	strcat(webString, "tablinks[i].className = tablinks[i].className.replace(\" active\", \"\");\n");
-	strcat(webString, "}\n");
-	strcat(webString, "\n");
-	strcat(webString, "//document.getElementById(tabName).style.display = \"block\";\n");
-	strcat(webString, "if (tabName == 'DashBoard') {\n");
-	strcat(webString, "$(\"#contentmain\").load(\"/dashboard\");\n");
-	strcat(webString, "} else if (tabName == 'Radio') {\n");
-	strcat(webString, "$(\"#contentmain\").load(\"/radio\");\n");
-	strcat(webString, "} else if (tabName == 'IGATE') {\n");
-	strcat(webString, "$(\"#contentmain\").load(\"/igate\");\n");
-	strcat(webString, "} else if (tabName == 'DIGI') {\n");
-	strcat(webString, "$(\"#contentmain\").load(\"/digi\");\n");
-	strcat(webString, "} else if (tabName == 'TRACKER') {\n");
-	strcat(webString, "$(\"#contentmain\").load(\"/tracker\");\n");
-	strcat(webString, "} else if (tabName == 'WX') {\n");
-	strcat(webString, "$(\"#contentmain\").load(\"/wx\");\n");
-	strcat(webString, "} else if (tabName == 'TLM') {\n");
-	strcat(webString, "$(\"#contentmain\").load(\"/tlm\");\n");
-	strcat(webString, "} else if (tabName == 'SENSOR') {\n");
-	strcat(webString, "$(\"#contentmain\").load(\"/sensor\");\n");
-	strcat(webString, "} else if (tabName == 'VPN') {\n");
-	strcat(webString, "$(\"#contentmain\").load(\"/vpn\");\n");
+	webString->print("<link rel=\"stylesheet\" type=\"text/css\" href=\"style.css\" />\n");
+	webString->print("<script src=\"/jquery-3.7.1.js\"></script>\n");
+	webString->print("<script type=\"text/javascript\">\n");
+	webString->print("function selectTab(evt, tabName) {\n");
+	webString->print("var i, tabcontent, tablinks;\n");
+	webString->print("tablinks = document.getElementsByClassName(\"nav-tabs\");\n");
+	webString->print("for (i = 0; i < tablinks.length; i++) {\n");
+	webString->print("tablinks[i].className = tablinks[i].className.replace(\" active\", \"\");\n");
+	webString->print("}\n");
+	webString->print("\n");
+	webString->print("//document.getElementById(tabName).style.display = \"block\";\n");
+	webString->print("if (tabName == 'DashBoard') {\n");
+	webString->print("$(\"#contentmain\").load(\"/dashboard\");\n");
+	webString->print("} else if (tabName == 'Radio') {\n");
+	webString->print("$(\"#contentmain\").load(\"/radio\");\n");
+	webString->print("} else if (tabName == 'IGATE') {\n");
+	webString->print("$(\"#contentmain\").load(\"/igate\");\n");
+	webString->print("} else if (tabName == 'DIGI') {\n");
+	webString->print("$(\"#contentmain\").load(\"/digi\");\n");
+	webString->print("} else if (tabName == 'TRACKER') {\n");
+	webString->print("$(\"#contentmain\").load(\"/tracker\");\n");
+	webString->print("} else if (tabName == 'WX') {\n");
+	webString->print("$(\"#contentmain\").load(\"/wx\");\n");
+	webString->print("} else if (tabName == 'TLM') {\n");
+	webString->print("$(\"#contentmain\").load(\"/tlm\");\n");
+	webString->print("} else if (tabName == 'SENSOR') {\n");
+	webString->print("$(\"#contentmain\").load(\"/sensor\");\n");
+	webString->print("} else if (tabName == 'VPN') {\n");
+	webString->print("$(\"#contentmain\").load(\"/vpn\");\n");
 #ifdef MQTT
-	strcat(webString, "} else if (tabName == 'MQTT') {\n");
-	strcat(webString, "$(\"#contentmain\").load(\"/mqtt\");\n");
+	webString->print("} else if (tabName == 'MQTT') {\n");
+	webString->print("$(\"#contentmain\").load(\"/mqtt\");\n");
 #endif
-	strcat(webString, "} else if (tabName == 'MSG') {\n");
-	strcat(webString, "$(\"#contentmain\").load(\"/msg\");\n");
-	strcat(webString, "} else if (tabName == 'WiFi') {\n");
-	strcat(webString, "$(\"#contentmain\").load(\"/wireless\");\n");
-	strcat(webString, "} else if (tabName == 'MOD') {\n");
-	strcat(webString, "$(\"#contentmain\").load(\"/mod\");\n");
-	strcat(webString, "} else if (tabName == 'System') {\n");
-	strcat(webString, "$(\"#contentmain\").load(\"/system\");\n");
-	strcat(webString, "} else if (tabName == 'File') {\n");
-	strcat(webString, "$(\"#contentmain\").load(\"/storage\");\n");
-	strcat(webString, "} else if (tabName == 'About') {\n");
-	strcat(webString, "$(\"#contentmain\").load(\"/about\");\n");
-	strcat(webString, "}\n");
-	strcat(webString, "\n");
-	strcat(webString, "if (evt != null) evt.currentTarget.className += \" active\";\n");
-	strcat(webString, "}\n");
-	strcat(webString, "if (!!window.EventSource) {");
-	strcat(webString, "var source = new EventSource('/eventHeard');");
+	webString->print("} else if (tabName == 'MSG') {\n");
+	webString->print("$(\"#contentmain\").load(\"/msg\");\n");
+	webString->print("} else if (tabName == 'WiFi') {\n");
+	webString->print("$(\"#contentmain\").load(\"/wireless\");\n");
+	webString->print("} else if (tabName == 'MOD') {\n");
+	webString->print("$(\"#contentmain\").load(\"/mod\");\n");
+	webString->print("} else if (tabName == 'IO') {\n");
+	webString->print("$(\"#contentmain\").load(\"/mod2\");\n");
+	webString->print("} else if (tabName == 'System') {\n");
+	webString->print("$(\"#contentmain\").load(\"/system\");\n");
+	webString->print("} else if (tabName == 'File') {\n");
+	webString->print("$(\"#contentmain\").load(\"/storage\");\n");
+	webString->print("} else if (tabName == 'About') {\n");
+	webString->print("$(\"#contentmain\").load(\"/about\");\n");
+	webString->print("}\n");
+	webString->print("\n");
+	webString->print("if (evt != null) evt.currentTarget.className += \" active\";\n");
+	webString->print("}\n");
+	webString->print("if (!!window.EventSource) {");
+	webString->print("var source = new EventSource('/eventHeard');");
 
-	strcat(webString, "source.addEventListener('open', function(e) {");
-	strcat(webString, "console.log(\"Events Connected\");");
-	strcat(webString, "}, false);");
-	strcat(webString, "source.addEventListener('error', function(e) {");
-	strcat(webString, "if (e.target.readyState != EventSource.OPEN) {");
-	strcat(webString, "console.log(\"Events Disconnected\");");
-	strcat(webString, "}\n}, false);");
-	strcat(webString, "source.addEventListener('lastHeard', function(e) {");
-	// strcat(webString, "console.log(\"lastHeard\", e.data);");
-	strcat(webString, "var lh=document.getElementById(\"aprsTable\");");
-	strcat(webString, "if(lh != null) {renderTable(e.data);}");
-	strcat(webString, "}, false);\n}");
-	strcat(webString, "if (!!window.EventSource) {");
-	strcat(webString, "var source = new EventSource('/eventMsg');");
+	webString->print("source.addEventListener('open', function(e) {");
+	webString->print("console.log(\"Events Connected\");");
+	webString->print("}, false);");
+	webString->print("source.addEventListener('error', function(e) {");
+	webString->print("if (e.target.readyState != EventSource.OPEN) {");
+	webString->print("console.log(\"Events Disconnected\");");
+	webString->print("}\n}, false);");
+	webString->print("source.addEventListener('lastHeard', function(e) {");
+	// webString->print("console.log(\"lastHeard\", e.data);");
+	webString->print("var lh=document.getElementById(\"aprsTable\");");
+	webString->print("if(lh != null) {renderTable(e.data);}");
+	webString->print("}, false);\n}");
+	webString->print("if (!!window.EventSource) {");
+	webString->print("var source = new EventSource('/eventMsg');");
 
-	strcat(webString, "source.addEventListener('open', function(e) {");
-	strcat(webString, "console.log(\"Events MSG Connected\");");
-	strcat(webString, "}, false);");
-	strcat(webString, "source.addEventListener('error', function(e) {");
-	strcat(webString, "if (e.target.readyState != EventSource.OPEN) {");
-	strcat(webString, "console.log(\"Events MSG Disconnected\");");
-	strcat(webString, "}\n}, false);");
-	strcat(webString, "source.addEventListener('chatMsg', function(e) {");
-	// strcat(webString, "console.log(\"lastHeard\", e.data);");
-	strcat(webString, "var lh=document.getElementById(\"chatMsg\");");
-	strcat(webString, "if(lh != null) {lh.innerHTML = e.data;}");
-	strcat(webString, "}, false);\n}\n");
-	//strcat(webString, "</script>\n");
+	webString->print("source.addEventListener('open', function(e) {");
+	webString->print("console.log(\"Events MSG Connected\");");
+	webString->print("}, false);");
+	webString->print("source.addEventListener('error', function(e) {");
+	webString->print("if (e.target.readyState != EventSource.OPEN) {");
+	webString->print("console.log(\"Events MSG Disconnected\");");
+	webString->print("}\n}, false);");
+	webString->print("source.addEventListener('chatMsg', function(e) {");
+	// webString->print("console.log(\"lastHeard\", e.data);");
+	webString->print("var lh=document.getElementById(\"chatMsg\");");
+	webString->print("if(lh != null) {lh.innerHTML = e.data;}");
+	webString->print("}, false);\n}\n");
+	//webString->print("</script>\n");
 
-	strcat(webString, "let sortDirection = {};\n");
-	strcat(webString, "let currentSortKey = \"time\";\n\n");
-	strcat(webString, "function renderTable(raw) {\n");
-	// strcat(webString, "const tableBody = document.getElementById(\"aprsTableBody\");\n");
-	// //strcat(webString, "const tableBody = document.querySelector(\"#aprsTable tbody\");\n");
-	// strcat(webString, "if(tableBody == null) {return;}\n");
-	strcat(webString, "var data=JSON.parse(raw);\n");	
-	strcat(webString, "lastHeardSort(data);\n");
-	strcat(webString, "document.querySelectorAll(\"#aprsTable th[data-sort]\")\n");
-	strcat(webString, ".forEach(header => {\n\n");
-	strcat(webString, "header.addEventListener(\"click\", () => {\n\n");
-	strcat(webString, "const key = header.dataset.sort;\n\n");
-	strcat(webString, "sortDirection[key] = !sortDirection[key];\n");
-	strcat(webString, "currentSortKey = key;\n\n");	
-	strcat(webString, "clearArrows();\n\n");
-	strcat(webString, "const arrowSpan = header.querySelector(\".arrow\");\n");
-	strcat(webString, "arrowSpan.textContent = sortDirection[key] ? \"▲\" : \"▼\";\n\n");
-	strcat(webString, "lastHeardSort(data);\n");
-	strcat(webString, "printLastHeard(data);\n");
-	strcat(webString, "});\n\n");
-	strcat(webString, "});\n\n");
-	strcat(webString, "printLastHeard(data);\n");
-	strcat(webString, "}\n\n");
+	webString->print("let sortDirection = {};\n");
+	webString->print("let currentSortKey = \"time\";\n\n");
+	webString->print("function renderTable(raw) {\n");
+	// webString->print("const tableBody = document.getElementById(\"aprsTableBody\");\n");
+	// //webString->print("const tableBody = document.querySelector(\"#aprsTable tbody\");\n");
+	// webString->print("if(tableBody == null) {return;}\n");
+	webString->print("var data=JSON.parse(raw);\n");	
+	webString->print("lastHeardSort(data);\n");
+	webString->print("document.querySelectorAll(\"#aprsTable th[data-sort]\")\n");
+	webString->print(".forEach(header => {\n\n");
+	webString->print("header.addEventListener(\"click\", () => {\n\n");
+	webString->print("const key = header.dataset.sort;\n\n");
+	webString->print("sortDirection[key] = !sortDirection[key];\n");
+	webString->print("currentSortKey = key;\n\n");	
+	webString->print("clearArrows();\n\n");
+	webString->print("const arrowSpan = header.querySelector(\".arrow\");\n");
+	webString->print("arrowSpan.textContent = sortDirection[key] ? \"▲\" : \"▼\";\n\n");
+	webString->print("lastHeardSort(data);\n");
+	webString->print("printLastHeard(data);\n");
+	webString->print("});\n\n");
+	webString->print("});\n\n");
+	webString->print("printLastHeard(data);\n");
+	webString->print("}\n\n");
 
-	strcat(webString, "function iconFallback(imgEl, iconFile, initial) {\n");
-strcat(webString, "  imgEl.style.display='none';\n");
-strcat(webString, "  var span = imgEl.nextElementSibling;\n");
-strcat(webString, "  if (!span) return;\n");
-strcat(webString, "  span.style.display='inline-flex';\n");
-strcat(webString, "  span.style.alignItems='center';\n");
-strcat(webString, "  span.style.justifyContent='center';\n");
-strcat(webString, "  var code = parseInt(iconFile.split('-')[0], 10);\n");
-strcat(webString, "  var shapes = {\n");
-strcat(webString, "    62: \"<svg viewBox='0 0 24 24' width='18' height='18'><rect x='2' y='10' width='20' height='8' rx='2' fill='#1565c0'/><circle cx='7' cy='19' r='2' fill='#333'/><circle cx='17' cy='19' r='2' fill='#333'/></svg>\",\n");
-strcat(webString, "    45: \"<svg viewBox='0 0 24 24' width='18' height='18'><polygon points='12,3 22,12 19,12 19,21 5,21 5,12 2,12' fill='#8d6e63'/></svg>\",\n");
-strcat(webString, "    35: \"<svg viewBox='0 0 24 24' width='18' height='18'><polygon points='12,2 15,9 22,9 16,14 18,21 12,17 6,21 8,14 2,9 9,9' fill='#fbc02d'/></svg>\",\n");
-strcat(webString, "    95: \"<svg viewBox='0 0 24 24' width='18' height='18'><ellipse cx='12' cy='13' rx='9' ry='6' fill='#90a4ae'/></svg>\"\n");
-strcat(webString, "  };\n");
-strcat(webString, "  if (shapes[code]) {\n");
-strcat(webString, "    span.innerHTML = shapes[code];\n");
-strcat(webString, "  } else {\n");
-strcat(webString, "    span.style.width='18px'; span.style.height='18px'; span.style.borderRadius='50%';\n");
-strcat(webString, "    span.style.background='#607d8b'; span.style.color='#fff'; span.style.fontSize='11px'; span.style.fontWeight='bold';\n");
-strcat(webString, "    span.style.display='inline-flex'; span.style.alignItems='center'; span.style.justifyContent='center';\n");
-strcat(webString, "    span.textContent = (initial || '?').toUpperCase();\n");
-strcat(webString, "  }\n");
-strcat(webString, "}\n\n");
+	webString->print("function iconFallback(imgEl, iconFile, initial) {\n");
+webString->print("  imgEl.style.display='none';\n");
+webString->print("  var span = imgEl.nextElementSibling;\n");
+webString->print("  if (!span) return;\n");
+webString->print("  span.style.display='inline-flex';\n");
+webString->print("  span.style.alignItems='center';\n");
+webString->print("  span.style.justifyContent='center';\n");
+webString->print("  var code = parseInt(iconFile.split('-')[0], 10);\n");
+webString->print("  var shapes = {\n");
+webString->print("    62: \"<svg viewBox='0 0 24 24' width='18' height='18'><rect x='2' y='10' width='20' height='8' rx='2' fill='#1565c0'/><circle cx='7' cy='19' r='2' fill='#333'/><circle cx='17' cy='19' r='2' fill='#333'/></svg>\",\n");
+webString->print("    45: \"<svg viewBox='0 0 24 24' width='18' height='18'><polygon points='12,3 22,12 19,12 19,21 5,21 5,12 2,12' fill='#8d6e63'/></svg>\",\n");
+webString->print("    35: \"<svg viewBox='0 0 24 24' width='18' height='18'><polygon points='12,2 15,9 22,9 16,14 18,21 12,17 6,21 8,14 2,9 9,9' fill='#fbc02d'/></svg>\",\n");
+webString->print("    95: \"<svg viewBox='0 0 24 24' width='18' height='18'><ellipse cx='12' cy='13' rx='9' ry='6' fill='#90a4ae'/></svg>\"\n");
+webString->print("  };\n");
+webString->print("  if (shapes[code]) {\n");
+webString->print("    span.innerHTML = shapes[code];\n");
+webString->print("  } else {\n");
+webString->print("    span.style.width='18px'; span.style.height='18px'; span.style.borderRadius='50%';\n");
+webString->print("    span.style.background='#607d8b'; span.style.color='#fff'; span.style.fontSize='11px'; span.style.fontWeight='bold';\n");
+webString->print("    span.style.display='inline-flex'; span.style.alignItems='center'; span.style.justifyContent='center';\n");
+webString->print("    span.textContent = (initial || '?').toUpperCase();\n");
+webString->print("  }\n");
+webString->print("}\n\n");
 
-strcat(webString, "function iconError(imgEl, iconFile, initial) {\n");
-strcat(webString, "  if (!imgEl.dataset.stage) {\n");
-strcat(webString, "    imgEl.dataset.stage = 'local';\n");
-strcat(webString, "    imgEl.src = '/symbols/icons/' + iconFile;\n");
-strcat(webString, "  } else {\n");
-strcat(webString, "    iconFallback(imgEl, iconFile, initial);\n");
-strcat(webString, "  }\n");
-strcat(webString, "}\n\n");
+webString->print("function iconError(imgEl, iconFile, initial) {\n");
+webString->print("  if (!imgEl.dataset.stage) {\n");
+webString->print("    imgEl.dataset.stage = 'local';\n");
+webString->print("    imgEl.src = '/symbols/icons/' + iconFile;\n");
+webString->print("  } else {\n");
+webString->print("    iconFallback(imgEl, iconFile, initial);\n");
+webString->print("  }\n");
+webString->print("}\n\n");
 
-strcat(webString, "function printLastHeard(data) {\n");
-	strcat(webString, "const tableBody = document.getElementById(\"aprsTableBody\");\n");
-	//strcat(webString, "const tableBody = document.querySelector(\"#aprsTable tbody\");\n");
-	strcat(webString, "if(tableBody == null) {return;}\n");
-	strcat(webString, "tableBody.innerHTML = \"\";\n");
-	strcat(webString, "data.forEach(row => {\n");
-	strcat(webString, "const tr = document.createElement(\"tr\");\n");
-	strcat(webString, "tr.innerHTML = `\n");
-	strcat(webString, "<td>${row.time}</td>\n");
-	strcat(webString, "<td><img src=\"http://aprs.nakhonthai.net/symbols/icons/${row.icon}\" style=\"width:20px;height:20px;\" onerror=\"iconError(this, '${row.icon}', '${(row.callsign||'?').charAt(0)}');\"><span style=\"display:none;width:20px;height:20px;\"></span></td>\n");
+webString->print("function printLastHeard(data) {\n");
+	webString->print("const tableBody = document.getElementById(\"aprsTableBody\");\n");
+	//webString->print("const tableBody = document.querySelector(\"#aprsTable tbody\");\n");
+	webString->print("if(tableBody == null) {return;}\n");
+	webString->print("tableBody.innerHTML = \"\";\n");
+	webString->print("data.forEach(row => {\n");
+	webString->print("const tr = document.createElement(\"tr\");\n");
+	webString->print("tr.innerHTML = `\n");
+	webString->print("<td>${row.time}</td>\n");
+	webString->print("<td><img src=\"http://aprs.nakhonthai.net/symbols/icons/${row.icon}\" style=\"width:20px;height:20px;\" onerror=\"iconError(this, '${row.icon}', '${(row.callsign||'?').charAt(0)}');\"><span style=\"display:none;width:20px;height:20px;\"></span></td>\n");
 	// Clickable callsign -> aprs.fi - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
-	strcat(webString, "<td><a style=\"text-decoration:underline;\" href=\"https://www.qrz.com/db/${encodeURIComponent(row.callsign.split('-')[0])}\" target=\"_blank\" rel=\"noopener\">${row.callsign}</a> <a href=\"https://aprs.fi/#!z=12&call=a%2F${encodeURIComponent(row.callsign)}&timerange=3600&tail=3600\" target=\"_blank\" rel=\"noopener\" title=\"Ver en aprs.fi\">🗺</a></td>\n");
-	strcat(webString, "<td align=\"left\">${row.path}</td>\n");
-	strcat(webString, "<td>${row.dx !== null ? row.dx : \"-\"}</td>\n");
-	strcat(webString, "<td>${row.packet}</td>\n");
-	strcat(webString, "<td style=\"color:green;\">${row.audio !== '-' ? row.audio + \"dBV\" : \"-\"}</td>\n");
-	strcat(webString, "`;\n");
-	strcat(webString, "tableBody.appendChild(tr);\n");
-	strcat(webString, "});\n");
-	strcat(webString, "}\n\n");
+	webString->print("<td><a style=\"text-decoration:underline;\" href=\"https://www.qrz.com/db/${encodeURIComponent(row.callsign.split('-')[0])}\" target=\"_blank\" rel=\"noopener\">${row.callsign}</a> <a href=\"https://aprs.fi/#!z=12&call=a%2F${encodeURIComponent(row.callsign)}&timerange=3600&tail=3600\" target=\"_blank\" rel=\"noopener\" title=\"Ver en aprs.fi\">🗺</a></td>\n");
+	webString->print("<td align=\"left\">${row.path}</td>\n");
+	webString->print("<td>${row.dx !== null ? row.dx : \"-\"}</td>\n");
+	webString->print("<td>${row.packet}</td>\n");
+	webString->print("<td style=\"color:green;\">${row.audio !== '-' ? row.audio + \"dBV\" : \"-\"}</td>\n");
+	webString->print("`;\n");
+	webString->print("tableBody.appendChild(tr);\n");
+	webString->print("});\n");
+	webString->print("}\n\n");
 
-	strcat(webString, "function clearArrows() {\n");
-	strcat(webString, "document.querySelectorAll(\".arrow\").forEach(a => a.textContent = \"\");\n");
-	strcat(webString, "}\n\n");
-	strcat(webString, "function lastHeardSort(data) {\nvar key=currentSortKey;\n");
-	strcat(webString, "data.sort((a, b) => {\n\n");
-	strcat(webString, "let valA = a[key];\n");
-	strcat(webString, "let valB = b[key];\n\n");
-	strcat(webString, "if (key === \"time\") {\n");
-	//strcat(webString, "// Parse time in dd hh:mm:ss format\n");
-	strcat(webString, "const [dayTime, timePart] = valA.split(' ');\n");
-	strcat(webString, "const [hours, minutes, seconds] = timePart.split(':');\n");
-	strcat(webString, "valA = parseInt(dayTime) * 86400 + parseInt(hours) * 3600 + parseInt(minutes) * 60 + parseInt(seconds);\n");
-	//strcat(webString, "                \n");
-	strcat(webString, "const [dayTimeB, timePartB] = valB.split(' ');\n");
-	strcat(webString, "const [hoursB, minutesB, secondsB] = timePartB.split(':');\n");
-	strcat(webString, "valB = parseInt(dayTimeB) * 86400 + parseInt(hoursB) * 3600 + parseInt(minutesB) * 60 + parseInt(secondsB);\n");
-	strcat(webString, "}\n\n");
-	strcat(webString, "if (valA === null) return 1;\n");
-	strcat(webString, "if (valB === null) return -1;\n\n");
-	strcat(webString, "if (valA < valB) return sortDirection[key] ? -1 : 1;\n");
-	strcat(webString, "if (valA > valB) return sortDirection[key] ? 1 : -1;\n");
-	strcat(webString, "return 0;\n");
-	strcat(webString, "});\n\n");
-	strcat(webString, "}\n\n");
-	strcat(webString, "</script>\n");
-	strcat(webString, "</head>\n");
-	//strcat(webString, "\n");
-	strcat(webString, "<body onload=\"selectTab(event, 'DashBoard')\">\n");
-	strcat(webString, "\n");
-	strcat(webString, "<div class=\"container\">\n");
-	strcat(webString, "<div class=\"header\">\n");
-	// strcat(webString, "<div style=\"font-size: 8px; text-align: right; padding-right: 8px;\">ESP32IGate Firmware V" + String(VERSION) + "</div>\n");
-	// strcat(webString, "<div style=\"font-size: 8px; text-align: right; padding-right: 8px;\"><a href=\"/logout\">[LOG OUT]</a></div>\n");
+	webString->print("function clearArrows() {\n");
+	webString->print("document.querySelectorAll(\".arrow\").forEach(a => a.textContent = \"\");\n");
+	webString->print("}\n\n");
+	webString->print("function lastHeardSort(data) {\nvar key=currentSortKey;\n");
+	webString->print("data.sort((a, b) => {\n\n");
+	webString->print("let valA = a[key];\n");
+	webString->print("let valB = b[key];\n\n");
+	webString->print("if (key === \"time\") {\n");
+	//webString->print("// Parse time in dd hh:mm:ss format\n");
+	webString->print("const [dayTime, timePart] = valA.split(' ');\n");
+	webString->print("const [hours, minutes, seconds] = timePart.split(':');\n");
+	webString->print("valA = parseInt(dayTime) * 86400 + parseInt(hours) * 3600 + parseInt(minutes) * 60 + parseInt(seconds);\n");
+	//webString->print("                \n");
+	webString->print("const [dayTimeB, timePartB] = valB.split(' ');\n");
+	webString->print("const [hoursB, minutesB, secondsB] = timePartB.split(':');\n");
+	webString->print("valB = parseInt(dayTimeB) * 86400 + parseInt(hoursB) * 3600 + parseInt(minutesB) * 60 + parseInt(secondsB);\n");
+	webString->print("}\n\n");
+	webString->print("if (valA === null) return 1;\n");
+	webString->print("if (valB === null) return -1;\n\n");
+	webString->print("if (valA < valB) return sortDirection[key] ? -1 : 1;\n");
+	webString->print("if (valA > valB) return sortDirection[key] ? 1 : -1;\n");
+	webString->print("return 0;\n");
+	webString->print("});\n\n");
+	webString->print("}\n\n");
+	webString->print("</script>\n");
+	webString->print("</head>\n");
+	//webString->print("\n");
+	webString->print("<body onload=\"selectTab(event, 'DashBoard')\">\n");
+	webString->print("\n");
+	webString->print("<div class=\"container\">\n");
+	webString->print("<div class=\"header\">\n");
+	// webString->print("<div style=\"font-size: 8px; text-align: right; padding-right: 8px;\">ESP32IGate Firmware V" + String(VERSION) + "</div>\n");
+	// webString->print("<div style=\"font-size: 8px; text-align: right; padding-right: 8px;\"><a href=\"/logout\">[LOG OUT]</a></div>\n");
 	if (strlen(config.host_name) > 0)
 	{
 		snprintf(temp_buffer, sizeof(temp_buffer), "<h1>%s</h1>\n", config.host_name);
-		strcat(webString, temp_buffer);
+		webString->print(temp_buffer);
 	}
 	else
 	{
-		strcat(webString, "<h1>ESP32APRS_Audio</h1>\n");
+		webString->print("<h1>ESP32APRS_Audio</h1>\n");
 	}
-	strcat(webString, "<div style=\"font-size: 8px; text-align: right; padding-right: 8px;\"><a href=\"/logout\">[LOG OUT]</a></div>\n");
-	strcat(webString, "<div class=\"row\">\n");
-	strcat(webString, "<ul class=\"nav nav-tabs\" style=\"margin: 5px;\">\n");
-	strcat(webString, "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'DashBoard')\">DashBoard</button>\n");
-	strcat(webString, "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'Radio')\" id=\"btnRadio\">Radio</button>\n");
-	strcat(webString, "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'IGATE')\">IGATE</button>\n");
-	strcat(webString, "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'DIGI')\">DIGI</button>\n");
-	strcat(webString, "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'TRACKER')\">TRACKER</button>\n");
-	strcat(webString, "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'WX')\">WX</button>\n");
-	strcat(webString, "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'TLM')\">TLM</button>\n");
-	strcat(webString, "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'SENSOR')\">SENSOR</button>\n");
-	strcat(webString, "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'VPN')\">VPN</button>\n");
+	webString->print("<div style=\"font-size: 8px; text-align: right; padding-right: 8px;\"><a href=\"/logout\">[LOG OUT]</a></div>\n");
+	webString->print("<div class=\"row\">\n");
+	webString->print("<ul class=\"nav nav-tabs\" style=\"margin: 5px;\">\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'DashBoard')\">DashBoard</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'Radio')\" id=\"btnRadio\">Radio</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'IGATE')\">IGATE</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'DIGI')\">DIGI</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'TRACKER')\">TRACKER</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'WX')\">WX</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'TLM')\">TLM</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'SENSOR')\">SENSOR</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'VPN')\">VPN</button>\n");
 #ifdef MQTT
-	strcat(webString, "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'MQTT')\">MQTT</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'MQTT')\">MQTT</button>\n");
 #endif
-	strcat(webString, "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'MSG')\">MSG</button>\n");
-	strcat(webString, "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'WiFi')\">WiFi</button>\n");
-	strcat(webString, "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'MOD')\">MOD</button>\n");
-	strcat(webString, "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'System')\">System</button>\n");
-	strcat(webString, "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'File')\">File</button>\n");
-	strcat(webString, "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'About')\">About</button>\n");
-	strcat(webString, "</ul>\n");
-	strcat(webString, "</div>\n");
-	strcat(webString, "</div>\n");
-	strcat(webString, "\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'MSG')\">MSG</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'WiFi')\">WiFi</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'MOD')\">MOD</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'IO')\">I/O</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'System')\">System</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'File')\">File</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'About')\">About</button>\n");
+	webString->print("</ul>\n");
+	webString->print("</div>\n");
+	webString->print("</div>\n");
+	webString->print("\n");
 
-	strcat(webString, "<div class=\"contentwide\" id=\"contentmain\"  style=\"font-size: 2pt;\">\n");
-	strcat(webString, "\n");
-	strcat(webString, "</div>\n");
-	strcat(webString, "<br />\n");
-	strcat(webString, "<div class=\"footer\">\n");
-	strcat(webString, "ESP32APRS_Audio Web Configuration<br />Copy right ©2023.\n");
-	strcat(webString, "<br />\n");
-	strcat(webString, "</div>\n");
-	strcat(webString, "</div>\n");
-	strcat(webString, "<!-- <script type=\"text/javascript\" src=\"/nice-select.min.js\"></script> -->\n");
-	strcat(webString, "<script type=\"text/javascript\">\n");
-	strcat(webString, "var selectize = document.querySelectorAll('select')\n");
-	strcat(webString, "var options = { searchable: true };\n");
-	strcat(webString, "selectize.forEach(function (select) {\n");
-	strcat(webString, "if (select.length > 30 && null === select.onchange && !select.name.includes(\"ExtendedId\")) {\n");
-	strcat(webString, "select.classList.add(\"small\", \"selectize\");\n");
-	strcat(webString, "tabletd = select.closest('td');\n");
-	strcat(webString, "tabletd.style.cssText = 'overflow-x:unset';\n");
-	strcat(webString, "NiceSelect.bind(select, options);\n");
-	strcat(webString, "}\n");
-	strcat(webString, "});\n");
-	strcat(webString, "</script>\n");
-	strcat(webString, "</body>\n");
-	strcat(webString, "</html>");
+	webString->print("<div class=\"contentwide\" id=\"contentmain\"  style=\"font-size: 2pt;\">\n");
+	webString->print("\n");
+	webString->print("</div>\n");
+	webString->print("<br />\n");
+	webString->print("<div class=\"footer\">\n");
+	webString->print("ESP32APRS_Audio Web Configuration<br />Copy right ©2023.\n");
+	webString->print("<br />\n");
+	webString->print("</div>\n");
+	webString->print("</div>\n");
+	webString->print("<!-- <script type=\"text/javascript\" src=\"/nice-select.min.js\"></script> -->\n");
+	webString->print("<script type=\"text/javascript\">\n");
+	webString->print("var selectize = document.querySelectorAll('select')\n");
+	webString->print("var options = { searchable: true };\n");
+	webString->print("selectize.forEach(function (select) {\n");
+	webString->print("if (select.length > 30 && null === select.onchange && !select.name.includes(\"ExtendedId\")) {\n");
+	webString->print("select.classList.add(\"small\", \"selectize\");\n");
+	webString->print("tabletd = select.closest('td');\n");
+	webString->print("tabletd.style.cssText = 'overflow-x:unset';\n");
+	webString->print("NiceSelect.bind(select, options);\n");
+	webString->print("}\n");
+	webString->print("});\n");
+	webString->print("</script>\n");
+	webString->print("</body>\n");
+	webString->print("</html>");
 
 
-	AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)webString);
-	response->addHeader("Sensor", "content");
-	response->addHeader("Cache-Control", "no-cache");
-	request->send(response);
-	free(webString);
+	webString->addHeader("Sensor", "content");
+	webString->addHeader("Cache-Control", "no-cache");
+	request->send(webString);
 	lastHeardTimeout = 0;
 	lastHeard_Flag = true;
 }
@@ -624,166 +628,166 @@ void handle_dashboard(AsyncWebServerRequest *request)
 	// }
 	StandByTick = millis() + (config.pwr_stanby_delay * 1000);
 
-	// Using dynamic memory allocation instead of String
-	char *webString = allocateStringMemory(4096); // Initial buffer size, adjust as needed
+	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+	AsyncResponseStream *webString = request->beginResponseStream("text/html", 14000);
 	if (!webString)
 	{
 		return; // Memory allocation failed
 	}
 
-	strcpy(webString, "<script type=\"text/javascript\">\n");
-	strcat(webString, "function reloadSysInfo() {\n");
-	strcat(webString, "$(\"#sysInfo\").load(\"/sysinfo\", function () { setTimeout(reloadSysInfo, 60000) });\n");
-	strcat(webString, "}\n");
-	strcat(webString, "setTimeout(reloadSysInfo(), 100);\n");
-	strcat(webString, "function reloadSidebarInfo() {\n");
-	strcat(webString, "$(\"#sidebarInfo\").load(\"/sidebarInfo\", function () { setTimeout(reloadSidebarInfo, 10000) });\n");
-	strcat(webString, "}\n");
-	strcat(webString, "setTimeout(reloadSidebarInfo, 1000);\n");
-	strcat(webString, "$(window).trigger('resize');\n");
+	webString->print("<script type=\"text/javascript\">\n");
+	webString->print("function reloadSysInfo() {\n");
+	webString->print("$(\"#sysInfo\").load(\"/sysinfo\", function () { setTimeout(reloadSysInfo, 60000) });\n");
+	webString->print("}\n");
+	webString->print("setTimeout(reloadSysInfo(), 100);\n");
+	webString->print("function reloadSidebarInfo() {\n");
+	webString->print("$(\"#sidebarInfo\").load(\"/sidebarInfo\", function () { setTimeout(reloadSidebarInfo, 10000) });\n");
+	webString->print("}\n");
+	webString->print("setTimeout(reloadSidebarInfo, 1000);\n");
+	webString->print("$(window).trigger('resize');\n");
 
-	strcat(webString, "</script>\n");
+	webString->print("</script>\n");
 
-	//strcat(webString, "<script>\n");
-	// strcat(webString, "let aprsData = [\n");
-	// strcat(webString, "  { time: \"21:54:23\", icon: \"91-1.png\", callsign: \"HS5TQA-7\", path: \"RF: WIDE1-1\", dx: 0.0, packet: 2, audio: -19.6 },\n");
-	// strcat(webString, "  { time: \"22:13:33\", icon: \"66-1.png\", callsign: \"HS5TQA-3\", path: \"RF: DIRECT\", dx: null, packet: 9, audio: -14.1 }\n");
-	// strcat(webString, "];\n\n");
-	// strcat(webString, "const tableBody = document.querySelector(\"#aprsTable tbody\");\n");
-	// strcat(webString, "let sortDirection = {};\n");
-	// strcat(webString, "let currentSortKey = null;\n\n");
-	// strcat(webString, "function renderTable(data) {\n");
-	// strcat(webString, "    tableBody.innerHTML = \"\";\n");
-	// strcat(webString, "    data.forEach(row => {\n");
-	// strcat(webString, "        const tr = document.createElement(\"tr\");\n");
-	// strcat(webString, "        tr.innerHTML = `\n");
-	// strcat(webString, "            <td>${row.time}</td>\n");
-	// strcat(webString, "            <td><img src=\\\"http://aprs.nakhonthai.net/symbols/icons/${row.icon}\\\"></td>\n");
-	// strcat(webString, "            <td>${row.callsign}</td>\n");
-	// strcat(webString, "            <td>${row.path}</td>\n");
-	// strcat(webString, "            <td>${row.dx !== null ? row.dx + \\\" km\\\" : \\\"-\\\"}</td>\n");
-	// strcat(webString, "            <td>${row.packet}</td>\n");
-	// strcat(webString, "            <td style=\\\"color:green;\\\">${row.audio !== null ? row.audio + \\\" dBV\\\" : \\\"-\\\"}</td>\n");
-	// strcat(webString, "        `;\n");
-	// strcat(webString, "        tableBody.appendChild(tr);\n");
-	// strcat(webString, "    });\n");
-	// strcat(webString, "}\n\n");
-	// strcat(webString, "function clearArrows() {\n");
-	// strcat(webString, "    document.querySelectorAll(\\\".arrow\\\").forEach(a => a.textContent = \\\"\\\");\n");
-	// strcat(webString, "}\n\n");
-	// strcat(webString, "document.querySelectorAll(\\\"#aprsTable th[data-sort]\\\")\n");
-	// strcat(webString, ".forEach(header => {\n\n");
-	// strcat(webString, "    header.addEventListener(\\\"click\\\", () => {\n\n");
-	// strcat(webString, "        const key = header.dataset.sort;\n\n");
-	// strcat(webString, "        sortDirection[key] = !sortDirection[key];\n");
-	// strcat(webString, "        currentSortKey = key;\n\n");
-	// strcat(webString, "        aprsData.sort((a, b) => {\n\n");
-	// strcat(webString, "            let valA = a[key];\n");
-	// strcat(webString, "            let valB = b[key];\n\n");
-	// strcat(webString, "            if (key === \\\"time\\\") {\n");
-	// strcat(webString, "                valA = new Date(\\\"1970-01-01T\\\" + valA);\n");
-	// strcat(webString, "                valB = new Date(\\\"1970-01-01T\\\" + valB);\n");
-	// strcat(webString, "            }\n\n");
-	// strcat(webString, "            if (valA === null) return 1;\n");
-	// strcat(webString, "            if (valB === null) return -1;\n\n");
-	// strcat(webString, "            if (valA < valB) return sortDirection[key] ? -1 : 1;\n");
-	// strcat(webString, "            if (valA > valB) return sortDirection[key] ? 1 : -1;\n");
-	// strcat(webString, "            return 0;\n");
-	// strcat(webString, "        });\n\n");
-	// strcat(webString, "        clearArrows();\n\n");
-	// strcat(webString, "        const arrowSpan = header.querySelector(\\\".arrow\\\");\n");
-	// strcat(webString, "        arrowSpan.textContent = sortDirection[key] ? \\\"▲\\\" : \\\"▼\\\";\n\n");
-	// strcat(webString, "        renderTable(aprsData);\n");
-	// strcat(webString, "    });\n\n");
-	// strcat(webString, "});\n\n");
-	// strcat(webString, "renderTable(aprsData);\n");
-	// strcat(webString, "</script>\n");
+	//webString->print("<script>\n");
+	// webString->print("let aprsData = [\n");
+	// webString->print("  { time: \"21:54:23\", icon: \"91-1.png\", callsign: \"HS5TQA-7\", path: \"RF: WIDE1-1\", dx: 0.0, packet: 2, audio: -19.6 },\n");
+	// webString->print("  { time: \"22:13:33\", icon: \"66-1.png\", callsign: \"HS5TQA-3\", path: \"RF: DIRECT\", dx: null, packet: 9, audio: -14.1 }\n");
+	// webString->print("];\n\n");
+	// webString->print("const tableBody = document.querySelector(\"#aprsTable tbody\");\n");
+	// webString->print("let sortDirection = {};\n");
+	// webString->print("let currentSortKey = null;\n\n");
+	// webString->print("function renderTable(data) {\n");
+	// webString->print("    tableBody.innerHTML = \"\";\n");
+	// webString->print("    data.forEach(row => {\n");
+	// webString->print("        const tr = document.createElement(\"tr\");\n");
+	// webString->print("        tr.innerHTML = `\n");
+	// webString->print("            <td>${row.time}</td>\n");
+	// webString->print("            <td><img src=\\\"http://aprs.nakhonthai.net/symbols/icons/${row.icon}\\\"></td>\n");
+	// webString->print("            <td>${row.callsign}</td>\n");
+	// webString->print("            <td>${row.path}</td>\n");
+	// webString->print("            <td>${row.dx !== null ? row.dx + \\\" km\\\" : \\\"-\\\"}</td>\n");
+	// webString->print("            <td>${row.packet}</td>\n");
+	// webString->print("            <td style=\\\"color:green;\\\">${row.audio !== null ? row.audio + \\\" dBV\\\" : \\\"-\\\"}</td>\n");
+	// webString->print("        `;\n");
+	// webString->print("        tableBody.appendChild(tr);\n");
+	// webString->print("    });\n");
+	// webString->print("}\n\n");
+	// webString->print("function clearArrows() {\n");
+	// webString->print("    document.querySelectorAll(\\\".arrow\\\").forEach(a => a.textContent = \\\"\\\");\n");
+	// webString->print("}\n\n");
+	// webString->print("document.querySelectorAll(\\\"#aprsTable th[data-sort]\\\")\n");
+	// webString->print(".forEach(header => {\n\n");
+	// webString->print("    header.addEventListener(\\\"click\\\", () => {\n\n");
+	// webString->print("        const key = header.dataset.sort;\n\n");
+	// webString->print("        sortDirection[key] = !sortDirection[key];\n");
+	// webString->print("        currentSortKey = key;\n\n");
+	// webString->print("        aprsData.sort((a, b) => {\n\n");
+	// webString->print("            let valA = a[key];\n");
+	// webString->print("            let valB = b[key];\n\n");
+	// webString->print("            if (key === \\\"time\\\") {\n");
+	// webString->print("                valA = new Date(\\\"1970-01-01T\\\" + valA);\n");
+	// webString->print("                valB = new Date(\\\"1970-01-01T\\\" + valB);\n");
+	// webString->print("            }\n\n");
+	// webString->print("            if (valA === null) return 1;\n");
+	// webString->print("            if (valB === null) return -1;\n\n");
+	// webString->print("            if (valA < valB) return sortDirection[key] ? -1 : 1;\n");
+	// webString->print("            if (valA > valB) return sortDirection[key] ? 1 : -1;\n");
+	// webString->print("            return 0;\n");
+	// webString->print("        });\n\n");
+	// webString->print("        clearArrows();\n\n");
+	// webString->print("        const arrowSpan = header.querySelector(\\\".arrow\\\");\n");
+	// webString->print("        arrowSpan.textContent = sortDirection[key] ? \\\"▲\\\" : \\\"▼\\\";\n\n");
+	// webString->print("        renderTable(aprsData);\n");
+	// webString->print("    });\n\n");
+	// webString->print("});\n\n");
+	// webString->print("renderTable(aprsData);\n");
+	// webString->print("</script>\n");
 
 
-	strcat(webString, "<div id=\"sysInfo\">\n");
-	strcat(webString, "</div>\n");
+	webString->print("<div id=\"sysInfo\">\n");
+	webString->print("</div>\n");
 
-	strcat(webString, "<br />\n");
-	strcat(webString, "<div class=\"nav-status\">\n");
-	strcat(webString, "<div id=\"sidebarInfo\">\n");
-	strcat(webString, "</div>\n");
-	strcat(webString, "<br />\n");
+	webString->print("<br />\n");
+	webString->print("<div class=\"nav-status\">\n");
+	webString->print("<div id=\"sidebarInfo\">\n");
+	webString->print("</div>\n");
+	webString->print("<br />\n");
 
-	strcat(webString, "<table>\n");
-	strcat(webString, "<tr>\n");
-	strcat(webString, "<th colspan=\"2\">Radio Info</th>\n");
-	strcat(webString, "</tr>\n");
+	webString->print("<table>\n");
+	webString->print("<tr>\n");
+	webString->print("<th colspan=\"2\">Radio Info</th>\n");
+	webString->print("</tr>\n");
 	if (config.rf_en)
 	{
-		strcat(webString, "<tr>\n");
-		strcat(webString, "<td>Freq.TX</td>\n");
+		webString->print("<tr>\n");
+		webString->print("<td>Freq.TX</td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%.4f MHz</td>\n", config.freq_tx);
-		strcat(webString, temp_buffer);
+		webString->print(temp_buffer);
 
-		strcat(webString, "</tr>\n");
-		strcat(webString, "<tr>\n");
-		strcat(webString, "<td>Freq.RX</td>\n");
+		webString->print("</tr>\n");
+		webString->print("<tr>\n");
+		webString->print("<td>Freq.RX</td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%.4f MHz</td>\n", config.freq_rx);
-		strcat(webString, temp_buffer);
+		webString->print(temp_buffer);
 
-		strcat(webString, "</tr>\n");
-		strcat(webString, "<tr>\n");
-		strcat(webString, "<td>TX PWR</td>\n");
+		webString->print("</tr>\n");
+		webString->print("<tr>\n");
+		webString->print("<td>TX PWR</td>\n");
 		if (config.rf_power)
-			strcat(webString, "<td>HIGH</td>\n");
+			webString->print("<td>HIGH</td>\n");
 		else
-			strcat(webString, "<td>LOW</td>\n");
-		strcat(webString, "</tr>\n");
+			webString->print("<td>LOW</td>\n");
+		webString->print("</tr>\n");
 	}
-	strcat(webString, "<tr>\n");
-	strcat(webString, "<td>MODEM</td>\n");
+	webString->print("<tr>\n");
+	webString->print("<td>MODEM</td>\n");
 
 	
 	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%s</td>\n", MODEM_TYPE[config.modem_type]);
-	strcat(webString, temp_buffer);
+	webString->print(temp_buffer);
 
-	strcat(webString, "</tr>\n");
-	strcat(webString, "<tr>\n");
-	strcat(webString, "<td>FX.25</td>\n");
+	webString->print("</tr>\n");
+	webString->print("<tr>\n");
+	webString->print("<td>FX.25</td>\n");
 
 	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%s</td>\n", FX25_MODE[config.fx25_mode]);
-	strcat(webString, temp_buffer);
+	webString->print(temp_buffer);
 
-	strcat(webString, "</tr>\n");
-	strcat(webString, "</table>\n");
-	strcat(webString, "\n");
+	webString->print("</tr>\n");
+	webString->print("</table>\n");
+	webString->print("\n");
 	if (config.igate_en)
 	{
-		strcat(webString, "<br />\n");
-		strcat(webString, "<table>\n");
-		strcat(webString, "<tr>\n");
-		strcat(webString, "<th colspan=\"2\">APRS-IS SERVER</th>\n");
-		strcat(webString, "</tr>\n");
-		strcat(webString, "<tr>\n");
-		strcat(webString, "<td>HOST</td>\n");
+		webString->print("<br />\n");
+		webString->print("<table>\n");
+		webString->print("<tr>\n");
+		webString->print("<th colspan=\"2\">APRS-IS SERVER</th>\n");
+		webString->print("</tr>\n");
+		webString->print("<tr>\n");
+		webString->print("<td>HOST</td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%s</td>\n", config.aprs_host);
-		strcat(webString, temp_buffer);
+		webString->print(temp_buffer);
 
-		strcat(webString, "</tr>\n");
-		strcat(webString, "<tr>\n");
-		strcat(webString, "<td>PORT</td>\n");
+		webString->print("</tr>\n");
+		webString->print("<tr>\n");
+		webString->print("<td>PORT</td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%d</td>\n", config.aprs_port);
-		strcat(webString, temp_buffer);
+		webString->print(temp_buffer);
 
-		strcat(webString, "</tr>\n");
-		strcat(webString, "</table>\n");
+		webString->print("</tr>\n");
+		webString->print("</table>\n");
 	}
-	strcat(webString, "<br />\n");
-	strcat(webString, "<table>\n");
-	strcat(webString, "<tr>\n");
-	strcat(webString, "<th colspan=\"2\">WiFi</th>\n");
-	strcat(webString, "</tr>\n");
-	strcat(webString, "<tr>\n");
-	strcat(webString, "<td>MODE</td>\n");
+	webString->print("<br />\n");
+	webString->print("<table>\n");
+	webString->print("<tr>\n");
+	webString->print("<th colspan=\"2\">WiFi</th>\n");
+	webString->print("</tr>\n");
+	webString->print("<tr>\n");
+	webString->print("<td>MODE</td>\n");
 	const char *strWiFiMode = "OFF";
 	if (config.wifi_mode == WIFI_STA_FIX)
 	{
@@ -799,51 +803,51 @@ void handle_dashboard(AsyncWebServerRequest *request)
 	}
 
 	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%s</td>\n", strWiFiMode);
-	strcat(webString, temp_buffer);
+	webString->print(temp_buffer);
 
-	strcat(webString, "</tr>\n");
-	strcat(webString, "<tr>\n");
-	strcat(webString, "<td>SSID</td>\n");
+	webString->print("</tr>\n");
+	webString->print("<tr>\n");
+	webString->print("<td>SSID</td>\n");
 
 	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%s</td>\n", WiFi.SSID().c_str());
-	strcat(webString, temp_buffer);
+	webString->print(temp_buffer);
 
-	strcat(webString, "</tr>\n");
-	strcat(webString, "<tr>\n");
-	strcat(webString, "<td>RSSI</td>\n");
+	webString->print("</tr>\n");
+	webString->print("<tr>\n");
+	webString->print("<td>RSSI</td>\n");
 	if (WiFi.isConnected())
 	{
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%d dBm</td>\n", WiFi.RSSI());
-		strcat(webString, temp_buffer);
+		webString->print(temp_buffer);
 	}
 	else
-		strcat(webString, "<td style=\"background:#606060; color:#b0b0b0;\" aria-disabled=\"true\">Disconnect</td>\n");
-	strcat(webString, "</tr>\n");
-	strcat(webString, "</table>\n");
-	strcat(webString, "<br />\n");
+		webString->print("<td style=\"background:#606060; color:#b0b0b0;\" aria-disabled=\"true\">Disconnect</td>\n");
+	webString->print("</tr>\n");
+	webString->print("</table>\n");
+	webString->print("<br />\n");
 #ifdef BLUETOOTH
-	strcat(webString, "<table>\n");
-	strcat(webString, "<tr>\n");
+	webString->print("<table>\n");
+	webString->print("<tr>\n");
 
-	strcat(webString, "<th colspan=\"2\">Bluetooth</th>\n");
-	strcat(webString, "</tr>\n");
-	strcat(webString, "<td>Master</td>\n");
+	webString->print("<th colspan=\"2\">Bluetooth</th>\n");
+	webString->print("</tr>\n");
+	webString->print("<td>Master</td>\n");
 	if (config.bt_master)
-		strcat(webString, "<td style=\"background:#0b0; color:#030; width:50%;\">Enabled</td>\n");
+		webString->print("<td style=\"background:#0b0; color:#030; width:50%;\">Enabled</td>\n");
 	else
-		strcat(webString, "<td style=\"background:#606060; color:#b0b0b0;\" aria-disabled=\"true\">Disabled</td>\n");
-	strcat(webString, "</tr>\n");
-	strcat(webString, "<tr>\n");
-	strcat(webString, "<tr>\n");
-	strcat(webString, "<td>NAME</td>\n");
+		webString->print("<td style=\"background:#606060; color:#b0b0b0;\" aria-disabled=\"true\">Disabled</td>\n");
+	webString->print("</tr>\n");
+	webString->print("<tr>\n");
+	webString->print("<tr>\n");
+	webString->print("<td>NAME</td>\n");
 
 	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%s</td>\n", config.bt_name);
-	strcat(webString, temp_buffer);
+	webString->print(temp_buffer);
 
-	strcat(webString, "</tr>\n");
-	strcat(webString, "<tr>\n");
-	strcat(webString, "<tr>\n");
-	strcat(webString, "<td>MODE</td>\n");
+	webString->print("</tr>\n");
+	webString->print("<tr>\n");
+	webString->print("<tr>\n");
+	webString->print("<td>MODE</td>\n");
 	const char *btMode = "";
 	if (config.bt_mode == 1)
 	{
@@ -859,57 +863,55 @@ void handle_dashboard(AsyncWebServerRequest *request)
 	}
 
 	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%s</td>\n", btMode);
-	strcat(webString, temp_buffer);
+	webString->print(temp_buffer);
 
-	strcat(webString, "</tr>\n");
-	strcat(webString, "<tr>\n");
-	strcat(webString, "</table>\n");
+	webString->print("</tr>\n");
+	webString->print("<tr>\n");
+	webString->print("</table>\n");
 #endif
-	strcat(webString, "</div>\n");
+	webString->print("</div>\n");
 
-	strcat(webString, "</div>\n");
-	strcat(webString, "\n");
-	strcat(webString, "<div class=\"content\">\n");
-	strcat(webString, "<div id=\"lastHeard\">\n");
+	webString->print("</div>\n");
+	webString->print("\n");
+	webString->print("<div class=\"content\">\n");
+	webString->print("<div id=\"lastHeard\">\n");
 	//String lastHeardString = event_lastHeard(true);
-	//strcat(webString, lastHeardString.c_str());
+	//webString->print(lastHeardString.c_str());
 	//lastHeardString.clear();
-	strcat(webString, "<table id=\"aprsTable\">\n<thread>\n");
-	strcat(webString, "<th colspan=\"7\" style=\"background-color: #070ac2;\">LAST HEARD <a href=\"/tnc2\" target=\"_tnc2\" style=\"color: yellow;font-size:8pt\">[RAW]</a></th>\n");
-	strcat(webString, "<tr>\n");
-	strcat(webString, "<th data-sort=\"time\" style=\"min-width:10ch\"><span><b>Time (");
+	webString->print("<table id=\"aprsTable\">\n<thread>\n");
+	webString->print("<th colspan=\"7\" style=\"background-color: #070ac2;\">LAST HEARD <a href=\"/tnc2\" target=\"_tnc2\" style=\"color: yellow;font-size:8pt\">[RAW]</a></th>\n");
+	webString->print("<tr>\n");
+	webString->print("<th data-sort=\"time\" style=\"min-width:10ch\"><span><b>Time (");
 	if (config.timeZone >= 0)
-		strcat(webString, "+");
+		webString->print("+");
 	// else
-	//	strcat(webString, "-");
+	//	webString->print("-");
 
 	if (config.timeZone == (int)config.timeZone)
 	{
 		sprintf(temp_buffer, "%d", (int)config.timeZone);
-		strcat(webString, temp_buffer);
-		strcat(webString, ")</b></span><span class=\"arrow\"></span></th>\n");
+		webString->print(temp_buffer);
+		webString->print(")</b></span><span class=\"arrow\"></span></th>\n");
 	}
 	else
 	{
 		sprintf(temp_buffer, "%.1f", config.timeZone);
-		strcat(webString, temp_buffer);
-		strcat(webString, ")</b></span><span class=\"arrow\"></span></th>\n");
+		webString->print(temp_buffer);
+		webString->print(")</b></span><span class=\"arrow\"></span></th>\n");
 	}
-	strcat(webString, "<th style=\"min-width:16px\">ICON</th>\n");
-	strcat(webString, "<th data-sort=\"callsign\" style=\"min-width:10ch\">Callsign<span class=\"arrow\"></span></th>\n");
-	strcat(webString, "<th>VIA LAST PATH</th>\n");
-	strcat(webString, "<th data-sort=\"dx\" style=\"min-width:5ch\">DX<span class=\"arrow\"></span></th>\n");
-	strcat(webString, "<th data-sort=\"packet\" style=\"min-width:5ch\">PACKET<span class=\"arrow\"></span></th>\n");
-	strcat(webString, "<th data-sort=\"audio\" style=\"min-width:5ch\">AUDIO<span class=\"arrow\"></span></th>\n");
-	strcat(webString, "</tr></thread>\n<tbody id=\"aprsTableBody\"></tbody>\n");
-	strcat(webString, "</table>\n");
-	strcat(webString, "</div>\n");
+	webString->print("<th style=\"min-width:16px\">ICON</th>\n");
+	webString->print("<th data-sort=\"callsign\" style=\"min-width:10ch\">Callsign<span class=\"arrow\"></span></th>\n");
+	webString->print("<th>VIA LAST PATH</th>\n");
+	webString->print("<th data-sort=\"dx\" style=\"min-width:5ch\">DX<span class=\"arrow\"></span></th>\n");
+	webString->print("<th data-sort=\"packet\" style=\"min-width:5ch\">PACKET<span class=\"arrow\"></span></th>\n");
+	webString->print("<th data-sort=\"audio\" style=\"min-width:5ch\">AUDIO<span class=\"arrow\"></span></th>\n");
+	webString->print("</tr></thread>\n<tbody id=\"aprsTableBody\"></tbody>\n");
+	webString->print("</table>\n");
+	webString->print("</div>\n");
 
-	AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)webString);
-	response->addHeader("dashboard", "content");
-	response->addHeader("Cache-Control", "no-cache");
-	request->send(response);
-	free(webString);
+	webString->addHeader("dashboard", "content");
+	webString->addHeader("Cache-Control", "no-cache");
+	request->send(webString);
 	lastHeardTimeout = millis() + 500;
 	lastHeard_Flag = true;
 }
@@ -921,173 +923,171 @@ void handle_sidebar(AsyncWebServerRequest *request)
 		return request->requestAuthentication();
 	}
 
-	// Using dynamic memory allocation instead of String
-	char *html = allocateStringMemory(4096); // Initial buffer size, adjust as needed
+	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+	AsyncResponseStream *html = request->beginResponseStream("text/html", 10000);
 	if (!html)
 	{
 		return; // Memory allocation failed
 	}
 
-	strcpy(html, "<table style=\"background:white;border-collapse: unset;\">\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<th colspan=\"2\">Modes Enabled</th>\n");
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
+	html->print("<table style=\"background:white;border-collapse: unset;\">\n");
+	html->print("<tr>\n");
+	html->print("<th colspan=\"2\">Modes Enabled</th>\n");
+	html->print("</tr>\n");
+	html->print("<tr>\n");
 	if (config.igate_en)
-		strcat(html, "<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">IGATE</th>\n");
+		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">IGATE</th>\n");
 	else
-		strcat(html, "<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\">IGATE</th>\n");
+		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\">IGATE</th>\n");
 
 	if (config.digi_en)
-		strcat(html, "<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">DIGI</th>\n");
+		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">DIGI</th>\n");
 	else
-		strcat(html, "<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\">DIGI</th>\n");
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
+		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\">DIGI</th>\n");
+	html->print("</tr>\n");
+	html->print("<tr>\n");
 	if (config.wx_en)
-		strcat(html, "<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">WX</th>\n");
+		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">WX</th>\n");
 	else
-		strcat(html, "<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\">WX</th>\n");
+		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\">WX</th>\n");
 	if (config.trk_en)
-		strcat(html, "<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">TRACKER</th>\n");
+		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">TRACKER</th>\n");
 	else
-		strcat(html, "<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\">TRACKER</th>\n");
-	strcat(html, "</tr>\n");
-	strcat(html, "</table>\n");
-	strcat(html, "<br />\n");
-	strcat(html, "<table style=\"background:white;border-collapse: unset;\">\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<th colspan=\"2\">Network Status</th>\n");
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
+		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\">TRACKER</th>\n");
+	html->print("</tr>\n");
+	html->print("</table>\n");
+	html->print("<br />\n");
+	html->print("<table style=\"background:white;border-collapse: unset;\">\n");
+	html->print("<tr>\n");
+	html->print("<th colspan=\"2\">Network Status</th>\n");
+	html->print("</tr>\n");
+	html->print("<tr>\n");
 	if (aprsClient.connected() == true)
-		strcat(html, "<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">APRS-IS</th>\n");
+		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">APRS-IS</th>\n");
 	else
-		strcat(html, "<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">APRS-IS</th>\n");
+		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">APRS-IS</th>\n");
 	if (wireguard_active() == true)
-		strcat(html, "<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">VPN</th>\n");
+		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">VPN</th>\n");
 	else
-		strcat(html, "<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">VPN</th>\n");
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-// strcat(html, "<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">4G LTE</th>\n");
+		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">VPN</th>\n");
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+// html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">4G LTE</th>\n");
 #ifdef PPPOS
 	if (PPP.connected())
-		strcat(html, "<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">PPPoS</th>\n");
+		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">PPPoS</th>\n");
 	else
 #endif
-		strcat(html, "<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">PPPoS</th>\n");
+		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">PPPoS</th>\n");
 #ifdef MQTT
 	if (clientMQTT.connected())
-		strcat(html, "<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">MQTT</th>\n");
+		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">MQTT</th>\n");
 	else
-		strcat(html, "<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">MQTT</th>\n";);
+		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">MQTT</th>\n";);
 #endif
 	if (config.fx25_mode > 0)
-		strcat(html, "<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">FX.25</th>\n");
+		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">FX.25</th>\n");
 	else
-		strcat(html, "<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">FX.25</th>\n");
-	strcat(html, "</tr>\n");
-	strcat(html, "</table>\n");
-	strcat(html, "<br />\n");
-	strcat(html, "<table>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<th colspan=\"2\">STATISTICS</th>\n");
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td style=\"width: 60px;text-align: right;\">RADIO RX:</td>\n");
+		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">FX.25</th>\n");
+	html->print("</tr>\n");
+	html->print("</table>\n");
+	html->print("<br />\n");
+	html->print("<table>\n");
+	html->print("<tr>\n");
+	html->print("<th colspan=\"2\">STATISTICS</th>\n");
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+	html->print("<td style=\"width: 60px;text-align: right;\">RADIO RX:</td>\n");
 
 	// Convert numeric values to strings using temporary buffers
 	char temp_buffer[64];
 	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%lu</td>\n", status.rxCount);
-	strcat(html, temp_buffer);
+	html->print(temp_buffer);
 
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td style=\"width: 60px;text-align: right;\">PACKET RX:</td>\n");
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+	html->print("<td style=\"width: 60px;text-align: right;\">PACKET RX:</td>\n");
 	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%lu</td>\n", status.allCount);
-	strcat(html, temp_buffer);
+	html->print(temp_buffer);
 
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td style=\"width: 60px;text-align: right;\">PACKET TX:</td>\n");
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+	html->print("<td style=\"width: 60px;text-align: right;\">PACKET TX:</td>\n");
 	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%lu</td>\n", status.txCount);
-	strcat(html, temp_buffer);
+	html->print(temp_buffer);
 
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td style=\"width: 60px;text-align: right;\">RF2INET:</td>\n");
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+	html->print("<td style=\"width: 60px;text-align: right;\">RF2INET:</td>\n");
 	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%lu</td>\n", status.rf2inet);
-	strcat(html, temp_buffer);
+	html->print(temp_buffer);
 
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td style=\"width: 60px;text-align: right;\">INET2RF:</td>\n");
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+	html->print("<td style=\"width: 60px;text-align: right;\">INET2RF:</td>\n");
 	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%lu</td>\n", status.inet2rf);
-	strcat(html, temp_buffer);
+	html->print(temp_buffer);
 
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td style=\"width: 60px;text-align: right;\">DIGI:</td>\n");
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+	html->print("<td style=\"width: 60px;text-align: right;\">DIGI:</td>\n");
 	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%lu</td>\n", status.digiCount);
-	strcat(html, temp_buffer);
+	html->print(temp_buffer);
 
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td style=\"width: 60px;text-align: right;\">DROP/ERR:</td>\n");
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+	html->print("<td style=\"width: 60px;text-align: right;\">DROP/ERR:</td>\n");
 	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%lu/", status.dropCount);
-	strcat(html, temp_buffer);
+	html->print(temp_buffer);
 	snprintf(temp_buffer, sizeof(temp_buffer), "%lu</td>\n", status.errorCount);
-	strcat(html, temp_buffer);
+	html->print(temp_buffer);
 
-	strcat(html, "</tr>\n");
-	strcat(html, "</table>\n");
-	strcat(html, "<br />\n");
+	html->print("</tr>\n");
+	html->print("</table>\n");
+	html->print("<br />\n");
 	if (config.gnss_enable)
 	{
-		strcat(html, "<table>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<th colspan=\"2\">GPS Info <a href=\"/gnss\" target=\"_gnss\" style=\"color: yellow;font-size:8pt\">[View]</a></th>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td>LAT:</td>\n");
+		html->print("<table>\n");
+		html->print("<tr>\n");
+		html->print("<th colspan=\"2\">GPS Info <a href=\"/gnss\" target=\"_gnss\" style=\"color: yellow;font-size:8pt\">[View]</a></th>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td>LAT:</td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;text-align: left;\">%f</td>\n", gps.location.lat());
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td>LON:</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td>LON:</td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;text-align: left;\">%f</td>\n", gps.location.lng());
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td>ALT:</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td>ALT:</td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;text-align: left;\">%f</td>\n", gps.altitude.meters());
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td>SAT:</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td>SAT:</td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;text-align: left;\">%d</td>\n", gps.satellites.value());
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
-		strcat(html, "</tr>\n");
-		strcat(html, "</table>\n");
+		html->print("</tr>\n");
+		html->print("</table>\n");
 	}
-	strcat(html, "<script>\n");
-	strcat(html, "$(window).trigger('resize');\n");
-	strcat(html, "</script>\n");
+	html->print("<script>\n");
+	html->print("$(window).trigger('resize');\n");
+	html->print("</script>\n");
 
-	AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
-	response->addHeader("Sidebar", "content");
-	response->addHeader("Cache-Control", "no-cache");
-	request->send(response);
-	free(html); // Free the allocated memory
+	html->addHeader("Sidebar", "content");
+	html->addHeader("Cache-Control", "no-cache");
+	request->send(html);
 }
 
 void handle_symbol(AsyncWebServerRequest *request)
@@ -1108,12 +1108,13 @@ void handle_symbol(AsyncWebServerRequest *request)
 		}
 	}
 
-	char *web = allocateStringMemory(22000); // Initial buffer size, adjust as needed
+	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+	AsyncResponseStream *web = request->beginResponseStream("text/html", 26000);
 	if (web)
 	{
-		strcat(web, "<table border=\"1\" align=\"center\">\n");
-		strcat(web, "<tr><th colspan=\"16\">Table '/'</th></tr>\n");
-		strcat(web, "<tr>\n");
+		web->print("<table border=\"1\" align=\"center\">\n");
+		web->print("<tr><th colspan=\"16\">Table '/'</th></tr>\n");
+		web->print("<tr>\n");
 		char lnk[200];
 		for (i = 33; i < 129; i++)
 		{
@@ -1123,16 +1124,16 @@ void handle_symbol(AsyncWebServerRequest *request)
 				sprintf(lnk, "<td><img onclick=\"window.opener.setValue(%d,1);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-1.png\"></td>", i, i);
 			else
 				sprintf(lnk, "<td><img onclick=\"window.opener.setValue(%d,%d,1);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-1.png\"></td>", sel, i, i);
-			strcat(web, lnk);
+			web->print(lnk);
 
 			if (((i % 16) == 0) && (i < 126))
-				strcat(web, "</tr>\n<tr>\n");
+				web->print("</tr>\n<tr>\n");
 		}
-		strcat(web, "</tr>");
-		strcat(web, "</table>\n<br />");
-		strcat(web, "<table border=\"1\" align=\"center\">\n");
-		strcat(web, "<tr><th colspan=\"16\">Table '\\'</th></tr>\n");
-		strcat(web, "<tr>\n");
+		web->print("</tr>");
+		web->print("</table>\n<br />");
+		web->print("<table border=\"1\" align=\"center\">\n");
+		web->print("<tr><th colspan=\"16\">Table '\\'</th></tr>\n");
+		web->print("<tr>\n");
 		for (i = 33; i < 129; i++)
 		{
 			memset(lnk, 0, sizeof(lnk));
@@ -1140,18 +1141,15 @@ void handle_symbol(AsyncWebServerRequest *request)
 				sprintf(lnk, "<td><img onclick=\"window.opener.setValue(%d,2);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-2.png\"></td>", i, i);
 			else
 				sprintf(lnk, "<td><img onclick=\"window.opener.setValue(%d,%d,2);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-2.png\"></td>", sel, i, i);
-			strcat(web, lnk);
+			web->print(lnk);
 			if (((i % 16) == 0) && (i < 126))
-				strcat(web, "</tr>\n<tr>\n");
+				web->print("</tr>\n<tr>\n");
 		}
-		strcat(web, "</tr>");
-		strcat(web, "</table>\n");
-		size_t len = strlen(web);
-		AsyncWebServerResponse *response = request->beginResponse_P(200, String(F("text/html")), (const uint8_t *)web, len);
-		response->addHeader("Symbol", "content");
-		response->addHeader("Cache-Control", "no-cache");
-		request->send(response);
-		free(web);
+		web->print("</tr>");
+		web->print("</table>\n");
+		web->addHeader("Symbol", "content");
+		web->addHeader("Cache-Control", "no-cache");
+		request->send(web);
 	}
 }
 
@@ -1829,14 +1827,14 @@ void handle_storage(AsyncWebServerRequest *request)
 		}
 	}
 
-	// Using dynamic memory allocation instead of String
-	char *webString = allocateStringMemory(8192); // Initial buffer size, adjust as needed
+	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+	AsyncResponseStream *webString = request->beginResponseStream("text/html", 20000);
 	if (!webString)
 	{
 		return; // Memory allocation failed
 	}
 
-		strcat(webString, "<script type=\"text/javascript\">\n"
+		webString->print("<script type=\"text/javascript\">\n"
 					  "function sub(obj){"
 					  "var fileName = obj.value.split('\\\\');"
 					  "document.getElementById('file-input').innerHTML = '   '+ fileName[fileName.length-1];"
@@ -1899,57 +1897,57 @@ void handle_storage(AsyncWebServerRequest *request)
 					  "});"
 					  "</script>");
 
-	strcat(webString, "<div style=\"font-size: 8pt;text-align:left;\">");
-	strcat(webString, "<b>Total space: </b>");
+	webString->print("<div style=\"font-size: 8pt;text-align:left;\">");
+	webString->print("<b>Total space: </b>");
 
 	char temp_buffer[512];
 	if (cardTotal > 1000000)
 	{
 		snprintf(temp_buffer, sizeof(temp_buffer), "%.2f MByte ,", (double)cardTotal / 1048576);
-		strcat(webString, temp_buffer);
+		webString->print(temp_buffer);
 	}
 	else
 	{
 		snprintf(temp_buffer, sizeof(temp_buffer), "%.2f KByte ,", (double)cardTotal / 1024);
-		strcat(webString, temp_buffer);
+		webString->print(temp_buffer);
 	}
 
-	strcat(webString, "<b>Used space: </b>");
+	webString->print("<b>Used space: </b>");
 	snprintf(temp_buffer, sizeof(temp_buffer), "%.2f KByte", (double)cardUsed / 1024);
-	strcat(webString, temp_buffer);
+	webString->print(temp_buffer);
 
 	snprintf(temp_buffer, sizeof(temp_buffer), "</br>Listing directory: </b>%s</div>\n", dirname);
-	strcat(webString, temp_buffer);
+	webString->print(temp_buffer);
 
 	File root = LITTLEFS.open(dirname);
 	if (!root)
 	{
-		strcat(webString, "Failed to open directory\n");
+		webString->print("Failed to open directory\n");
 		// return;
 	}
 	if (!root.isDirectory())
 	{
-		strcat(webString, "Not a directory");
+		webString->print("Not a directory");
 		// return;
 	}
 
 	File file = root.openNextFile();
-	strcat(webString, "<table border=\"1\"><tr align=\"center\" bgcolor=\"#03DDFC\"><th width=\"100\"><b>DIRECTORY</b></th><th><b>FILE NAME</b></th><th width=\"100\"><b>SIZE(Byte)</b></th><th width=\"170\"><b>DATE TIME</b></th><th width=\"50\"><b>DELETE</b></th><th width=\"100\"><b>DOWNLOAD</b></th></tr>");
+	webString->print("<table border=\"1\"><tr align=\"center\" bgcolor=\"#03DDFC\"><th width=\"100\"><b>DIRECTORY</b></th><th><b>FILE NAME</b></th><th width=\"100\"><b>SIZE(Byte)</b></th><th width=\"170\"><b>DATE TIME</b></th><th width=\"50\"><b>DELETE</b></th><th width=\"100\"><b>DOWNLOAD</b></th></tr>");
 	while (file)
 	{
 		if (file.isDirectory())
 		{
 			// webString += "<tr><td>DIR : ");
 			snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td>%s</td>", file.name());
-			strcat(webString, temp_buffer);
+			webString->print(temp_buffer);
 			time_t t = file.getLastWrite();
 			struct tm *tmstruct = localtime(&t);
 			sprintf(strTime, "<td></td><td></td><td align=\"right\">%d-%02d-%02d %02d:%02d:%02d</td>", (tmstruct->tm_year) + 1900, (tmstruct->tm_mon) + 1, tmstruct->tm_mday, tmstruct->tm_hour, tmstruct->tm_min, tmstruct->tm_sec);
-			strcat(webString, strTime);
+			webString->print(strTime);
 			// if (levels) {
 			//	listDir(fs, file.name(), levels - 1);
 			// }
-			strcat(webString, "<td></td></tr>\n");
+			webString->print("<td></td></tr>\n");
 		}
 		else
 		{
@@ -1958,59 +1956,57 @@ void handle_storage(AsyncWebServerRequest *request)
 			// char *fName = String(file.name()).substring(1).c_str(); // Not needed for full path
 			const char *fName = file.name();
 			snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td>/</td><td align=\"left\"><a href=\"/download?FILE=%s\" target=\"_blank\">%s</a></td>", fName, fName);
-			strcat(webString, temp_buffer);
+			webString->print(temp_buffer);
 			// Serial.print("  SIZE: ");
 			snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"right\">%d</td>", file.size());
-			strcat(webString, temp_buffer);
+			webString->print(temp_buffer);
 			time_t t = file.getLastWrite();
 			struct tm *tmstruct = localtime(&t);
 			sprintf(strTime, "<td align=\"center\">%d-%02d-%02d %02d:%02d:%02d</td>", (tmstruct->tm_year) + 1900, (tmstruct->tm_mon) + 1, tmstruct->tm_mday, tmstruct->tm_hour, tmstruct->tm_min, tmstruct->tm_sec);
-			strcat(webString, strTime);
+			webString->print(strTime);
 			if (strcmp(fName, "fsversion.txt") == 0)
 			{
-				strcat(webString, "<td></td>");
+				webString->print("<td></td>");
 			}
 			else
 			{
 				snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formDelete\" method=\"post\"><input name=\"delete\" type=\"hidden\" /><input name=\"FILE\" type=\"hidden\" value=\"%s\" /><button name=\"commit\" id=\"btnDelete\" type=\"submit\" style=\"background-color:red;color:white\">X</button></form></td>\n", fName);
-				strcat(webString, temp_buffer);
+				webString->print(temp_buffer);
 			}
 			snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formDownload\" method=\"post\"><input name=\"download\" type=\"hidden\" /><input name=\"FILE\" type=\"hidden\" value=\"%s\" /><button name=\"commit\" id=\"btnDownload\" type=\"submit\" style=\"background-color:green;color:white\">DOWNLOAD</button></form></td></tr>\n", fName);
-			strcat(webString, temp_buffer);
+			webString->print(temp_buffer);
 		}
 		file = root.openNextFile();
 	}
-	strcat(webString, "</table>\n");
-	// strcat(webString, "<form accept-charset=\"UTF-8\" action=\"/format\" class=\"form-horizontal\" id=\"format_form\" method=\"post\">\n");
-	// strcat(webString, "<br><div><button class=\"button\" type='submit' id='format_form_sumbit'  name=\"commit\"> FORMAT </button></div>\n");
-	// strcat(webString, "</form><br/>\n");
+	webString->print("</table>\n");
+	// webString->print("<form accept-charset=\"UTF-8\" action=\"/format\" class=\"form-horizontal\" id=\"format_form\" method=\"post\">\n");
+	// webString->print("<br><div><button class=\"button\" type='submit' id='format_form_sumbit'  name=\"commit\"> FORMAT </button></div>\n");
+	// webString->print("</form><br/>\n");
 
 	// UPLOAD CONFIGURATION FILE
-	strcat(webString, "<br><form accept-charset=\"UTF-8\" action=\"#\" "
+	webString->print("<br><form accept-charset=\"UTF-8\" action=\"#\" "
 					  "class=\"form-horizontal\" id=\"upload_form\" method=\"post\" "
 					  "enctype=\"multipart/form-data\">\n");
 
-	strcat(webString, "<table border=\"1\" style=\"margin-top:10px;width:100%;\">\n");
-	strcat(webString, "<tr align=\"center\" bgcolor=\"#03DDFC\">"
+	webString->print("<table border=\"1\" style=\"margin-top:10px;width:100%;\">\n");
+	webString->print("<tr align=\"center\" bgcolor=\"#03DDFC\">"
 					  "<th colspan=\"3\"><b>UPLOAD FILE</b></th>"
 					  "</tr>\n");
 
-	strcat(webString, "<tr align=\"center\">"
+	webString->print("<tr align=\"center\">"
 					  "<td width=\"60\" align=\"right\"><b>File:</b></td>"
 					  "<td align=\"left\"><input type=\"file\" name=\"data\" required></td>"
 					  "<td width=\"120\"><button class=\"button\" type='submit' id='upload_sumbit'>UPLOAD</button></td>"
 					  "</tr>\n");
 
-	strcat(webString, "</table>\n");
-	strcat(webString, "</form><br/>\n");
+	webString->print("</table>\n");
+	webString->print("</form><br/>\n");
 
-	strcat(webString, "</body>\n</html>\n");
+	webString->print("</body>\n</html>\n");
 
-	AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)webString);
-	response->addHeader("Sensor", "content");
-	response->addHeader("Cache-Control", "no-cache");
-	request->send(response);
-	free(webString); // Free the allocated memory
+	webString->addHeader("Sensor", "content");
+	webString->addHeader("Cache-Control", "no-cache");
+	request->send(webString);
 	adcEn = 1;
 	dacEn = 0;
 }
@@ -2398,101 +2394,101 @@ void handle_radio(AsyncWebServerRequest *request)
 	}
 	else
 	{
-		// Using dynamic memory allocation instead of String
-		char *html = allocateStringMemory(12000); // Initial buffer size, adjust as needed
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+		AsyncResponseStream *html = request->beginResponseStream("text/html", 20000);
 		if (!html)
 		{
 			return; // Memory allocation failed
 		}
 
-		strcpy(html, "<script type=\"text/javascript\">\n");
-		strcat(html, "var sliderVol = document.getElementById(\"sliderVolume\");\n");
-		strcat(html, "var outputVol = document.getElementById(\"volShow\");\n");
-		strcat(html, "var sliderSql = document.getElementById(\"sliderSql\");\n");
-		strcat(html, "var outputSql = document.getElementById(\"sqlShow\");\n");
-		strcat(html, "outputVol.innerHTML = sliderVol.value;\n");
-		strcat(html, "outputSql.innerHTML = sliderSql.value;\n");
-		strcat(html, "\n");
-		strcat(html, "sliderVol.oninput = function () {\n");
-		strcat(html, "outputVol.innerHTML = this.value;\n");
-		strcat(html, "}\n");
-		strcat(html, "sliderSql.oninput = function () {\n");
-		strcat(html, "outputSql.innerHTML = this.value;\n");
-		strcat(html, "}\n");
-		strcat(html, "\n");
-		strcat(html, "$('form').submit(function (e) {\n");
-		strcat(html, "e.preventDefault();\n");
-		strcat(html, "var data = new FormData(e.currentTarget);\n");
-		strcat(html, "if(e.currentTarget.id===\"formRadio\") document.getElementById(\"submitRadio\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formTNC\") document.getElementById(\"submitTNC\").disabled=true;\n");
-		strcat(html, "$.ajax({\n");
-		strcat(html, "url: '/radio',\n");
-		strcat(html, "type: 'POST',\n");
-		strcat(html, "data: data,\n");
-		strcat(html, "contentType: false,\n");
-		strcat(html, "processData: false,\n");
-		strcat(html, "success: function (data) {\n");
-		strcat(html, "alert(\"Submited Successfully\");\n");
-		strcat(html, "},\n");
-		strcat(html, "error: function (data) {\n");
-		strcat(html, "alert(\"An error occurred.\");\n");
-		strcat(html, "}\n");
-		strcat(html, "});\n");
-		strcat(html, "});\n");
-		strcat(html, "function rfType(){\n");
-		strcat(html, "var type = document.getElementById(\"rf_type\").value;\n");
-		strcat(html, "if(type==1||type==4||type==7){document.getElementById(\"tx_freq\").setAttribute(\"max\",174);document.getElementById(\"rx_freq\").setAttribute(\"max\",174);};\n");
-		strcat(html, "if(type==1){document.getElementById(\"tx_freq\").setAttribute(\"min\",134);document.getElementById(\"rx_freq\").setAttribute(\"min\",134);};\n");
-		strcat(html, "if(type==4||type==7){document.getElementById(\"tx_freq\").setAttribute(\"min\",136);document.getElementById(\"rx_freq\").setAttribute(\"min\",136);};\n");
-		strcat(html, "if(type==2||type==5||type==8){document.getElementById(\"tx_freq\").setAttribute(\"max\",470);document.getElementById(\"rx_freq\").setAttribute(\"max\",470);};\n");
-		strcat(html, "if(type==2||type==5||type==8){document.getElementById(\"tx_freq\").setAttribute(\"min\",400);document.getElementById(\"rx_freq\").setAttribute(\"min\",400);};\n");
-		strcat(html, "if(type==3){document.getElementById(\"tx_freq\").setAttribute(\"min\",320);document.getElementById(\"rx_freq\").setAttribute(\"min\",320);};\n");
-		strcat(html, "if(type==3){document.getElementById(\"tx_freq\").setAttribute(\"max\",400);document.getElementById(\"rx_freq\").setAttribute(\"max\",400);};\n");
-		strcat(html, "if(type==6){document.getElementById(\"tx_freq\").setAttribute(\"min\",350);document.getElementById(\"rx_freq\").setAttribute(\"min\",350);};\n");
-		strcat(html, "if(type==6){document.getElementById(\"tx_freq\").setAttribute(\"max\",390);document.getElementById(\"rx_freq\").setAttribute(\"max\",390);};\n");
-		strcat(html, "if(type==1||type==4||type==7){document.getElementById(\"tx_freq\").setAttribute(\"value\",144.390);document.getElementById(\"rx_freq\").setAttribute(\"value\",144.390);};\n");
-		strcat(html, "if(type==2||type==5||type==8){document.getElementById(\"tx_freq\").setAttribute(\"value\",432.5);document.getElementById(\"rx_freq\").setAttribute(\"value\",432.5);};\n");
-		strcat(html, "\n");
-		strcat(html, "}\n");
-		strcat(html, "</script>\n");
-		strcat(html, "<form id='formRadio' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>RF Analog Module</b></span></th>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Enable:</b></td>\n");
+		html->print("<script type=\"text/javascript\">\n");
+		html->print("var sliderVol = document.getElementById(\"sliderVolume\");\n");
+		html->print("var outputVol = document.getElementById(\"volShow\");\n");
+		html->print("var sliderSql = document.getElementById(\"sliderSql\");\n");
+		html->print("var outputSql = document.getElementById(\"sqlShow\");\n");
+		html->print("outputVol.innerHTML = sliderVol.value;\n");
+		html->print("outputSql.innerHTML = sliderSql.value;\n");
+		html->print("\n");
+		html->print("sliderVol.oninput = function () {\n");
+		html->print("outputVol.innerHTML = this.value;\n");
+		html->print("}\n");
+		html->print("sliderSql.oninput = function () {\n");
+		html->print("outputSql.innerHTML = this.value;\n");
+		html->print("}\n");
+		html->print("\n");
+		html->print("$('form').submit(function (e) {\n");
+		html->print("e.preventDefault();\n");
+		html->print("var data = new FormData(e.currentTarget);\n");
+		html->print("if(e.currentTarget.id===\"formRadio\") document.getElementById(\"submitRadio\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formTNC\") document.getElementById(\"submitTNC\").disabled=true;\n");
+		html->print("$.ajax({\n");
+		html->print("url: '/radio',\n");
+		html->print("type: 'POST',\n");
+		html->print("data: data,\n");
+		html->print("contentType: false,\n");
+		html->print("processData: false,\n");
+		html->print("success: function (data) {\n");
+		html->print("alert(\"Submited Successfully\");\n");
+		html->print("},\n");
+		html->print("error: function (data) {\n");
+		html->print("alert(\"An error occurred.\");\n");
+		html->print("}\n");
+		html->print("});\n");
+		html->print("});\n");
+		html->print("function rfType(){\n");
+		html->print("var type = document.getElementById(\"rf_type\").value;\n");
+		html->print("if(type==1||type==4||type==7){document.getElementById(\"tx_freq\").setAttribute(\"max\",174);document.getElementById(\"rx_freq\").setAttribute(\"max\",174);};\n");
+		html->print("if(type==1){document.getElementById(\"tx_freq\").setAttribute(\"min\",134);document.getElementById(\"rx_freq\").setAttribute(\"min\",134);};\n");
+		html->print("if(type==4||type==7){document.getElementById(\"tx_freq\").setAttribute(\"min\",136);document.getElementById(\"rx_freq\").setAttribute(\"min\",136);};\n");
+		html->print("if(type==2||type==5||type==8){document.getElementById(\"tx_freq\").setAttribute(\"max\",470);document.getElementById(\"rx_freq\").setAttribute(\"max\",470);};\n");
+		html->print("if(type==2||type==5||type==8){document.getElementById(\"tx_freq\").setAttribute(\"min\",400);document.getElementById(\"rx_freq\").setAttribute(\"min\",400);};\n");
+		html->print("if(type==3){document.getElementById(\"tx_freq\").setAttribute(\"min\",320);document.getElementById(\"rx_freq\").setAttribute(\"min\",320);};\n");
+		html->print("if(type==3){document.getElementById(\"tx_freq\").setAttribute(\"max\",400);document.getElementById(\"rx_freq\").setAttribute(\"max\",400);};\n");
+		html->print("if(type==6){document.getElementById(\"tx_freq\").setAttribute(\"min\",350);document.getElementById(\"rx_freq\").setAttribute(\"min\",350);};\n");
+		html->print("if(type==6){document.getElementById(\"tx_freq\").setAttribute(\"max\",390);document.getElementById(\"rx_freq\").setAttribute(\"max\",390);};\n");
+		html->print("if(type==1||type==4||type==7){document.getElementById(\"tx_freq\").setAttribute(\"value\",144.390);document.getElementById(\"rx_freq\").setAttribute(\"value\",144.390);};\n");
+		html->print("if(type==2||type==5||type==8){document.getElementById(\"tx_freq\").setAttribute(\"value\",432.5);document.getElementById(\"rx_freq\").setAttribute(\"value\",432.5);};\n");
+		html->print("\n");
+		html->print("}\n");
+		html->print("</script>\n");
+		html->print("<form id='formRadio' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>RF Analog Module</b></span></th>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Enable:</b></td>\n");
 
 		// Handle radio enable flag
 		char temp_buffer[256];
 		if (config.rf_en)
 		{
-			strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"radioEnable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n");
+			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"radioEnable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n");
 		}
 		else
 		{
-			strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"radioEnable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n");
+			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"radioEnable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n");
 		}
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Module Type:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"rf_type\" id=\"rf_type\" onchange=\"rfType()\">\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Module Type:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"rf_type\" id=\"rf_type\" onchange=\"rfType()\">\n");
 		for (int i = 0; i < 9; i++)
 		{
 			snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" ", i);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 			if (config.rf_type == i)
 			{
-				strcat(html, "selected>");
+				html->print("selected>");
 			}
 			else
 			{
-				strcat(html, ">");
+				html->print(">");
 			}
 			snprintf(temp_buffer, sizeof(temp_buffer), "%s</option>\n", RF_TYPE[i]);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 		}
-		strcat(html, "</select>\n");
-		strcat(html, "</td>\n");
+		html->print("</select>\n");
+		html->print("</td>\n");
 		float freqMin = 0;
 		float freqMax = 0;
 		switch (config.rf_type)
@@ -2525,133 +2521,133 @@ void handle_radio(AsyncWebServerRequest *request)
 			freqMax = 500.0F;
 			break;
 		}
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>TX Frequency:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>TX Frequency:</b></td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input type=\"number\" id=\"tx_freq\" name=\"tx_freq\" min=\"%.4f\" max=\"%.4f\"\n", freqMin, freqMax);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 		snprintf(temp_buffer, sizeof(temp_buffer), "step=\"0.0001\" value=\"%.4f\" /> MHz</td>\n", config.freq_tx);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>RX Frequency:</b></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>RX Frequency:</b></td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input type=\"number\" id=\"rx_freq\" name=\"rx_freq\" min=\"%.4f\" max=\"%.4f\"\n", freqMin, freqMax);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 		snprintf(temp_buffer, sizeof(temp_buffer), "step=\"0.0001\" value=\"%.4f\" /> Mhz</td>\n", config.freq_rx);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>TX CTCSS:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"tx_ctcss\" id=\"tx_ctcss\">\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>TX CTCSS:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"tx_ctcss\" id=\"tx_ctcss\">\n");
 		for (int i = 0; i < 39; i++)
 		{
 			snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" ", i);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 			if (config.tone_tx == i)
 			{
-				strcat(html, "selected>");
+				html->print("selected>");
 			}
 			else
 			{
-				strcat(html, ">");
+				html->print(">");
 			}
 			snprintf(temp_buffer, sizeof(temp_buffer), "%.1f</option>\n", ctcss[i]);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 		}
-		strcat(html, "</select> Hz\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>RX CTCSS:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"rx_ctcss\" id=\"rx_ctcss\">\n");
-		strcat(html, "<option value=\"0\" selected>0.0</option>\n");
+		html->print("</select> Hz\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>RX CTCSS:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"rx_ctcss\" id=\"rx_ctcss\">\n");
+		html->print("<option value=\"0\" selected>0.0</option>\n");
 		for (int i = 0; i < 39; i++)
 		{
 			snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" ", i);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 			if (config.tone_rx == i)
 			{
-				strcat(html, "selected>");
+				html->print("selected>");
 			}
 			else
 			{
-				strcat(html, ">");
+				html->print(">");
 			}
 			snprintf(temp_buffer, sizeof(temp_buffer), "%.1f</option>\n", ctcss[i]);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 		}
-		strcat(html, "</select> Hz\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Narrow/Wide:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"nw_band\" id=\"nw_band\">\n");
+		html->print("</select> Hz\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Narrow/Wide:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"nw_band\" id=\"nw_band\">\n");
 
 		if (config.band)
 		{
-			strcat(html, "<option value=\"0\" >12.5KHz</option>\n");
-			strcat(html, "<option value=\"1\" selected>25.0KHz</option>\n");
+			html->print("<option value=\"0\" >12.5KHz</option>\n");
+			html->print("<option value=\"1\" selected>25.0KHz</option>\n");
 		}
 		else
 		{
-			strcat(html, "<option value=\"0\" selected>12.5KHz</option>\n");
-			strcat(html, "<option value=\"1\" >25.0KHz</option>\n");
+			html->print("<option value=\"0\" selected>12.5KHz</option>\n");
+			html->print("<option value=\"1\" >25.0KHz</option>\n");
 		}
-		strcat(html, "</select>\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>TX Power:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"rf_power\" id=\"rf_power\">\n");
+		html->print("</select>\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>TX Power:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"rf_power\" id=\"rf_power\">\n");
 
 		if (config.rf_power)
 		{
-			strcat(html, "<option value=\"1\" selected>HIGH</option>\n");
-			strcat(html, "<option value=\"0\" >LOW</option>\n");
+			html->print("<option value=\"1\" selected>HIGH</option>\n");
+			html->print("<option value=\"0\" >LOW</option>\n");
 		}
 		else
 		{
-			strcat(html, "<option value=\"1\" >HIGH</option>\n");
-			strcat(html, "<option value=\"0\" selected>LOW</option>\n");
+			html->print("<option value=\"1\" >HIGH</option>\n");
+			html->print("<option value=\"0\" selected>LOW</option>\n");
 		}
-		strcat(html, "</select>\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>VOLUME:</b></td>\n");
+		html->print("</select>\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>VOLUME:</b></td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input id=\"sliderVolume\" name=\"volume\" type=\"range\"\nmin=\"1\" max=\"8\" value=\"%d\" /><b><span style=\"font-size: 14pt;\" id=\"volShow\">%d</span></b></td>\n", config.volume, config.volume);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>SQL Level:</b></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>SQL Level:</b></td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input id=\"sliderSql\" name=\"sql_level\" type=\"range\"\nmin=\"0\" max=\"8\" value=\"%d\" /><b><span style=\"font-size: 14pt;\" id=\"sqlShow\">%d</span></b></td>\n", config.sql_level, config.sql_level);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitRadio'  name=\"commitRadio\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitRadio\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form>");
+		html->print("</tr>\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitRadio'  name=\"commitRadio\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitRadio\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form>");
 
 		// AFSK,TNC Configuration
-		strcat(html, "<form id='formTNC' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>AFSK/TNC Configuration</b></span></th>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Modem Type:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"modem_type\" id=\"modem_type\" \">\n");
+		html->print("<form id='formTNC' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>AFSK/TNC Configuration</b></span></th>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Modem Type:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"modem_type\" id=\"modem_type\" \">\n");
 		#ifdef CONFIG_IDF_TARGET_ESP32S3
 		for (int i = 0; i < 4; i++)
 		#else 
@@ -2659,102 +2655,98 @@ void handle_radio(AsyncWebServerRequest *request)
 		#endif
 		{
 			snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" ", i);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 			if (config.modem_type == i)
 			{
-				strcat(html, "selected>");
+				html->print("selected>");
 			}
 			else
 			{
-				strcat(html, ">");
+				html->print(">");
 			}
 			snprintf(temp_buffer, sizeof(temp_buffer), "%s</option>\n", MODEM_TYPE[i]);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 		}
-		strcat(html, "</select>\n");
-		strcat(html, "</td>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>FX.25 Mode:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"fx25_mode\" id=\"fx25_mode\" \">\n");
+		html->print("</select>\n");
+		html->print("</td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>FX.25 Mode:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"fx25_mode\" id=\"fx25_mode\" \">\n");
 		for (int i = 0; i < 3; i++)
 		{
 			snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" ", i);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 			if (config.fx25_mode == i)
 			{
-				strcat(html, "selected>");
+				html->print("selected>");
 			}
 			else
 			{
-				strcat(html, ">");
+				html->print(">");
 			}
 			snprintf(temp_buffer, sizeof(temp_buffer), "%s</option>\n", FX25_MODE[i]);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 		}
-		strcat(html, "</select>  (FX.25 = AX.25 + FEC)\n");
-		strcat(html, "</td>\n");
-		strcat(html, "<tr>\n");
-		// strcat(html, "<td align=\"right\"><b>Audio HPF:</b></td>\n");
+		html->print("</select>  (FX.25 = AX.25 + FEC)\n");
+		html->print("</td>\n");
+		html->print("<tr>\n");
+		// html->print("<td align=\"right\"><b>Audio HPF:</b></td>\n");
 		// char strFlag[32] = "";
 		// if (config.audio_hpf)
 		// 	strcpy(strFlag, "checked");
 		// snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"HPF\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Audio high pass filter >1KHz cutoff 10Khz</i></label></td>\n", strFlag);
-		// strcat(html, temp_buffer);
-		// strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Deemphasis Audio:</b></td>\n");
+		// html->print(temp_buffer);
+		// html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Deemphasis Audio:</b></td>\n");
 		if (config.audio_lpf)
 		{
-			strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"LPF\" value=\"OK\" checked><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Audio low pass filter 1hz-2.5KHz</i></label></td>\n");
+			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"LPF\" value=\"OK\" checked><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Audio low pass filter 1hz-2.5KHz</i></label></td>\n");
 		}
 		else
 		{
-			strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"LPF\" value=\"OK\" ><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Audio low pass filter 1hz-2.5KHz</i></label></td>\n");
+			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"LPF\" value=\"OK\" ><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Audio low pass filter 1hz-2.5KHz</i></label></td>\n");
 		}
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>TX Time Slot:</b></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>TX Time Slot:</b></td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input type=\"number\" name=\"timeSlot\" min=\"0\" max=\"99999\"\nstep=\"100\" value=\"%d\" /> mSec.</td>\n", config.tx_timeslot);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Preamble:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"preamble\">\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Preamble:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"preamble\">\n");
 		for (int i = 1; i < 11; i++)
 		{
 			snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" ", i);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 			if (config.preamble == i)
 			{
-				strcat(html, "selected>");
+				html->print("selected>");
 			}
 			else
 			{
-				strcat(html, ">");
+				html->print(">");
 			}
 			snprintf(temp_buffer, sizeof(temp_buffer), "%d</option>\n", i * 100);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 		}
-		strcat(html, "</select> mSec.\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitTNC'  name=\"commitTNC\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitTNC\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form>");
-		// request->send(200, "text/html", html); // send to someones browser when asked
-		//request->send_P(200, "text/html", html);
+		html->print("</select> mSec.\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitTNC'  name=\"commitTNC\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitTNC\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form>");
 
-		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
-		response->addHeader("Sysinfo", "content");
-		response->addHeader("Cache-Control", "no-cache");
-		request->send(response);
-		free(html); // Free the allocated memory
+		html->addHeader("Sysinfo", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
 	}
 }
 
@@ -2858,156 +2850,156 @@ void handle_vpn(AsyncWebServerRequest *request)
 	}
 	else
 	{
-		// Using dynamic memory allocation instead of String
-		char *html = allocateStringMemory(8192); // Initial buffer size, adjust as needed
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+		AsyncResponseStream *html = request->beginResponseStream("text/html", 16000);
 		if (!html)
 		{
 			return; // Memory allocation failed
 		}
 
-		strcpy(html, "<script type=\"text/javascript\">\n");
-		strcat(html, "$('form').submit(function (e) {\n");
-		strcat(html, "e.preventDefault();\n");
-		strcat(html, "var data = new FormData(e.currentTarget);\n");
-		strcat(html, "if(e.currentTarget.id===\"formVPN\") document.getElementById(\"submitVPN\").disabled=true;\n");
-		strcat(html, "$.ajax({\n");
-		strcat(html, "url: '/vpn',\n");
-		strcat(html, "type: 'POST',\n");
-		strcat(html, "data: data,\n");
-		strcat(html, "contentType: false,\n");
-		strcat(html, "processData: false,\n");
-		strcat(html, "success: function (data) {\n");
-		strcat(html, "alert(\"Submited Successfully\");\n");
-		strcat(html, "},\n");
-		strcat(html, "error: function (data) {\n");
-		strcat(html, "alert(\"An error occurred.\");\n");
-		strcat(html, "}\n");
-		strcat(html, "});\n");
-		strcat(html, "});\n");
+		html->print("<script type=\"text/javascript\">\n");
+		html->print("$('form').submit(function (e) {\n");
+		html->print("e.preventDefault();\n");
+		html->print("var data = new FormData(e.currentTarget);\n");
+		html->print("if(e.currentTarget.id===\"formVPN\") document.getElementById(\"submitVPN\").disabled=true;\n");
+		html->print("$.ajax({\n");
+		html->print("url: '/vpn',\n");
+		html->print("type: 'POST',\n");
+		html->print("data: data,\n");
+		html->print("contentType: false,\n");
+		html->print("processData: false,\n");
+		html->print("success: function (data) {\n");
+		html->print("alert(\"Submited Successfully\");\n");
+		html->print("},\n");
+		html->print("error: function (data) {\n");
+		html->print("alert(\"An error occurred.\");\n");
+		html->print("}\n");
+		html->print("});\n");
+		html->print("});\n");
 
 		// Get MAC address and remove colons
 		String ESP32_ID = WiFi.macAddress();
 		ESP32_ID.replace(":", "");
 		char temp_buffer[512];
 		snprintf(temp_buffer, sizeof(temp_buffer), "function loadVPNConfig() {\nconst url = \"http://hs1.hs5tqa.ampr.org:81/wg/create\";\nconst espID = {'name': '%s'};\n", ESP32_ID.c_str());
-		strcat(html, temp_buffer);
-		strcat(html, "fetch(url,{\n");
-		strcat(html, "method: 'POST',\n");
-		strcat(html, "body: JSON.stringify(espID),\n");
-		strcat(html, "headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Origin': '*','Access-Control-Allow-Methods': 'POST,GET,OPTIONS'}\n");
-		strcat(html, "})\n");
-		strcat(html, ".then(response => response.json())\n");
-		strcat(html, ".then(data => {\n");
-		strcat(html, "console.log(\"VPN Data:\", data);\n");
-		strcat(html, "document.getElementById(\"wg_enable\").checked = true;\n");
-		strcat(html, "document.getElementById(\"wg_peer_address\").value = data.Enpoint.split(\":\")[0];\n");
-		strcat(html, "document.getElementById(\"wg_port\").value = data.Enpoint.split(\":\")[1];\n");
-		strcat(html, "document.getElementById(\"wg_local_address\").value = data.Address;\n");
-		strcat(html, "document.getElementById(\"wg_netmask_address\").value = \"255.255.255.0\";\n");
-		strcat(html, "document.getElementById(\"wg_gw_address\").value = data.Gateway;\n");
-		strcat(html, "document.getElementById(\"wg_public_key\").value = data.PublicKey;\n");
-		strcat(html, "document.getElementById(\"wg_private_key\").value = data.PrivateKey;\n");
-		strcat(html, "})\n");
-		strcat(html, ".catch(err => console.error(\"VPN API Error:\", err));\n}\n");
-		strcat(html, "</script>\n");
+		html->print(temp_buffer);
+		html->print("fetch(url,{\n");
+		html->print("method: 'POST',\n");
+		html->print("body: JSON.stringify(espID),\n");
+		html->print("headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Origin': '*','Access-Control-Allow-Methods': 'POST,GET,OPTIONS'}\n");
+		html->print("})\n");
+		html->print(".then(response => response.json())\n");
+		html->print(".then(data => {\n");
+		html->print("console.log(\"VPN Data:\", data);\n");
+		html->print("document.getElementById(\"wg_enable\").checked = true;\n");
+		html->print("document.getElementById(\"wg_peer_address\").value = data.Enpoint.split(\":\")[0];\n");
+		html->print("document.getElementById(\"wg_port\").value = data.Enpoint.split(\":\")[1];\n");
+		html->print("document.getElementById(\"wg_local_address\").value = data.Address;\n");
+		html->print("document.getElementById(\"wg_netmask_address\").value = \"255.255.255.0\";\n");
+		html->print("document.getElementById(\"wg_gw_address\").value = data.Gateway;\n");
+		html->print("document.getElementById(\"wg_public_key\").value = data.PublicKey;\n");
+		html->print("document.getElementById(\"wg_private_key\").value = data.PrivateKey;\n");
+		html->print("})\n");
+		html->print(".catch(err => console.error(\"VPN API Error:\", err));\n}\n");
+		html->print("</script>\n");
 		// ===== JavaScript AJAX =====
-		// strcat(html, "<script>\n");
-		// strcat(html, "function loadVPNConfig() {\n");
-		// strcat(html, "  $.ajax({\n");
-		// strcat(html, "    url: '/api/vpnreq',\n");
-		// strcat(html, "    method: 'GET',\n");
-		// strcat(html, "    dataType: 'json',\n");
-		// strcat(html, "    success: function(data) {\n");
-		// strcat(html, "       console.log(data);\n");
-		// strcat(html, "       let ep = data.Enpoint.split(':');\n");
-		// strcat(html, "       $('#wg_peer_address').val(ep[0]);\n");
-		// strcat(html, "       $('#wg_port').val(ep[1]);\n");
-		// strcat(html, "       $('#wg_local_address').val(data.Address);\n");
-		// strcat(html, "       $('#wg_public_key').val(data.PublicKey);\n");
-		// strcat(html, "       $('#wg_private_key').val(data.PrivateKey);\n");
-		// strcat(html, "    },\n");
-		// strcat(html, "    error: function(e) {\n");
-		// strcat(html, "       alert('โหลดข้อมูล VPN ไม่สำเร็จ');\n");
-		// strcat(html, "       console.log(e);\n");
-		// strcat(html, "    }\n");
-		// strcat(html, "  });\n");
-		// strcat(html, "}\n");
-		// strcat(html, "</script>");
+		// html->print("<script>\n");
+		// html->print("function loadVPNConfig() {\n");
+		// html->print("  $.ajax({\n");
+		// html->print("    url: '/api/vpnreq',\n");
+		// html->print("    method: 'GET',\n");
+		// html->print("    dataType: 'json',\n");
+		// html->print("    success: function(data) {\n");
+		// html->print("       console.log(data);\n");
+		// html->print("       let ep = data.Enpoint.split(':');\n");
+		// html->print("       $('#wg_peer_address').val(ep[0]);\n");
+		// html->print("       $('#wg_port').val(ep[1]);\n");
+		// html->print("       $('#wg_local_address').val(data.Address);\n");
+		// html->print("       $('#wg_public_key').val(data.PublicKey);\n");
+		// html->print("       $('#wg_private_key').val(data.PrivateKey);\n");
+		// html->print("    },\n");
+		// html->print("    error: function(e) {\n");
+		// html->print("       alert('โหลดข้อมูล VPN ไม่สำเร็จ');\n");
+		// html->print("       console.log(e);\n");
+		// html->print("    }\n");
+		// html->print("  });\n");
+		// html->print("}\n");
+		// html->print("</script>");
 
-		// strcat(html, "<h2>System Setting</h2>\n");
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromVPN\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>Wireguard Configuration</b></span></th>\n");
-		strcat(html, "<tr>");
+		// html->print("<h2>System Setting</h2>\n");
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromVPN\" method=\"post\">\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>Wireguard Configuration</b></span></th>\n");
+		html->print("<tr>");
 
 		// Handle sync flag
 		if (config.vpn)
 		{
-			strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
-			strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"wg_enable\" name=\"vpnEnable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n");
+			html->print("<td align=\"right\"><b>Enable</b></td>\n");
+			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"wg_enable\" name=\"vpnEnable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n");
 		}
 		else
 		{
-			strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
-			strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"wg_enable\" name=\"vpnEnable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n");
+			html->print("<td align=\"right\"><b>Enable</b></td>\n");
+			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"wg_enable\" name=\"vpnEnable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n");
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Server Address</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Server Address</b></td>\n");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input  size=\"20\" maxlength=\"32\" id=\"wg_peer_address\" name=\"wg_peer_address\" type=\"text\" value=\"%s\" /></td>\n", config.wg_peer_address);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Server Port</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Server Port</b></td>\n");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input id=\"wg_port\" size=\"5\" name=\"wg_port\" type=\"number\" value=\"%d\" /></td>\n", config.wg_port);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Local Address</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Local Address</b></td>\n");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input id=\"wg_local_address\" name=\"wg_local_address\" type=\"text\" value=\"%s\" /></td>\n", config.wg_local_address);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Netmask</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Netmask</b></td>\n");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input id=\"wg_netmask_address\" name=\"wg_netmask_address\" type=\"text\" value=\"%s\" /></td>\n", config.wg_netmask_address);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Gateway</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Gateway</b></td>\n");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input id=\"wg_gw_address\" name=\"wg_gw_address\" type=\"text\" value=\"%s\" /></td>\n", config.wg_gw_address);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Public Server Key</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Public Server Key</b></td>\n");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input size=\"50\" maxlength=\"44\" id=\"wg_public_key\" name=\"wg_public_key\" type=\"text\" value=\"%s\" /></td>\n", config.wg_public_key);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Private Client Key</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Private Client Key</b></td>\n");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input size=\"50\" maxlength=\"44\" id=\"wg_private_key\" name=\"wg_private_key\" type=\"text\" value=\"%s\" /></td>\n", config.wg_private_key);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitVPN'  name=\"commitVPN\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitVPN\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form><br /><br />");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitVPN'  name=\"commitVPN\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitVPN\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form><br /><br />");
 
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromGetVPN\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>Helper: Free VPN Wireguard for Web Service</b></span></th>\n");
-		strcat(html, "<tr><td align=\"left\">1. Click New Register button to get VPN config from web service.</td></tr>\n");
-		strcat(html, "<tr><td align=\"left\">2. The VPN config will fill in the form automatically.</td></tr>\n");
-		strcat(html, "<tr><td align=\"left\">3. Click Apply Change and reboot again.</td></tr>\n");
-		strcat(html, "<tr><td align=\"left\">4. Enjoy your free VPN service!</td></tr>\n");
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromGetVPN\" method=\"post\">\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>Helper: Free VPN Wireguard for Web Service</b></span></th>\n");
+		html->print("<tr><td align=\"left\">1. Click New Register button to get VPN config from web service.</td></tr>\n");
+		html->print("<tr><td align=\"left\">2. The VPN config will fill in the form automatically.</td></tr>\n");
+		html->print("<tr><td align=\"left\">3. Click Apply Change and reboot again.</td></tr>\n");
+		html->print("<tr><td align=\"left\">4. Enjoy your free VPN service!</td></tr>\n");
 
 		// Check if local address starts with "10.44."
 		String wg_local_addr = String(config.wg_local_address);
@@ -3015,27 +3007,24 @@ void handle_vpn(AsyncWebServerRequest *request)
 		{
 			int lastoct = wg_local_addr.substring(wg_local_addr.lastIndexOf('.') + 1).toInt();
 			// String url="http://"+String(config.wg_peer_address)+":"+String(8000+lastoct);
-			// strcat(html, "<tr><td>Your External Host IP: <a href=\"");
+			// html->print("<tr><td>Your External Host IP: <a href=\"");
 			// snprintf(temp_buffer, sizeof(temp_buffer), "%s\">%s</a></td></tr>\n", url.c_str(), url.c_str());
-			// strcat(html, temp_buffer);
+			// html->print(temp_buffer);
 			int thirdoct = wg_local_addr.substring(wg_local_addr.indexOf('.', wg_local_addr.indexOf('.') + 1) + 1, wg_local_addr.lastIndexOf('.')).toInt();
 			String url_base = "http://hs" + String(thirdoct) + ".hs5tqa.ampr.org:" + String((thirdoct * 10000) + 8000 + lastoct);
 			snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td>Your External by AMPR URL: <a href=\"%s\" target=\"_blank\">%s</a></td></tr>\n", url_base.c_str(), url_base.c_str());
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 			url_base = "http://vpn.nakhonthai.net:" + String((thirdoct * 10000) + 8000 + lastoct);
 			snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td>Fast Direct URL: <a href=\"%s\" target=\"_blank\">%s</a></td></tr>\n", url_base.c_str(), url_base.c_str());
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 		}
-		strcat(html, "<tr><td><button type=\"button\" onclick=\"loadVPNConfig()\">New Register</button></td></tr>\n");
-		strcat(html, "</table><br />\n");
-		strcat(html, "</form>");
+		html->print("<tr><td><button type=\"button\" onclick=\"loadVPNConfig()\">New Register</button></td></tr>\n");
+		html->print("</table><br />\n");
+		html->print("</form>");
 
-		// request->send(200, "text/html", html); // send to someones browser when asked
-		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
-		response->addHeader("VPN", "content");
-		response->addHeader("Cache-Control", "no-cache");
-		request->send(response);
-		free(html); // Free the allocated memory
+		html->addHeader("VPN", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
 	}
 }
 
@@ -3195,199 +3184,196 @@ void handle_mqtt(AsyncWebServerRequest *request)
 	}
 	else
 	{
-		// Using dynamic memory allocation instead of String
-		char *html = allocateStringMemory(8192); // Initial buffer size, adjust as needed
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+		AsyncResponseStream *html = request->beginResponseStream("text/html", 17000);
 		if (!html)
 		{
 			return; // Memory allocation failed
 		}
 
-		strcpy(html, "<script type=\"text/javascript\">\n");
-		strcat(html, "$('form').submit(function (e) {\n");
-		strcat(html, "e.preventDefault();\n");
-		strcat(html, "var data = new FormData(e.currentTarget);\n");
-		strcat(html, "if(e.currentTarget.id===\"formVPN\") document.getElementById(\"submitMQTT\").disabled=true;\n");
-		strcat(html, "$.ajax({\n");
-		strcat(html, "url: '/mqtt',\n");
-		strcat(html, "type: 'POST',\n");
-		strcat(html, "data: data,\n");
-		strcat(html, "contentType: false,\n");
-		strcat(html, "processData: false,\n");
-		strcat(html, "success: function (data) {\n");
-		strcat(html, "alert(\"Submited Successfully\");\n");
-		strcat(html, "},\n");
-		strcat(html, "error: function (data) {\n");
-		strcat(html, "alert(\"An error occurred.\");\n");
-		strcat(html, "}\n");
-		strcat(html, "});\n");
-		strcat(html, "});\n");
-		strcat(html, "</script>\n");
+		html->print("<script type=\"text/javascript\">\n");
+		html->print("$('form').submit(function (e) {\n");
+		html->print("e.preventDefault();\n");
+		html->print("var data = new FormData(e.currentTarget);\n");
+		html->print("if(e.currentTarget.id===\"formVPN\") document.getElementById(\"submitMQTT\").disabled=true;\n");
+		html->print("$.ajax({\n");
+		html->print("url: '/mqtt',\n");
+		html->print("type: 'POST',\n");
+		html->print("data: data,\n");
+		html->print("contentType: false,\n");
+		html->print("processData: false,\n");
+		html->print("success: function (data) {\n");
+		html->print("alert(\"Submited Successfully\");\n");
+		html->print("},\n");
+		html->print("error: function (data) {\n");
+		html->print("alert(\"An error occurred.\");\n");
+		html->print("}\n");
+		html->print("});\n");
+		html->print("});\n");
+		html->print("</script>\n");
 
-		// strcat(html, "<h2>System Setting</h2>\n");
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromMQTT\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>MQTT Configuration</b></span></th>\n");
-		strcat(html, "<tr>");
+		// html->print("<h2>System Setting</h2>\n");
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromMQTT\" method=\"post\">\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>MQTT Configuration</b></span></th>\n");
+		html->print("<tr>");
 
 		// Handle sync flag
 		if (config.en_mqtt)
 		{
-			strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
-			strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n");
+			html->print("<td align=\"right\"><b>Enable</b></td>\n");
+			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n");
 		}
 		else
 		{
-			strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
-			strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n");
+			html->print("<td align=\"right\"><b>Enable</b></td>\n");
+			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n");
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Server Address:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Server Address:</b></td>\n");
 		char temp_buffer[512];
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input  size=\"30\" maxlength=\"32\" name=\"host\" type=\"text\" value=\"%s\" /></td>\n", config.mqtt_host);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Server Port:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Server Port:</b></td>\n");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input size=\"5\"  maxlength=\"5\"  name=\"port\" type=\"number\" value=\"%d\" /></td>\n", config.mqtt_port);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>User:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>User:</b></td>\n");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input maxlength=\"32\" name=\"user\" type=\"text\" value=\"%s\" /></td>\n", config.mqtt_user);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Password:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Password:</b></td>\n");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input size=\"40\" maxlength=\"63\" name=\"pass\" type=\"password\" value=\"%s\" /></td>\n", config.mqtt_pass);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Topic:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Topic:</b></td>\n");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input size=\"50\" maxlength=\"32\" id=\"topic\" name=\"topic\" type=\"text\" value=\"%s\" /></td>\n", config.mqtt_topic);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Topic Flag:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Topic Flag:</b></td>\n");
 
-		strcat(html, "<td align=\"center\">\n");
-		strcat(html, "<fieldset id=\"TopicGrp\">\n");
-		strcat(html, "<legend>Topic Flags Send out MQTT</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">");
-		strcat(html, "<tr style=\"background:unset;\">");
+		html->print("<td align=\"center\">\n");
+		html->print("<fieldset id=\"TopicGrp\">\n");
+		html->print("<legend>Topic Flags Send out MQTT</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">");
+		html->print("<tr style=\"background:unset;\">");
 
 		// Handle topic flags
 		if (config.mqtt_topic_flag & MQTT_TOPIC_TNC)
 		{
-			strcat(html, "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicTNC\" type=\"checkbox\" value=\"OK\" checked/>TNC</td>\n");
+			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicTNC\" type=\"checkbox\" value=\"OK\" checked/>TNC</td>\n");
 		}
 		else
 		{
-			strcat(html, "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicTNC\" type=\"checkbox\" value=\"OK\" />TNC</td>\n");
+			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicTNC\" type=\"checkbox\" value=\"OK\" />TNC</td>\n");
 		}
 
 		if (config.mqtt_topic_flag & MQTT_TOPIC_STATUS)
 		{
-			strcat(html, "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicSts\" type=\"checkbox\" value=\"OK\" checked/>Status</td>\n");
+			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicSts\" type=\"checkbox\" value=\"OK\" checked/>Status</td>\n");
 		}
 		else
 		{
-			strcat(html, "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicSts\" type=\"checkbox\" value=\"OK\" />Status</td>\n");
+			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicSts\" type=\"checkbox\" value=\"OK\" />Status</td>\n");
 		}
 
 		if (config.mqtt_topic_flag & MQTT_TOPIC_TELEMETRY)
 		{
-			strcat(html, "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicTlm\" type=\"checkbox\" value=\"OK\" checked/>Telemetry</td>\n");
+			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicTlm\" type=\"checkbox\" value=\"OK\" checked/>Telemetry</td>\n");
 		}
 		else
 		{
-			strcat(html, "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicTlm\" type=\"checkbox\" value=\"OK\" />Telemetry</td>\n");
+			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicTlm\" type=\"checkbox\" value=\"OK\" />Telemetry</td>\n");
 		}
 
 		if (config.mqtt_topic_flag & MQTT_TOPIC_WX)
 		{
-			strcat(html, "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicWX\" type=\"checkbox\" value=\"OK\" checked/>Weather</td>\n");
+			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicWX\" type=\"checkbox\" value=\"OK\" checked/>Weather</td>\n");
 		}
 		else
 		{
-			strcat(html, "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicWX\" type=\"checkbox\" value=\"OK\" />Weather</td>\n");
+			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicWX\" type=\"checkbox\" value=\"OK\" />Weather</td>\n");
 		}
 
 		if (config.mqtt_topic_flag & MQTT_TOPIC_SENSOR)
 		{
-			strcat(html, "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicSensor\" type=\"checkbox\" value=\"OK\" checked/>Sensor</td>\n");
+			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicSensor\" type=\"checkbox\" value=\"OK\" checked/>Sensor</td>\n");
 		}
 		else
 		{
-			strcat(html, "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicSensor\" type=\"checkbox\" value=\"OK\" />Sensor</td>\n");
+			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicSensor\" type=\"checkbox\" value=\"OK\" />Sensor</td>\n");
 		}
 
-		strcat(html, "<td style=\"border:unset;\"></td>");
-		strcat(html, "</tr></table></fieldset>\n");
-		strcat(html, "</td></tr>\n");
+		html->print("<td style=\"border:unset;\"></td>");
+		html->print("</tr></table></fieldset>\n");
+		html->print("</td></tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Subscription:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Subscription:</b></td>\n");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input size=\"50\" maxlength=\"32\" name=\"subscribe\" type=\"text\" value=\"%s\" /></td>\n", config.mqtt_subscribe);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Subscription Flag:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Subscription Flag:</b></td>\n");
 
-		strcat(html, "<td align=\"center\">\n");
-		strcat(html, "<fieldset id=\"SubGrp\">\n");
-		strcat(html, "<legend>Subscription Flags Receive</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">");
-		strcat(html, "<tr style=\"background:unset;\">");
+		html->print("<td align=\"center\">\n");
+		html->print("<fieldset id=\"SubGrp\">\n");
+		html->print("<legend>Subscription Flags Receive</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">");
+		html->print("<tr style=\"background:unset;\">");
 
 		// Handle subscription flags
 		if (config.mqtt_subscribe_flag & MQTT_SUBSCRIBE_CMD)
 		{
-			strcat(html, "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subCMD\" type=\"checkbox\" value=\"OK\" checked/>AT-Command</td>\n");
+			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subCMD\" type=\"checkbox\" value=\"OK\" checked/>AT-Command</td>\n");
 		}
 		else
 		{
-			strcat(html, "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subCMD\" type=\"checkbox\" value=\"OK\" />AT-Command</td>\n");
+			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subCMD\" type=\"checkbox\" value=\"OK\" />AT-Command</td>\n");
 		}
 
 		if (config.mqtt_subscribe_flag & MQTT_SUBSCRIBE_TNC)
 		{
-			strcat(html, "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subTNC\" type=\"checkbox\" value=\"OK\" checked/>TNC</td>\n");
+			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subTNC\" type=\"checkbox\" value=\"OK\" checked/>TNC</td>\n");
 		}
 		else
 		{
-			strcat(html, "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subTNC\" type=\"checkbox\" value=\"OK\" />TNC</td>\n");
+			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subTNC\" type=\"checkbox\" value=\"OK\" />TNC</td>\n");
 		}
 
 		if (config.mqtt_subscribe_flag & MQTT_SUBSCRIBE_MESSAGE)
 		{
-			strcat(html, "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subMsg\" type=\"checkbox\" value=\"OK\" checked/>Message</td>\n");
+			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subMsg\" type=\"checkbox\" value=\"OK\" checked/>Message</td>\n");
 		}
 		else
 		{
-			strcat(html, "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subMsg\" type=\"checkbox\" value=\"OK\" />Message</td>\n");
+			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subMsg\" type=\"checkbox\" value=\"OK\" />Message</td>\n");
 		}
 
-		strcat(html, "<td style=\"border:unset;\"></td>");
-		strcat(html, "</tr></table></fieldset>\n");
-		strcat(html, "</td></tr>\n");
+		html->print("<td style=\"border:unset;\"></td>");
+		html->print("</tr></table></fieldset>\n");
+		html->print("</td></tr>\n");
 
-		strcat(html, "</table><br />\n");
-		strcat(html, "<td><input class=\"button\" id=\"submitMQTT\" name=\"commitMQTT\" type=\"submit\" value=\"Save Config\" maxlength=\"80\"/></td>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitMQTT\"/>\n");
-		strcat(html, "</form>\n");
+		html->print("</table><br />\n");
+		html->print("<td><input class=\"button\" id=\"submitMQTT\" name=\"commitMQTT\" type=\"submit\" value=\"Save Config\" maxlength=\"80\"/></td>\n");
+		html->print("<input type=\"hidden\" name=\"commitMQTT\"/>\n");
+		html->print("</form>\n");
 
-		// request->send(200, "text/html", html); // send to someones browser when asked
-		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
-		response->addHeader("MQTT", "content");
-		response->addHeader("Cache-Control", "no-cache");
-		request->send(response);
-		free(html); // Free the allocated memory
+		html->addHeader("MQTT", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
 	}
 }
 #endif
@@ -3621,197 +3607,197 @@ void handle_msg(AsyncWebServerRequest *request)
 	}
 	else
 	{
-		// Using dynamic memory allocation instead of String
-		char *html = allocateStringMemory(16384); // Initial buffer size, adjust as needed
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+		AsyncResponseStream *html = request->beginResponseStream("text/html", 28000);
 		if (!html)
 		{
 			return; // Memory allocation failed
 		}
 
-		strcpy(html, "<script type=\"text/javascript\">\n");
-		strcat(html, "$('form').submit(function (e) {\n");
-		strcat(html, "e.preventDefault();\n");
-		strcat(html, "var data = new FormData(e.currentTarget);\n");
-		strcat(html, "if(e.currentTarget.id===\"formMSG\") document.getElementById(\"submitMSG\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formBLN\") document.getElementById(\"submitBLN\").disabled=true;\n");
-		// strcat(html, "if(e.currentTarget.id===\"formChat\") document.getElementById(\"submitI2C0\").disabled=true;\n");
-		strcat(html, "$.ajax({\n");
-		strcat(html, "url: '/msg',\n");
-		strcat(html, "type: 'POST',\n");
-		strcat(html, "data: data,\n");
-		strcat(html, "contentType: false,\n");
-		strcat(html, "processData: false,\n");
-		strcat(html, "success: function (data) {\n");
-		strcat(html, "if(e.currentTarget.id===\"formMSG\") alert(\"Submited Successfully\");\n");
-		strcat(html, "if(e.currentTarget.id===\"formBLN\") alert(\"Submited Successfully\");\n");
-		strcat(html, "},\n");
-		strcat(html, "error: function (data) {\n");
-		strcat(html, "if(e.currentTarget.id===\"formMSG\") alert(\"An error occurred.\");\n");
-		strcat(html, "if(e.currentTarget.id===\"formBLN\") alert(\"An error occurred.\");\n");
-		strcat(html, "}\n");
-		strcat(html, "});\n");
-		strcat(html, "});\n");
+		html->print("<script type=\"text/javascript\">\n");
+		html->print("$('form').submit(function (e) {\n");
+		html->print("e.preventDefault();\n");
+		html->print("var data = new FormData(e.currentTarget);\n");
+		html->print("if(e.currentTarget.id===\"formMSG\") document.getElementById(\"submitMSG\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formBLN\") document.getElementById(\"submitBLN\").disabled=true;\n");
+		// html->print("if(e.currentTarget.id===\"formChat\") document.getElementById(\"submitI2C0\").disabled=true;\n");
+		html->print("$.ajax({\n");
+		html->print("url: '/msg',\n");
+		html->print("type: 'POST',\n");
+		html->print("data: data,\n");
+		html->print("contentType: false,\n");
+		html->print("processData: false,\n");
+		html->print("success: function (data) {\n");
+		html->print("if(e.currentTarget.id===\"formMSG\") alert(\"Submited Successfully\");\n");
+		html->print("if(e.currentTarget.id===\"formBLN\") alert(\"Submited Successfully\");\n");
+		html->print("},\n");
+		html->print("error: function (data) {\n");
+		html->print("if(e.currentTarget.id===\"formMSG\") alert(\"An error occurred.\");\n");
+		html->print("if(e.currentTarget.id===\"formBLN\") alert(\"An error occurred.\");\n");
+		html->print("}\n");
+		html->print("});\n");
+		html->print("});\n");
 
-		// strcat(html, "if (!!window.EventSource) {";
+		// html->print("if (!!window.EventSource) {";
 		// strcat(html, "var source = new EventSource('/eventMsg');");
 
-		// strcat(html, "source.addEventListener('open', function(e) {";
+		// html->print("source.addEventListener('open', function(e) {";
 		// strcat(html, "console.log(\"Events MSG Connected\");";
-		// strcat(html, "}, false);";
-		// strcat(html, "source.addEventListener('error', function(e) {";
+		// html->print("}, false);";
+		// html->print("source.addEventListener('error', function(e) {";
 		// strcat(html, "if (e.target.readyState != EventSource.OPEN) {";
 		// strcat(html, "console.log(\"Events MSG Disconnected\");";
-		// strcat(html, "}\n}, false);";
-		// strcat(html, "source.addEventListener('chatMsg', function(e) {";
+		// html->print("}\n}, false);";
+		// html->print("source.addEventListener('chatMsg', function(e) {";
 		// // strcat(html, "console.log(\"lastHeard\", e.data);";
-		// strcat(html, "var lh=document.getElementById(\"chatMsg\");";
-		// strcat(html, "if(lh != null) {lh.innerHTML = e.data;}";
+		// html->print("var lh=document.getElementById(\"chatMsg\");";
+		// html->print("if(lh != null) {lh.innerHTML = e.data;}";
 		// strcat(html, "}, false);\n}";
-		strcat(html, "</script>\n");
+		html->print("</script>\n");
 
-		// strcat(html, "<h2>System Setting</h2>\n");
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formMSG\" method=\"post\">\n");
-		strcat(html, "<table width=\"90%\">\n");
-		strcat(html, "<th colspan=\"2\"><span><b>Message Configuration</b></span></th>\n");
-		strcat(html, "<tr>");
+		// html->print("<h2>System Setting</h2>\n");
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formMSG\" method=\"post\">\n");
+		html->print("<table width=\"90%\">\n");
+		html->print("<th colspan=\"2\"><span><b>Message Configuration</b></span></th>\n");
+		html->print("<tr>");
 
 		// Handle sync flag
 		if (config.msg_enable)
 		{
-			strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
-			strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n");
+			html->print("<td align=\"right\"><b>Enable</b></td>\n");
+			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n");
 		}
 		else
 		{
-			strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
-			strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n");
+			html->print("<td align=\"right\"><b>Enable</b></td>\n");
+			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n");
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>My Callsign:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>My Callsign:</b></td>\n");
 		char temp_buffer[512];
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input  size=\"20\" maxlength=\"9\" name=\"mycall\" type=\"text\" value=\"%s\" /> *<i>Callsign with SSID (Ex. HS5TQA-12)</i></td>\n", config.msg_mycall);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
 		// Handle RF and Internet flags
 		if (config.msg_rf && config.msg_inet)
 		{
-			strcat(html, "<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"msgRf\" value=\"OK\" checked/>RF <input type=\"checkbox\" name=\"msgInet\" value=\"OK\" checked/>Internet </td></tr>\n");
+			html->print("<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"msgRf\" value=\"OK\" checked/>RF <input type=\"checkbox\" name=\"msgInet\" value=\"OK\" checked/>Internet </td></tr>\n");
 		}
 		else if (config.msg_rf)
 		{
-			strcat(html, "<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"msgRf\" value=\"OK\" checked/>RF <input type=\"checkbox\" name=\"msgInet\" value=\"OK\" />Internet </td></tr>\n");
+			html->print("<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"msgRf\" value=\"OK\" checked/>RF <input type=\"checkbox\" name=\"msgInet\" value=\"OK\" />Internet </td></tr>\n");
 		}
 		else if (config.msg_inet)
 		{
-			strcat(html, "<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"msgRf\" value=\"OK\" />RF <input type=\"checkbox\" name=\"msgInet\" value=\"OK\" checked/>Internet </td></tr>\n");
+			html->print("<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"msgRf\" value=\"OK\" />RF <input type=\"checkbox\" name=\"msgInet\" value=\"OK\" checked/>Internet </td></tr>\n");
 		}
 		else
 		{
-			strcat(html, "<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"msgRf\" value=\"OK\" />RF <input type=\"checkbox\" name=\"msgInet\" value=\"OK\" />Internet </td></tr>\n");
+			html->print("<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"msgRf\" value=\"OK\" />RF <input type=\"checkbox\" name=\"msgInet\" value=\"OK\" />Internet </td></tr>\n");
 		}
 
-		strcat(html, "<tr>");
+		html->print("<tr>");
 		if (config.msg_encrypt)
 		{
-			strcat(html, "<td align=\"right\"><b>Encryption</b></td>\n");
-			strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"encrypt\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n");
+			html->print("<td align=\"right\"><b>Encryption</b></td>\n");
+			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"encrypt\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n");
 		}
 		else
 		{
-			strcat(html, "<td align=\"right\"><b>Encryption</b></td>\n");
-			strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"encrypt\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n");
+			html->print("<td align=\"right\"><b>Encryption</b></td>\n");
+			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"encrypt\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n");
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>AES Key:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>AES Key:</b></td>\n");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input  size=\"40\" maxlength=\"33\" name=\"key\" type=\"text\" value=\"%s\" /> *<i>ASCII HEX 16Byte</i></td>\n", config.msg_key);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Send Retry:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Send Retry:</b></td>\n");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input  min=\"0\" max=\"99\"   name=\"retry\" type=\"number\" value=\"%d\" /></td>\n", config.msg_retry);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Send Timeout:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Send Timeout:</b></td>\n");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input  min=\"1\" max=\"9999\"   name=\"timeout\" type=\"number\" value=\"%d\" /> Sec.</td>\n", config.msg_interval);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PATH:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"path\" id=\"path\">\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PATH:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"path\" id=\"path\">\n");
 		for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
 		{
 			snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" ", pthIdx);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 			if (config.msg_path == pthIdx)
 			{
-				strcat(html, "selected>");
+				html->print("selected>");
 			}
 			else
 			{
-				strcat(html, ">");
+				html->print(">");
 			}
 			snprintf(temp_buffer, sizeof(temp_buffer), "%s</option>\n", PATH_NAME[pthIdx]);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 		}
-		strcat(html, "</select></td>\n");
+		html->print("</select></td>\n");
 
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitMSG'  name=\"commitMSG\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitMSG\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form><br /><br />");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitMSG'  name=\"commitMSG\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitMSG\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form><br /><br />");
 
-		strcat(html, "<table width=\"90%\">\n");
-		strcat(html, "<th style=\"background-color: #070ac2;\">CHAT MESSAGE</th>\n");
+		html->print("<table width=\"90%\">\n");
+		html->print("<th style=\"background-color: #070ac2;\">CHAT MESSAGE</th>\n");
 
-		strcat(html, "<tr><td>\n");
-		strcat(html, "<table id=\"chatMsg\">\n");
-		strcat(html, event_chatMessage(true).c_str());
-		strcat(html, "</table>\n");
+		html->print("<tr><td>\n");
+		html->print("<table id=\"chatMsg\">\n");
+		html->print(event_chatMessage(true).c_str());
+		html->print("</table>\n");
 
-		strcat(html, "</td></tr><tr><td colspan=\"5\">");
+		html->print("</td></tr><tr><td colspan=\"5\">");
 
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formChat\" method=\"post\">\n");
-		strcat(html, "<table>\n");
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formChat\" method=\"post\">\n");
+		html->print("<table>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"left\"><b>TO:</b><input size=\"10\" name=\"toCall\" id=\"toCall\" type=\"text\" value=\"\" oninput=\"this.value=this.value.toUpperCase();\" /> <b>MSG:</b><input size=\"80\" name=\"msg\" id=\"msg\" type=\"text\" value=\"\" /></td>\n");
-		strcat(html, "<td align=\"right\">\n");
-		strcat(html, "<input class=\"button\" id=\"submitChat\" name=\"commitChat\" type=\"submit\" value=\"Send\"/>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitChat\"/>\n");
-		strcat(html, "</td></tr></table>\n");
-		strcat(html, "</form><br />\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"left\"><b>TO:</b><input size=\"10\" name=\"toCall\" id=\"toCall\" type=\"text\" value=\"\" oninput=\"this.value=this.value.toUpperCase();\" /> <b>MSG:</b><input size=\"80\" name=\"msg\" id=\"msg\" type=\"text\" value=\"\" /></td>\n");
+		html->print("<td align=\"right\">\n");
+		html->print("<input class=\"button\" id=\"submitChat\" name=\"commitChat\" type=\"submit\" value=\"Send\"/>\n");
+		html->print("<input type=\"hidden\" name=\"commitChat\"/>\n");
+		html->print("</td></tr></table>\n");
+		html->print("</form><br />\n");
 
-		strcat(html, "</td></tr></table><br />\n");
+		html->print("</td></tr></table><br />\n");
 
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formBLN\" method=\"post\">\n");
-		strcat(html, "<table width=\"90%\" style=\"table-layout:fixed;border-collapse:collapse;\">\n");
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formBLN\" method=\"post\">\n");
+		html->print("<table width=\"90%\" style=\"table-layout:fixed;border-collapse:collapse;\">\n");
 		// Bulletins BLN1-BLN9 UI - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
-	strcat(html, "<th colspan=\"6\" style=\"background-color: #070ac2;\"><span><b>Bulletins BLN1-BLN9</b></span></th>\n");
-		strcat(html, "<tr><td colspan=\"6\"><i>Uses the same TX Channel/PATH as Message Configuration above.</i></td></tr>\n");
-		strcat(html, "<tr>");
-		strcat(html, "<td align=\"center\" style=\"width:6%;\"><b>#</b></td>");
-		strcat(html, "<td align=\"center\" style=\"width:8%;\"><b>Enable</b></td>");
-		strcat(html, "<td align=\"center\" style=\"width:50%;\"><b>Text</b></td>");
-		strcat(html, "<td align=\"center\" style=\"width:12%;\"><b>Interval (Sec.)</b></td>");
-		strcat(html, "<td align=\"center\" style=\"width:16%;\"><b>Limit</b><br /><i style=\"font-weight:normal;font-size:8pt;\">0 = unlimited</i></td>");
-		strcat(html, "<td align=\"center\" style=\"width:8%;\"><b>Sent</b></td>");
-		strcat(html, "</tr>\n");
+	html->print("<th colspan=\"6\" style=\"background-color: #070ac2;\"><span><b>Bulletins BLN1-BLN9</b></span></th>\n");
+		html->print("<tr><td colspan=\"6\"><i>Uses the same TX Channel/PATH as Message Configuration above.</i></td></tr>\n");
+		html->print("<tr>");
+		html->print("<td align=\"center\" style=\"width:6%;\"><b>#</b></td>");
+		html->print("<td align=\"center\" style=\"width:8%;\"><b>Enable</b></td>");
+		html->print("<td align=\"center\" style=\"width:50%;\"><b>Text</b></td>");
+		html->print("<td align=\"center\" style=\"width:12%;\"><b>Interval (Sec.)</b></td>");
+		html->print("<td align=\"center\" style=\"width:16%;\"><b>Limit</b><br /><i style=\"font-weight:normal;font-size:8pt;\">0 = unlimited</i></td>");
+		html->print("<td align=\"center\" style=\"width:8%;\"><b>Sent</b></td>");
+		html->print("</tr>\n");
 		for (uint8_t bi = 0; bi < 9; bi++)
 		{
-			strcat(html, "<tr>\n");
+			html->print("<tr>\n");
 			snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><b>BLN%d</b></td>\n", bi + 1);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 
 			if (config.bln_en[bi])
 			{
@@ -3821,34 +3807,31 @@ void handle_msg(AsyncWebServerRequest *request)
 			{
 				snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><label class=\"switch\"><input type=\"checkbox\" name=\"blnEn%d\" value=\"OK\"><span class=\"slider round\"></span></label></td>\n", bi + 1);
 			}
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 
 			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:96%%;box-sizing:border-box;\" maxlength=\"%d\" name=\"blnText%d\" type=\"text\" value=\"%s\" /></td>\n", STATUS_SIZE - 1, bi + 1, config.bln_text[bi]);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 
 			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:90%%;box-sizing:border-box;\" min=\"30\" max=\"86400\" name=\"blnInv%d\" type=\"number\" value=\"%d\" /></td>\n", bi + 1, config.bln_interval[bi]);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 
 			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:90%%;box-sizing:border-box;\" min=\"0\" max=\"65535\" name=\"blnLim%d\" type=\"number\" value=\"%d\" /></td>\n", bi + 1, config.bln_limit[bi]);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 
 			snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\">%u</td>\n", blnSentCount[bi]);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 
-			strcat(html, "</tr>\n");
+			html->print("</tr>\n");
 		}
-		strcat(html, "<tr><td colspan=\"6\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitBLN' name=\"commitBLN\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitBLN\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form><br />\n");
+		html->print("<tr><td colspan=\"6\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitBLN' name=\"commitBLN\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitBLN\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form><br />\n");
 
-		// request->send(200, "text/html", html); // send to someones browser when asked
-		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
-		response->addHeader("MSG", "content");
-		response->addHeader("Cache-Control", "no-cache");
-		request->send(response);
-		free(html); // Free the allocated memory
+		html->addHeader("MSG", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
 	}
 }
 
@@ -3860,67 +3843,7 @@ void handle_mod(AsyncWebServerRequest *request)
 	}
 	StandByTick = millis() + (config.pwr_stanby_delay * 1000);
 
-	if (request->hasArg("commitGNSS"))
-	{
-		bool En = false;
-		for (uint8_t i = 0; i < request->args(); i++)
-		{
-			// Serial.print("SERVER ARGS ");
-			// Serial.print(request->argName(i));
-			// Serial.print("=");
-			// Serial.println(request->arg(i));
-
-			if (request->argName(i) == "Enable")
-			{
-				if (request->arg(i) != "")
-				{
-					// if (isValidNumber(request->arg(i)))
-					if (String(request->arg(i)) == "OK")
-						En = true;
-				}
-			}
-
-			if (request->argName(i) == "atc")
-			{
-				if (request->arg(i) != "")
-				{
-					strcpy(config.gnss_at_command, request->arg(i).c_str());
-				}
-				else
-				{
-					memset(config.gnss_at_command, 0, sizeof(config.gnss_at_command));
-				}
-			}
-
-			if (request->argName(i) == "Host")
-			{
-				if (request->arg(i) != "")
-				{
-					strcpy(config.gnss_tcp_host, request->arg(i).c_str());
-				}
-			}
-
-			if (request->argName(i) == "Port")
-			{
-				if (isValidNumber(request->arg(i)))
-				{
-					config.gnss_tcp_port = request->arg(i).toInt();
-				}
-			}
-
-			if (request->argName(i) == "channel")
-			{
-				if (isValidNumber(request->arg(i)))
-				{
-					config.gnss_channel = request->arg(i).toInt();
-				}
-			}
-		}
-
-		config.gnss_enable = En;
-		saveConfig(request);
-	}
-	else if (request->hasArg("commitUART0"))
+	if (request->hasArg("commitUART0"))
 	{
 		bool En = false;
 		for (uint8_t i = 0; i < request->args(); i++)
@@ -4082,56 +4005,6 @@ void handle_mod(AsyncWebServerRequest *request)
 	// 	String html = "OK";
 	// 	request->send(200, "text/html", html);
 	// }
-	else if (request->hasArg("commitMODBUS"))
-	{
-		bool En = false;
-		for (uint8_t i = 0; i < request->args(); i++)
-		{
-			// Serial.print("SERVER ARGS ");
-			// Serial.print(request->argName(i));
-			// Serial.print("=");
-			// Serial.println(request->arg(i));
-
-			if (request->argName(i) == "Enable")
-			{
-				if (request->arg(i) != "")
-				{
-					// if (isValidNumber(request->arg(i)))
-					if (String(request->arg(i)) == "OK")
-						En = true;
-				}
-			}
-
-			if (request->argName(i) == "channel")
-			{
-				if (isValidNumber(request->arg(i)))
-				{
-					config.modbus_channel = request->arg(i).toInt();
-				}
-			}
-
-			if (request->argName(i) == "address")
-			{
-				if (isValidNumber(request->arg(i)))
-				{
-					config.modbus_address = request->arg(i).toInt();
-				}
-			}
-
-			if (request->argName(i) == "de")
-			{
-				if (request->arg(i) != "")
-				{
-					config.modbus_de_gpio = request->arg(i).toInt();
-				}
-			}
-		}
-
-		config.modbus_enable = En;
-		saveConfiguration("/default.cfg", config);
-		String html = "OK";
-		request->send(200, "text/html", html);
-	}
 	else if (request->hasArg("commitTNC"))
 	{
 		bool En = false;
@@ -4208,40 +4081,6 @@ void handle_mod(AsyncWebServerRequest *request)
 			}
 		}
 		config.tcp_kiss_enable = En;
-		saveConfiguration("/default.cfg", config);
-		String html = "OK";
-		request->send(200, "text/html", html);
-	}
-	else if (request->hasArg("commitONEWIRE"))
-	{
-		bool En = false;
-		for (uint8_t i = 0; i < request->args(); i++)
-		{
-			// Serial.print("SERVER ARGS ");
-			// Serial.print(request->argName(i));
-			// Serial.print("=");
-			// Serial.println(request->arg(i));
-
-			if (request->argName(i) == "Enable")
-			{
-				if (request->arg(i) != "")
-				{
-					// if (isValidNumber(request->arg(i)))
-					if (String(request->arg(i)) == "OK")
-						En = true;
-				}
-			}
-
-			if (request->argName(i) == "data")
-			{
-				if (request->arg(i) != "")
-				{
-					config.onewire_gpio = request->arg(i).toInt();
-				}
-			}
-		}
-
-		config.onewire_enable = En;
 		saveConfiguration("/default.cfg", config);
 		String html = "OK";
 		request->send(200, "text/html", html);
@@ -4352,180 +4191,6 @@ void handle_mod(AsyncWebServerRequest *request)
 				}
 			}
 		}
-		saveConfiguration("/default.cfg", config);
-		String html = "OK";
-		request->send(200, "text/html", html);
-	}
-	else if (request->hasArg("commitI2C0"))
-	{
-		bool En = false;
-		for (uint8_t i = 0; i < request->args(); i++)
-		{
-			// Serial.print("SERVER ARGS ");
-			// Serial.print(request->argName(i));
-			// Serial.print("=");
-			// Serial.println(request->arg(i));
-
-			if (request->argName(i) == "Enable")
-			{
-				if (request->arg(i) != "")
-				{
-					if (String(request->arg(i)) == "OK")
-						En = true;
-				}
-			}
-
-			if (request->argName(i) == "sda")
-			{
-				if (request->arg(i) != "")
-				{
-					config.i2c_sda_pin = request->arg(i).toInt();
-				}
-			}
-			if (request->argName(i) == "sck")
-			{
-				if (request->arg(i) != "")
-				{
-					config.i2c_sck_pin = request->arg(i).toInt();
-				}
-			}
-			if (request->argName(i) == "freq")
-			{
-				if (request->arg(i) != "")
-				{
-					config.i2c_freq = request->arg(i).toInt();
-				}
-			}
-		}
-
-		config.i2c_enable = En;
-		saveConfiguration("/default.cfg", config);
-		String html = "OK";
-		request->send(200, "text/html", html);
-	}
-	else if (request->hasArg("commitI2C1"))
-	{
-		bool En = false;
-		for (uint8_t i = 0; i < request->args(); i++)
-		{
-			// Serial.print("SERVER ARGS ");
-			// Serial.print(request->argName(i));
-			// Serial.print("=");
-			// Serial.println(request->arg(i));
-
-			if (request->argName(i) == "Enable")
-			{
-				if (request->arg(i) != "")
-				{
-					if (String(request->arg(i)) == "OK")
-						En = true;
-				}
-			}
-
-			if (request->argName(i) == "sda")
-			{
-				if (request->arg(i) != "")
-				{
-					config.i2c1_sda_pin = request->arg(i).toInt();
-				}
-			}
-			if (request->argName(i) == "sck")
-			{
-				if (request->arg(i) != "")
-				{
-					config.i2c1_sck_pin = request->arg(i).toInt();
-				}
-			}
-			if (request->argName(i) == "freq")
-			{
-				if (request->arg(i) != "")
-				{
-					config.i2c1_freq = request->arg(i).toInt();
-				}
-			}
-		}
-
-		config.i2c1_enable = En;
-		saveConfiguration("/default.cfg", config);
-		String html = "OK";
-		request->send(200, "text/html", html);
-	}
-	else if (request->hasArg("commitCOUNTER0"))
-	{
-		bool En = false;
-		for (uint8_t i = 0; i < request->args(); i++)
-		{
-			// Serial.print("SERVER ARGS ");
-			// Serial.print(request->argName(i));
-			// Serial.print("=");
-			// Serial.println(request->arg(i));
-
-			if (request->argName(i) == "Enable")
-			{
-				if (request->arg(i) != "")
-				{
-					if (String(request->arg(i)) == "OK")
-						En = true;
-				}
-			}
-
-			if (request->argName(i) == "gpio")
-			{
-				if (request->arg(i) != "")
-				{
-					config.counter0_gpio = request->arg(i).toInt();
-				}
-			}
-			if (request->argName(i) == "active")
-			{
-				if (request->arg(i) != "")
-				{
-					config.counter0_active = (bool)request->arg(i).toInt();
-				}
-			}
-		}
-
-		config.counter0_enable = En;
-		saveConfiguration("/default.cfg", config);
-		String html = "OK";
-		request->send(200, "text/html", html);
-	}
-	else if (request->hasArg("commitCOUNTER1"))
-	{
-		bool En = false;
-		for (uint8_t i = 0; i < request->args(); i++)
-		{
-			// Serial.print("SERVER ARGS ");
-			// Serial.print(request->argName(i));
-			// Serial.print("=");
-			// Serial.println(request->arg(i));
-
-			if (request->argName(i) == "Enable")
-			{
-				if (request->arg(i) != "")
-				{
-					if (String(request->arg(i)) == "OK")
-						En = true;
-				}
-			}
-
-			if (request->argName(i) == "gpio")
-			{
-				if (request->arg(i) != "")
-				{
-					config.counter1_gpio = request->arg(i).toInt();
-				}
-			}
-			if (request->argName(i) == "active")
-			{
-				if (request->arg(i) != "")
-				{
-					config.counter1_active = (bool)request->arg(i).toInt();
-				}
-			}
-		}
-
-		config.counter0_enable = En;
 		saveConfiguration("/default.cfg", config);
 		String html = "OK";
 		request->send(200, "text/html", html);
@@ -4750,243 +4415,335 @@ void handle_mod(AsyncWebServerRequest *request)
 #endif
 	else
 	{
-		// Allocate memory for the HTML string
-		char *html = allocateStringMemory(30000); // Start with 8KB, adjust as needed
-		if (html == NULL)
+		// Streamed response: avoids a single large calloc() for the whole page
+		// (same fix already applied to handle_igate/wx/sensor/etc after we
+		// confirmed via live heap-integrity diagnostics that the single big
+		// contiguous allocation was the reproducible trigger for a heap
+		// corruption assert under real traffic).
+		AsyncResponseStream *html = request->beginResponseStream("text/html", 55000);
+		if (!html)
 		{
 			request->send(500, "text/html", "Memory allocation failed");
 			return;
 		}
 
 		// Initialize the HTML string with the JavaScript code
-		strcpy(html, "<script type=\"text/javascript\">\n");
-		strcat(html, "$('form').submit(function (e) {\n");
-		strcat(html, "e.preventDefault();\n");
-		strcat(html, "var data = new FormData(e.currentTarget);\n");
-		strcat(html, "if(e.currentTarget.id===\"formUART0\") document.getElementById(\"submitURAT0\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formUART1\") document.getElementById(\"submitURAT1\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formUART1\") document.getElementById(\"submitURAT1\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formGNSS\") document.getElementById(\"submitGNSS\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formMODBUS\") document.getElementById(\"submitMODBUS\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formTNC\") document.getElementById(\"submitTNC\").disabled=true;\n");
-		// strcat(html, "if(e.currentTarget.id===\"formONEWIRE\") document.getElementById(\"submitONEWIRE\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formRF\") document.getElementById(\"submitRF\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formI2C0\") document.getElementById(\"submitI2C0\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formI2C1\") document.getElementById(\"submitI2C1\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formCOUNT0\") document.getElementById(\"submitCOUNT0\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formCOUNT1\") document.getElementById(\"submitCOUNT1\").disabled=true;\n");
+		html->print("<script type=\"text/javascript\">\n");
+		html->print("$('form').submit(function (e) {\n");
+		html->print("e.preventDefault();\n");
+		html->print("var data = new FormData(e.currentTarget);\n");
+		html->print("if(e.currentTarget.id===\"formUART0\") document.getElementById(\"submitURAT0\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formUART1\") document.getElementById(\"submitURAT1\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formUART1\") document.getElementById(\"submitURAT1\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formGNSS\") document.getElementById(\"submitGNSS\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formMODBUS\") document.getElementById(\"submitMODBUS\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formTNC\") document.getElementById(\"submitTNC\").disabled=true;\n");
+		// html->print("if(e.currentTarget.id===\"formONEWIRE\") document.getElementById(\"submitONEWIRE\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formRF\") document.getElementById(\"submitRF\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formI2C0\") document.getElementById(\"submitI2C0\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formI2C1\") document.getElementById(\"submitI2C1\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formCOUNT0\") document.getElementById(\"submitCOUNT0\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formCOUNT1\") document.getElementById(\"submitCOUNT1\").disabled=true;\n");
 #ifdef PPPOS
-		strcat(html, "if(e.currentTarget.id===\"formPPPoS\") document.getElementById(\"submitPPPoS\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formPPPoS\") document.getElementById(\"submitPPPoS\").disabled=true;\n");
 #endif
-		strcat(html, "$.ajax({\n");
-		strcat(html, "url: '/mod',\n");
-		strcat(html, "type: 'POST',\n");
-		strcat(html, "data: data,\n");
-		strcat(html, "contentType: false,\n");
-		strcat(html, "processData: false,\n");
-		strcat(html, "success: function (data) {\n");
-		strcat(html, "alert(\"Submited Successfully\\nRequire hardware REBOOT!\");\n");
-		strcat(html, "},\n");
-		strcat(html, "error: function (data) {\n");
-		strcat(html, "alert(\"An error occurred.\");\n");
-		strcat(html, "}\n");
-		strcat(html, "});\n");
-		strcat(html, "});\n");
-		strcat(html, "</script>\n");
+		html->print("$.ajax({\n");
+		html->print("url: '/mod',\n");
+		html->print("type: 'POST',\n");
+		html->print("data: data,\n");
+		html->print("contentType: false,\n");
+		html->print("processData: false,\n");
+		html->print("success: function (data) {\n");
+		html->print("alert(\"Submited Successfully\\nRequire hardware REBOOT!\");\n");
+		html->print("},\n");
+		html->print("error: function (data) {\n");
+		html->print("alert(\"An error occurred.\");\n");
+		html->print("}\n");
+		html->print("});\n");
+		html->print("});\n");
+		html->print("</script>\n");
 
-		strcat(html, "<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"32%\" style=\"border:unset;\">\n");
-		// strcat(html, "<h2>System Setting</h2>\n");
+		html->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"32%\" style=\"border:unset;\">\n");
+		// html->print("<h2>System Setting</h2>\n");
 		/**************UART0(USB) Modify******************/
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromUART0\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>UART0 Modify</b></span></th>\n");
-		strcat(html, "<tr>\n");
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromUART0\" method=\"post\">\n");
+		html->print("<table>\n");
+		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
+		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
+		html->print("<th colspan=\"2\"><span><b>UART0 Modify</b></span></th>\n");
+		html->print("<tr>\n");
 
 		char enFlage[20] = "";
 		if (config.uart0_enable)
 			strcpy(enFlage, "checked");
-		strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
+		html->print("<td align=\"right\"><b>Enable</b></td>\n");
 		{
 			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(enFlage) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", enFlage);
-			strcat(html, temp_html);
-			free(temp_html);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", enFlage);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>RX GPIO:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>RX GPIO:</b></td>\n");
 		{
 			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
 			char *rx_gpio_str = StringToCharPtr(String(config.uart0_rx_gpio));
 			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"rx\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(rx_gpio_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"rx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rx_gpio_str);
-			strcat(html, temp_html);
-			free(temp_html);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"rx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rx_gpio_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
 			free(gpio_max_str);
 			free(rx_gpio_str);
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>TX GPIO:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>TX GPIO:</b></td>\n");
 		{
 			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
 			char *tx_gpio_str = StringToCharPtr(String(config.uart0_tx_gpio));
 			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"tx\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(tx_gpio_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"tx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, tx_gpio_str);
-			strcat(html, temp_html);
-			free(temp_html);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"tx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, tx_gpio_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
 			free(gpio_max_str);
 			free(tx_gpio_str);
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>RTS/DE GPIO:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>RTS/DE GPIO:</b></td>\n");
 		{
 			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
 			char *rts_gpio_str = StringToCharPtr(String(config.uart0_rts_gpio));
 			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\"  name=\"rts\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(rts_gpio_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"rts\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rts_gpio_str);
-			strcat(html, temp_html);
-			free(temp_html);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"rts\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rts_gpio_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
 			free(gpio_max_str);
 			free(rts_gpio_str);
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Baudrate:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"baudrate\" id=\"baudrate\">\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Baudrate:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"baudrate\" id=\"baudrate\">\n");
 		for (int i = 0; i < 13; i++)
 		{
 			char *baudrate_str = StringToCharPtr(String(baudrate[i]));
 			if (config.uart0_baudrate == baudrate[i])
 			{
 				char *temp_html = allocateStringMemory(strlen("<option value=\"\" selected>  </option>\n") + 2 * strlen(baudrate_str) + 1);
-				sprintf(temp_html, "<option value=\"%s\" selected>%s </option>\n", baudrate_str, baudrate_str);
-				strcat(html, temp_html);
-				free(temp_html);
+				if (temp_html)
+				{
+					sprintf(temp_html, "<option value=\"%s\" selected>%s </option>\n", baudrate_str, baudrate_str);
+					html->print(temp_html);
+					free(temp_html);
+				}
+				else
+				{
+					log_e("MOD page: temp_html allocation failed, skipping field");
+				}
 			}
 			else
 			{
 				char *temp_html = allocateStringMemory(strlen("<option value=\"\" >  </option>\n") + 2 * strlen(baudrate_str) + 1);
-				sprintf(temp_html, "<option value=\"%s\" >%s </option>\n", baudrate_str, baudrate_str);
-				strcat(html, temp_html);
-				free(temp_html);
+				if (temp_html)
+				{
+					sprintf(temp_html, "<option value=\"%s\" >%s </option>\n", baudrate_str, baudrate_str);
+					html->print(temp_html);
+					free(temp_html);
+				}
+				else
+				{
+					log_e("MOD page: temp_html allocation failed, skipping field");
+				}
 			}
 			free(baudrate_str);
 		}
-		strcat(html, "</select> bps\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<input class=\"button\" id=\"submitUART0\" name=\"commitUART0\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitUART0\"/>\n");
-		strcat(html, "</td></tr></table>\n");
+		html->print("</select> bps\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<input class=\"button\" id=\"submitUART0\" name=\"commitUART0\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
+		html->print("<input type=\"hidden\" name=\"commitUART0\"/>\n");
+		html->print("</td></tr></table>\n");
 
-		strcat(html, "</form><br />\n");
-		strcat(html, "</td><td width=\"32%\" style=\"border:unset;\">");
+		html->print("</form><br />\n");
+		html->print("</td><td width=\"32%\" style=\"border:unset;\">");
 
 		/**************UART1 Modify******************/
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromUART1\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>UART1 Modify</b></span></th>\n");
-		strcat(html, "<tr>");
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromUART1\" method=\"post\">\n");
+		html->print("<table>\n");
+		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
+		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
+		html->print("<th colspan=\"2\"><span><b>UART1 Modify</b></span></th>\n");
+		html->print("<tr>");
 
 		if (config.uart1_enable)
 			strcpy(enFlage, "checked");
 		else
 			strcpy(enFlage, "");
-		strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
+		html->print("<td align=\"right\"><b>Enable</b></td>\n");
 		{
 			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(enFlage) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", enFlage);
-			strcat(html, temp_html);
-			free(temp_html);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", enFlage);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>RX GPIO:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>RX GPIO:</b></td>\n");
 		{
 			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
 			char *rx_gpio_str = StringToCharPtr(String(config.uart1_rx_gpio));
 			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"rx\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(rx_gpio_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"rx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rx_gpio_str);
-			strcat(html, temp_html);
-			free(temp_html);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"rx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rx_gpio_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
 			free(gpio_max_str);
 			free(rx_gpio_str);
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>TX GPIO:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>TX GPIO:</b></td>\n");
 		{
 			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
 			char *tx_gpio_str = StringToCharPtr(String(config.uart1_tx_gpio));
 			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"tx\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(tx_gpio_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"tx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, tx_gpio_str);
-			strcat(html, temp_html);
-			free(temp_html);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"tx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, tx_gpio_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
 			free(gpio_max_str);
 			free(tx_gpio_str);
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>RTS/DE GPIO:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>RTS/DE GPIO:</b></td>\n");
 		{
 			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
 			char *rts_gpio_str = StringToCharPtr(String(config.uart1_rts_gpio));
 			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\"  name=\"rts\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(rts_gpio_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"rts\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rts_gpio_str);
-			strcat(html, temp_html);
-			free(temp_html);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"rts\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rts_gpio_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
 			free(gpio_max_str);
 			free(rts_gpio_str);
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Baudrate:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"baudrate\" id=\"baudrate\">\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Baudrate:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"baudrate\" id=\"baudrate\">\n");
 		for (int i = 0; i < 13; i++)
 		{
 			char *baudrate_str = StringToCharPtr(String(baudrate[i]));
 			if (config.uart1_baudrate == baudrate[i])
 			{
 				char *temp_html = allocateStringMemory(strlen("<option value=\"\" selected>  </option>\n") + 2 * strlen(baudrate_str) + 1);
-				sprintf(temp_html, "<option value=\"%s\" selected>%s </option>\n", baudrate_str, baudrate_str);
-				strcat(html, temp_html);
-				free(temp_html);
+				if (temp_html)
+				{
+					sprintf(temp_html, "<option value=\"%s\" selected>%s </option>\n", baudrate_str, baudrate_str);
+					html->print(temp_html);
+					free(temp_html);
+				}
+				else
+				{
+					log_e("MOD page: temp_html allocation failed, skipping field");
+				}
 			}
 			else
 			{
 				char *temp_html = allocateStringMemory(strlen("<option value=\"\" >  </option>\n") + 2 * strlen(baudrate_str) + 1);
-				sprintf(temp_html, "<option value=\"%s\" >%s </option>\n", baudrate_str, baudrate_str);
-				strcat(html, temp_html);
-				free(temp_html);
+				if (temp_html)
+				{
+					sprintf(temp_html, "<option value=\"%s\" >%s </option>\n", baudrate_str, baudrate_str);
+					html->print(temp_html);
+					free(temp_html);
+				}
+				else
+				{
+					log_e("MOD page: temp_html allocation failed, skipping field");
+				}
 			}
 			free(baudrate_str);
 		}
-		strcat(html, "</select> bps\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<input class=\"button\" id=\"submitUART1\" name=\"commitUART1\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitUART1\"/>\n");
-		strcat(html, "</td></tr></table>\n");
+		html->print("</select> bps\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<input class=\"button\" id=\"submitUART1\" name=\"commitUART1\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
+		html->print("<input type=\"hidden\" name=\"commitUART1\"/>\n");
+		html->print("</td></tr></table>\n");
 
-		strcat(html, "</form><br />\n");
-		// strcat(html, "</td><td width=\"32%\" style=\"border:unset;\">");
+		html->print("</form><br />\n");
+		// html->print("</td><td width=\"32%\" style=\"border:unset;\">");
 
 		/**************UART2 Modify******************/
-		// strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromUART2\" method=\"post\">\n");
+		// html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromUART2\" method=\"post\">\n");
 		// html += "<table>\n";
 		// html += "<th colspan=\"2\"><span><b>UART2 Modify</b></span></th>\n";
 		// html += "<tr>";
@@ -5035,59 +4792,21 @@ void handle_mod(AsyncWebServerRequest *request)
 		// html += "</form><br />\n";
 		// html += "</td></tr></table>\n";
 
-		strcat(html, "</td><td width=\"32%\" style=\"border:unset;\">");
+		html->print("</td></tr></table>\n");
 
-		/**************1-Wire Modify******************/
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromONEWIRE\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>1-Wire Bus Modify</b></span></th>\n");
-		strcat(html, "<tr>");
-
-		String syncFlage = "";
-		if (config.onewire_enable)
-			syncFlage = "checked";
-		strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
-		{
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(syncFlage.c_str()) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", syncFlage.c_str());
-			strcat(html, temp_html);
-			free(temp_html);
-		}
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *onewire_gpio_str = StringToCharPtr(String(config.onewire_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"data\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(onewire_gpio_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"data\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, onewire_gpio_str);
-			strcat(html, temp_html);
-			free(temp_html);
-			free(gpio_max_str);
-			free(onewire_gpio_str);
-		}
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<input class=\"button\" id=\"submitONEWIRE\" name=\"commitONEWIRE\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitONEWIRE\"/>\n");
-		strcat(html, "</td></tr></table>\n");
-		strcat(html, "</form><br />\n");
-
-		strcat(html, "</td></tr></table>\n");
-
-		strcat(html, "<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">");
+		html->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">");
 		/**************RF GPIO******************/
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromRF\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>RF GPIO Modify</b></span></th>\n");
-		strcat(html, "<tr>");
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromRF\" method=\"post\">\n");
+		html->print("<table>\n");
+		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
+		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
+		html->print("<th colspan=\"2\"><span><b>RF GPIO Modify</b></span></th>\n");
+		html->print("<tr>");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>ADC Attenuation:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"atten\" id=\"atten\">\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>ADC Attenuation:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"atten\" id=\"atten\">\n");
 		for (int i = 0; i < 5; i++)
 		{
 			char *i_str = StringToCharPtr(String(i));
@@ -5095,16 +4814,30 @@ void handle_mod(AsyncWebServerRequest *request)
 			if (config.adc_atten == i)
 			{
 				char *temp_html = allocateStringMemory(strlen("<option value=\"\" selected>  </option>\n") + strlen(i_str) + strlen(atten_str) + 1);
-				sprintf(temp_html, "<option value=\"%s\" selected>%s </option>\n", i_str, atten_str);
-				strcat(html, temp_html);
-				free(temp_html);
+				if (temp_html)
+				{
+					sprintf(temp_html, "<option value=\"%s\" selected>%s </option>\n", i_str, atten_str);
+					html->print(temp_html);
+					free(temp_html);
+				}
+				else
+				{
+					log_e("MOD page: temp_html allocation failed, skipping field");
+				}
 			}
 			else
 			{
 				char *temp_html = allocateStringMemory(strlen("<option value=\"\" >  </option>\n") + strlen(i_str) + strlen(atten_str) + 1);
-				sprintf(temp_html, "<option value=\"%s\" >%s </option>\n", i_str, atten_str);
-				strcat(html, temp_html);
-				free(temp_html);
+				if (temp_html)
+				{
+					sprintf(temp_html, "<option value=\"%s\" >%s </option>\n", i_str, atten_str);
+					html->print(temp_html);
+					free(temp_html);
+				}
+				else
+				{
+					log_e("MOD page: temp_html allocation failed, skipping field");
+				}
 			}
 			free(i_str);
 			free(atten_str);
@@ -5112,73 +4845,108 @@ void handle_mod(AsyncWebServerRequest *request)
 		{
 			char *offset_str = StringToCharPtr(String(offset));
 			char *temp_html = allocateStringMemory(strlen("</select> DC-Offset:  mV\n") + strlen(offset_str) + 1);
-			sprintf(temp_html, "</select> DC-Offset: %s mV\n", offset_str);
-			strcat(html, temp_html);
-			free(temp_html);
+			if (temp_html)
+			{
+				sprintf(temp_html, "</select> DC-Offset: %s mV\n", offset_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
 			free(offset_str);
 		}
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>UART Baudrate:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"baudrate\" id=\"baudrate\">\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>UART Baudrate:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"baudrate\" id=\"baudrate\">\n");
 		for (int i = 0; i < 13; i++)
 		{
 			char *baudrate_str = StringToCharPtr(String(baudrate[i]));
 			if (config.rf_baudrate == baudrate[i])
 			{
 				char *temp_html = allocateStringMemory(strlen("<option value=\"\" selected>  </option>\n") + 2 * strlen(baudrate_str) + 1);
-				sprintf(temp_html, "<option value=\"%s\" selected>%s </option>\n", baudrate_str, baudrate_str);
-				strcat(html, temp_html);
-				free(temp_html);
+				if (temp_html)
+				{
+					sprintf(temp_html, "<option value=\"%s\" selected>%s </option>\n", baudrate_str, baudrate_str);
+					html->print(temp_html);
+					free(temp_html);
+				}
+				else
+				{
+					log_e("MOD page: temp_html allocation failed, skipping field");
+				}
 			}
 			else
 			{
 				char *temp_html = allocateStringMemory(strlen("<option value=\"\" >  </option>\n") + 2 * strlen(baudrate_str) + 1);
-				sprintf(temp_html, "<option value=\"%s\" >%s </option>\n", baudrate_str, baudrate_str);
-				strcat(html, temp_html);
-				free(temp_html);
+				if (temp_html)
+				{
+					sprintf(temp_html, "<option value=\"%s\" >%s </option>\n", baudrate_str, baudrate_str);
+					html->print(temp_html);
+					free(temp_html);
+				}
+				else
+				{
+					log_e("MOD page: temp_html allocation failed, skipping field");
+				}
 			}
 			free(baudrate_str);
 		}
-		strcat(html, "</select> bps\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
+		html->print("</select> bps\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
 
 		// html += "<tr>\n";
 		// html += "<td align=\"right\"><b>ADC DC OFFSET:</b></td>\n";
 		// html += "<td style=\"text-align: left;\"><input min=\"100\" max=\"2500\" name=\"offset\" type=\"number\" value=\"" + String(config.adc_dc_offset) + "\" /> mV     (Current: " + String(offset) + " mV)</td>\n";
-		// strcat(html, "</tr>\n");
+		// html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>UART RX GPIO:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>UART RX GPIO:</b></td>\n");
 		{
 			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
 			char *rf_rx_gpio_str = StringToCharPtr(String(config.rf_rx_gpio));
 			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"rx\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(rf_rx_gpio_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"rx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rf_rx_gpio_str);
-			strcat(html, temp_html);
-			free(temp_html);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"rx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rf_rx_gpio_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
 			free(gpio_max_str);
 			free(rf_rx_gpio_str);
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>UART TX GPIO:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>UART TX GPIO:</b></td>\n");
 		{
 			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
 			char *rf_tx_gpio_str = StringToCharPtr(String(config.rf_tx_gpio));
 			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"tx\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(rf_tx_gpio_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"tx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rf_tx_gpio_str);
-			strcat(html, temp_html);
-			free(temp_html);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"tx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rf_tx_gpio_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
 			free(gpio_max_str);
 			free(rf_tx_gpio_str);
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
 		char LowFlag[20] = "", HighFlag[20] = "";
 		strcpy(LowFlag, "");
@@ -5187,19 +4955,26 @@ void handle_mod(AsyncWebServerRequest *request)
 			strcpy(HighFlag, "checked=\"checked\"");
 		else
 			strcpy(LowFlag, "checked=\"checked\"");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PD GPIO:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PD GPIO:</b></td>\n");
 		{
 			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
 			char *rf_pd_gpio_str = StringToCharPtr(String(config.rf_pd_gpio));
 			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\"  name=\"pd\" type=\"number\" value=\"\" /> Active:<input type=\"radio\" name=\"pd_active\" value=\"0\"  />LOW <input type=\"radio\" name=\"pd_active\" value=\"1\"  />HIGH </td>\n") + strlen(gpio_max_str) + strlen(rf_pd_gpio_str) + strlen(LowFlag) + strlen(HighFlag) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"pd\" type=\"number\" value=\"%s\" /> Active:<input type=\"radio\" name=\"pd_active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"pd_active\" value=\"1\" %s/>HIGH </td>\n", gpio_max_str, rf_pd_gpio_str, LowFlag, HighFlag);
-			strcat(html, temp_html);
-			free(temp_html);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"pd\" type=\"number\" value=\"%s\" /> Active:<input type=\"radio\" name=\"pd_active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"pd_active\" value=\"1\" %s/>HIGH </td>\n", gpio_max_str, rf_pd_gpio_str, LowFlag, HighFlag);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
 			free(gpio_max_str);
 			free(rf_pd_gpio_str);
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
 		sprintf(LowFlag, "");
 		sprintf(HighFlag, "");
@@ -5207,19 +4982,26 @@ void handle_mod(AsyncWebServerRequest *request)
 			strcpy(HighFlag, "checked=\"checked\"");
 		else
 			strcpy(LowFlag, "checked=\"checked\"");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>H/L GPIO:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>H/L GPIO:</b></td>\n");
 		{
 			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
 			char *rf_pwr_gpio_str = StringToCharPtr(String(config.rf_pwr_gpio));
 			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\"  name=\"pwr\" type=\"number\" value=\"\" /> Active:<input type=\"radio\" name=\"pwr_active\" value=\"0\"  />LOW <input type=\"radio\" name=\"pwr_active\" value=\"1\"  />HIGH </td>\n") + strlen(gpio_max_str) + strlen(rf_pwr_gpio_str) + strlen(LowFlag) + strlen(HighFlag) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"pwr\" type=\"number\" value=\"%s\" /> Active:<input type=\"radio\" name=\"pwr_active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"pwr_active\" value=\"1\" %s/>HIGH </td>\n", gpio_max_str, rf_pwr_gpio_str, LowFlag, HighFlag);
-			strcat(html, temp_html);
-			free(temp_html);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"pwr\" type=\"number\" value=\"%s\" /> Active:<input type=\"radio\" name=\"pwr_active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"pwr_active\" value=\"1\" %s/>HIGH </td>\n", gpio_max_str, rf_pwr_gpio_str, LowFlag, HighFlag);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
 			free(gpio_max_str);
 			free(rf_pwr_gpio_str);
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
 		sprintf(LowFlag, "");
 		sprintf(HighFlag, "");
@@ -5227,19 +5009,26 @@ void handle_mod(AsyncWebServerRequest *request)
 			strcpy(HighFlag, "checked=\"checked\"");
 		else
 			strcpy(LowFlag, "checked=\"checked\"");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>SQL GPIO:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>SQL GPIO:</b></td>\n");
 		{
 			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
 			char *rf_sql_gpio_str = StringToCharPtr(String(config.rf_sql_gpio));
 			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\"  name=\"sql\" type=\"number\" value=\"\" /> Active:<input type=\"radio\" name=\"sql_active\" value=\"0\"  />LOW <input type=\"radio\" name=\"sql_active\" value=\"1\"  />HIGH </td>\n") + strlen(gpio_max_str) + strlen(rf_sql_gpio_str) + strlen(LowFlag) + strlen(HighFlag) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"sql\" type=\"number\" value=\"%s\" /> Active:<input type=\"radio\" name=\"sql_active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"sql_active\" value=\"1\" %s/>HIGH </td>\n", gpio_max_str, rf_sql_gpio_str, LowFlag, HighFlag);
-			strcat(html, temp_html);
-			free(temp_html);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"sql\" type=\"number\" value=\"%s\" /> Active:<input type=\"radio\" name=\"sql_active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"sql_active\" value=\"1\" %s/>HIGH </td>\n", gpio_max_str, rf_sql_gpio_str, LowFlag, HighFlag);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
 			free(gpio_max_str);
 			free(rf_sql_gpio_str);
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
 		sprintf(LowFlag, "");
 		sprintf(HighFlag, "");
@@ -5247,523 +5036,150 @@ void handle_mod(AsyncWebServerRequest *request)
 			strcpy(HighFlag, "checked=\"checked\"");
 		else
 			strcpy(LowFlag, "checked=\"checked\"");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PTT GPIO:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PTT GPIO:</b></td>\n");
 		{
 			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
 			char *rf_ptt_gpio_str = StringToCharPtr(String(config.rf_ptt_gpio));
 			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\"  name=\"ptt\" type=\"number\" value=\"\" /> Active:<input type=\"radio\" name=\"ptt_active\" value=\"0\"  />LOW <input type=\"radio\" name=\"ptt_active\" value=\"1\"  />HIGH </td>\n") + strlen(gpio_max_str) + strlen(rf_ptt_gpio_str) + strlen(LowFlag) + strlen(HighFlag) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"ptt\" type=\"number\" value=\"%s\" /> Active:<input type=\"radio\" name=\"ptt_active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"ptt_active\" value=\"1\" %s/>HIGH </td>\n", gpio_max_str, rf_ptt_gpio_str, LowFlag, HighFlag);
-			strcat(html, temp_html);
-			free(temp_html);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"ptt\" type=\"number\" value=\"%s\" /> Active:<input type=\"radio\" name=\"ptt_active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"ptt_active\" value=\"1\" %s/>HIGH </td>\n", gpio_max_str, rf_ptt_gpio_str, LowFlag, HighFlag);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
 			free(gpio_max_str);
 			free(rf_ptt_gpio_str);
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<input class=\"button\" id=\"submitRF\" name=\"commitRF\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitRF\"/>\n");
-		strcat(html, "</td></tr></table>\n");
-		strcat(html, "</form>\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<input class=\"button\" id=\"submitRF\" name=\"commitRF\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
+		html->print("<input type=\"hidden\" name=\"commitRF\"/>\n");
+		html->print("</td></tr></table>\n");
+		html->print("</form>\n");
 
-		strcat(html, "</td><td width=\"23%\" style=\"border:unset;\">");
+		html->print("</td></tr></table>\n");
+		html->print("<br />\n");
 
-		/**************I2C_0 Modify******************/
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromI2C0\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>I2C_0(OLED) Modify</b></span></th>\n");
-		strcat(html, "<tr>");
-
-		syncFlage = "";
-		if (config.i2c_enable)
-			syncFlage = "checked";
-		strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
-		{
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(syncFlage.c_str()) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", syncFlage.c_str());
-			strcat(html, temp_html);
-			free(temp_html);
-		}
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>SDA GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *i2c_sda_pin_str = StringToCharPtr(String(config.i2c_sda_pin));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"sda\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(i2c_sda_pin_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"sda\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, i2c_sda_pin_str);
-			strcat(html, temp_html);
-			free(temp_html);
-			free(gpio_max_str);
-			free(i2c_sda_pin_str);
-		}
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>SCK GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *i2c_sck_pin_str = StringToCharPtr(String(config.i2c_sck_pin));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"sck\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(i2c_sck_pin_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"sck\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, i2c_sck_pin_str);
-			strcat(html, temp_html);
-			free(temp_html);
-			free(gpio_max_str);
-			free(i2c_sck_pin_str);
-		}
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Frequency:</b></td>\n");
-		{
-			char *freq_str = StringToCharPtr(String(config.i2c_freq));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"1000\" max=\"800000\" name=\"freq\" type=\"number\" value=\"\" /></td>\n") + strlen(freq_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"1000\" max=\"800000\" name=\"freq\" type=\"number\" value=\"%s\" /></td>\n", freq_str);
-			strcat(html, temp_html);
-			free(temp_html);
-			free(freq_str);
-		}
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<input class=\"button\" id=\"submitI2C0\" name=\"commitI2C0\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitI2C0\"/>\n");
-		strcat(html, "</td></tr></table>\n");
-		strcat(html, "</form>\n");
-
-		/**************Counter_0 Modify******************/
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromCOUNTER0\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>Counter_0 Modify</b></span></th>\n");
-		strcat(html, "<tr>");
-
-		syncFlage = "";
-		if (config.counter0_enable)
-			syncFlage = "checked";
-		strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
-		{
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(syncFlage.c_str()) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", syncFlage.c_str());
-			strcat(html, temp_html);
-			free(temp_html);
-		}
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>INPUT GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *counter0_gpio_str = StringToCharPtr(String(config.counter0_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"gpio\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(counter0_gpio_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"gpio\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, counter0_gpio_str);
-			strcat(html, temp_html);
-			free(temp_html);
-			free(gpio_max_str);
-			free(counter0_gpio_str);
-		}
-		strcat(html, "</tr>\n");
-
-		sprintf(LowFlag, "");
-		sprintf(HighFlag, "");
-		if (config.counter0_active)
-			strcpy(HighFlag, "checked=\"checked\"");
-		else
-			strcpy(LowFlag, "checked=\"checked\"");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\">Active</td>\n");
-		{
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input type=\"radio\" name=\"active\" value=\"0\"  />LOW <input type=\"radio\" name=\"active\" value=\"1\"  />HIGH </td>\n") + strlen(LowFlag) + strlen(HighFlag) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input type=\"radio\" name=\"active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"active\" value=\"1\" %s/>HIGH </td>\n", LowFlag, HighFlag);
-			strcat(html, temp_html);
-			free(temp_html);
-		}
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<input class=\"button\" id=\"submitCOUNTER0\" name=\"commitCOUNTER0\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitCOUNTER0\"/>\n");
-		strcat(html, "</td></tr></table>\n");
-		strcat(html, "</form>\n");
-
-		strcat(html, "</td><td width=\"23%\" style=\"border:unset;\">");
-		/**************I2C_1 Modify******************/
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromI2C1\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>I2C_1 Modify</b></span></th>\n");
-		strcat(html, "<tr>");
-
-		syncFlage = "";
-		if (config.i2c1_enable)
-			syncFlage = "checked";
-		strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
-		{
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(syncFlage.c_str()) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", syncFlage.c_str());
-			strcat(html, temp_html);
-			free(temp_html);
-		}
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>SDA GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *i2c1_sda_pin_str = StringToCharPtr(String(config.i2c1_sda_pin));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"sda\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(i2c1_sda_pin_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"sda\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, i2c1_sda_pin_str);
-			strcat(html, temp_html);
-			free(temp_html);
-			free(gpio_max_str);
-			free(i2c1_sda_pin_str);
-		}
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>SCK GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *i2c1_sck_pin_str = StringToCharPtr(String(config.i2c1_sck_pin));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"sck\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(i2c1_sck_pin_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"sck\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, i2c1_sck_pin_str);
-			strcat(html, temp_html);
-			free(temp_html);
-			free(gpio_max_str);
-			free(i2c1_sck_pin_str);
-		}
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Frequency:</b></td>\n");
-		{
-			char *freq_str = StringToCharPtr(String(config.i2c1_freq));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"1000\" max=\"800000\" name=\"freq\" type=\"number\" value=\"\" /></td>\n") + strlen(freq_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"1000\" max=\"800000\" name=\"freq\" type=\"number\" value=\"%s\" /></td>\n", freq_str);
-			strcat(html, temp_html);
-			free(temp_html);
-			free(freq_str);
-		}
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<input class=\"button\" id=\"submitI2C1\" name=\"commitI2C1\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitI2C1\"/>\n");
-		strcat(html, "</td></tr></table>\n");
-		strcat(html, "</form>\n");
-
-		/**************Counter_1 Modify******************/
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromCOUNTER1\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>Counter_1 Modify</b></span></th>\n");
-		strcat(html, "<tr>");
-
-		syncFlage = "";
-		if (config.counter1_enable)
-			syncFlage = "checked";
-		strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
-		{
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(syncFlage.c_str()) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", syncFlage.c_str());
-			strcat(html, temp_html);
-			free(temp_html);
-		}
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>INPUT GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *counter1_gpio_str = StringToCharPtr(String(config.counter1_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"gpio\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(counter1_gpio_str) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"gpio\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, counter1_gpio_str);
-			strcat(html, temp_html);
-			free(temp_html);
-			free(gpio_max_str);
-			free(counter1_gpio_str);
-		}
-		strcat(html, "</tr>\n");
-
-		sprintf(LowFlag, "");
-		sprintf(HighFlag, "");
-		if (config.counter1_active)
-			strcpy(HighFlag, "checked=\"checked\"");
-		else
-			strcpy(LowFlag, "checked=\"checked\"");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\">Active</td>\n");
-		{
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input type=\"radio\" name=\"active\" value=\"0\"  />LOW <input type=\"radio\" name=\"active\" value=\"1\"  />HIGH </td>\n") + strlen(LowFlag) + strlen(HighFlag) + 1);
-			sprintf(temp_html, "<td style=\"text-align: left;\"><input type=\"radio\" name=\"active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"active\" value=\"1\" %s/>HIGH </td>\n", LowFlag, HighFlag);
-			strcat(html, temp_html);
-			free(temp_html);
-		}
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<input class=\"button\" id=\"submitCOUNTER1\" name=\"commitCOUNTER1\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitCOUNTER1\"/>\n");
-		strcat(html, "</td></tr></table>\n");
-		strcat(html, "</form>\n");
-
-		strcat(html, "</td></tr></table>\n");
-		strcat(html, "<br />\n");
-
-		//******************
-		strcat(html, "<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">");
-		/**************GNSS Modify******************/
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromGNSS\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>GNSS Modify</b></span></th>\n");
-		strcat(html, "<tr>\n");
-
-		strcpy(enFlage, "");
-		if (config.gnss_enable)
-			strcpy(enFlage, "checked");
-		strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ");
-		strcat(html, enFlage);
-		strcat(html, "><span class=\"slider round\"></span></label></td>\n");
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PORT:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"channel\" id=\"channel\">\n");
-		for (int i = 0; i < 5; i++)
-		{
-			strcat(html, "<option value=\"");
-			char *iStr2 = intToString(i);
-			strcat(html, iStr2);
-			strcat(html, "\" ");
-			if (config.gnss_channel == i)
-			{
-				strcat(html, "selected>");
-				strcat(html, GNSS_PORT[i]);
-				strcat(html, " </option>\n");
-			}
-			else
-			{
-				strcat(html, ">");
-				strcat(html, GNSS_PORT[i]);
-				strcat(html, " </option>\n");
-			}
-			// Free temporary string
-			free(iStr2);
-		}
-		strcat(html, "</select>\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<td align=\"right\"><b>AT Command:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><input maxlength=\"30\" size=\"20\" id=\"atc\" name=\"atc\" type=\"text\" value=\"");
-		strcat(html, config.gnss_at_command);
-		strcat(html, "\" /></td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<td align=\"right\"><b>TCP Host:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><input maxlength=\"20\" size=\"15\" id=\"Host\" name=\"Host\" type=\"text\" value=\"");
-		strcat(html, config.gnss_tcp_host);
-		strcat(html, "\" /></td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>TCP Port:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><input min=\"1024\" max=\"65535\"  id=\"Port\" name=\"Port\" type=\"number\" value=\"");
-		char *gnssTcpPortStr = intToString(config.gnss_tcp_port);
-		strcat(html, gnssTcpPortStr);
-		strcat(html, "\" /></td>\n");
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<input class=\"button\" id=\"submitGNSS\" name=\"commitGNSS\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitGNSS\"/>\n");
-		strcat(html, "</td></tr></table>\n");
-
-		strcat(html, "</form><br />\n");
-
-		strcat(html, "</td><td width=\"23%\" style=\"border:unset;\">\n");
-
-		/**************MODBUS Modify******************/
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromMODBUS\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>MODBUS Modify</b></span></th>\n");
-		strcat(html, "<tr>\n");
-
-		strcpy(enFlage, "");
-		if (config.modbus_enable)
-			strcpy(enFlage, "checked");
-		strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ");
-		strcat(html, enFlage);
-		strcat(html, "><span class=\"slider round\"></span></label></td>\n");
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PORT:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"channel\" id=\"channel\">\n");
-		for (int i = 0; i < 5; i++)
-		{
-			strcat(html, "<option value=\"");
-			char *iStr3 = intToString(i);
-			strcat(html, iStr3);
-			strcat(html, "\" ");
-			if (config.modbus_channel == i)
-			{
-				strcat(html, "selected>");
-				strcat(html, GNSS_PORT[i]);
-				strcat(html, " </option>\n");
-			}
-			else
-			{
-				strcat(html, ">");
-				strcat(html, GNSS_PORT[i]);
-				strcat(html, " </option>\n");
-			}
-			// Free temporary string
-			free(iStr3);
-		}
-		strcat(html, "</select>\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Address:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"");
-		char *gpioMaxStr20 = intToString(GPIO_NUM_MAX);
-		strcat(html, gpioMaxStr20);
-		strcat(html, "\" name=\"address\" type=\"number\" value=\"");
-		char *modbusAddrStr = intToString(config.modbus_address);
-		strcat(html, modbusAddrStr);
-		strcat(html, "\" /></td>\n");
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>DE:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"");
-		char *gpioMaxStr21 = intToString(GPIO_NUM_MAX);
-		strcat(html, gpioMaxStr21);
-		strcat(html, "\" name=\"de\" type=\"number\" value=\"");
-		char *modbusDeStr = intToString(config.modbus_de_gpio);
-		strcat(html, modbusDeStr);
-		strcat(html, "\" /></td>\n");
-		strcat(html, "</tr>\n");
-
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<input class=\"button\" id=\"submitMODBUS\" name=\"commitMODBUS\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitMODBUS\"/>\n");
-		strcat(html, "</td></tr></table>\n");
-		strcat(html, "</form>\n");
-
-		strcat(html, "</td><td width=\"23%\" style=\"border:unset;\">\n");
+		html->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">\n");
 
 		/**************External TNC Modify******************/
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromTNC\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>External TNC Modify</b></span></th>\n");
-		strcat(html, "<tr>\n");
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromTNC\" method=\"post\">\n");
+		html->print("<table>\n");
+		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
+		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
+		html->print("<th colspan=\"2\"><span><b>External TNC Modify</b></span></th>\n");
+		html->print("<tr>\n");
 
 		strcpy(enFlage, "");
 		if (config.ext_tnc_enable)
 			strcpy(enFlage, "checked");
-		strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ");
-		strcat(html, enFlage);
-		strcat(html, "><span class=\"slider round\"></span></label></td>\n");
-		strcat(html, "</tr>\n");
+		html->print("<td align=\"right\"><b>Enable</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ");
+		html->print(enFlage);
+		html->print("><span class=\"slider round\"></span></label></td>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PORT:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"channel\" id=\"channel\">\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PORT:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"channel\" id=\"channel\">\n");
 		for (int i = 0; i < 5; i++)
 		{
-			strcat(html, "<option value=\"");
+			html->print("<option value=\"");
 			char *iStr4 = intToString(i);
-			strcat(html, iStr4);
-			strcat(html, "\" ");
+			html->print(iStr4);
+			html->print("\" ");
 			if (config.ext_tnc_channel == i)
 			{
-				strcat(html, "selected>");
-				strcat(html, TNC_PORT[i]);
-				strcat(html, " </option>\n");
+				html->print("selected>");
+				html->print(TNC_PORT[i]);
+				html->print(" </option>\n");
 			}
 			else
 			{
-				strcat(html, ">");
-				strcat(html, TNC_PORT[i]);
-				strcat(html, " </option>\n");
+				html->print(">");
+				html->print(TNC_PORT[i]);
+				html->print(" </option>\n");
 			}
 			// Free temporary string
 			free(iStr4);
 		}
-		strcat(html, "</select>\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
+		html->print("</select>\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>MODE:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"mode\" id=\"mode\">\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>MODE:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"mode\" id=\"mode\">\n");
 		for (int i = 0; i < 4; i++)
 		{
-			strcat(html, "<option value=\"");
+			html->print("<option value=\"");
 			char *iStr5 = intToString(i);
-			strcat(html, iStr5);
-			strcat(html, "\" ");
+			html->print(iStr5);
+			html->print("\" ");
 			if (config.ext_tnc_mode == i)
 			{
-				strcat(html, "selected>");
-				strcat(html, TNC_MODE[i]);
-				strcat(html, " </option>\n");
+				html->print("selected>");
+				html->print(TNC_MODE[i]);
+				html->print(" </option>\n");
 			}
 			else
 			{
-				strcat(html, ">");
-				strcat(html, TNC_MODE[i]);
-				strcat(html, " </option>\n");
+				html->print(">");
+				html->print(TNC_MODE[i]);
+				html->print(" </option>\n");
 			}
 			// Free temporary string
 			free(iStr5);
 		}
-		strcat(html, "</select>\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
+		html->print("</select>\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<input class=\"button\" id=\"submitTNC\" name=\"commitTNC\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitTNC\"/>\n");
-		strcat(html, "</td></tr></table>\n");
-		strcat(html, "</form>\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<input class=\"button\" id=\"submitTNC\" name=\"commitTNC\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
+		html->print("<input type=\"hidden\" name=\"commitTNC\"/>\n");
+		html->print("</td></tr></table>\n");
+		html->print("</form>\n");
 
 		/**************TCP KISS Server Modify******************/
 		// custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromTCPKISS\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>TCP KISS Server Modify</b></span></th>\n");
-		strcat(html, "<tr>\n");
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromTCPKISS\" method=\"post\">\n");
+		html->print("<table>\n");
+		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
+		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
+		html->print("<th colspan=\"2\"><span><b>TCP KISS Server Modify</b></span></th>\n");
+		html->print("<tr>\n");
 
 		strcpy(enFlage, "");
 		if (config.tcp_kiss_enable)
 			strcpy(enFlage, "checked");
-		strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ");
-		strcat(html, enFlage);
-		strcat(html, "><span class=\"slider round\"></span></label></td>\n");
-		strcat(html, "</tr>\n");
+		html->print("<td align=\"right\"><b>Enable</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ");
+		html->print(enFlage);
+		html->print("><span class=\"slider round\"></span></label></td>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PORT 1:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><input type=\"text\" name=\"port1\" value=\"");
-		strcat(html, String(config.tcp_kiss_port1).c_str());
-		strcat(html, "\" maxlength=\"5\" size=\"6\"/></td>\n");
-		strcat(html, "</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PORT 1:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><input type=\"text\" name=\"port1\" value=\"");
+		html->print(String(config.tcp_kiss_port1).c_str());
+		html->print("\" maxlength=\"5\" size=\"6\"/></td>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PORT 2:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><input type=\"text\" name=\"port2\" value=\"");
-		strcat(html, String(config.tcp_kiss_port2).c_str());
-		strcat(html, "\" maxlength=\"5\" size=\"6\"/></td>\n");
-		strcat(html, "</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PORT 2:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><input type=\"text\" name=\"port2\" value=\"");
+		html->print(String(config.tcp_kiss_port2).c_str());
+		html->print("\" maxlength=\"5\" size=\"6\"/></td>\n");
+		html->print("</tr>\n");
 
 		{
 			String tcpKissStatus1 = "Port " + String(config.tcp_kiss_port1) + ": ";
@@ -5776,160 +5192,164 @@ void handle_mod(AsyncWebServerRequest *request)
 				tcpKissStatus2 += "connected (" + tcpKissClient2.remoteIP().toString() + ") RX:" + String(tcpKissRxCount[1]) + " TX:" + String(tcpKissTxCount[1]);
 			else
 				tcpKissStatus2 += "idle";
-			strcat(html, "<tr><td colspan=\"2\" align=\"center\"><b>Status:</b></td></tr>\n");
-			strcat(html, "<tr><td colspan=\"2\" align=\"center\">");
-			strcat(html, tcpKissStatus1.c_str());
-			strcat(html, "</td></tr>\n");
-			strcat(html, "<tr><td colspan=\"2\" align=\"center\">");
-			strcat(html, tcpKissStatus2.c_str());
-			strcat(html, "</td></tr>\n");
+			html->print("<tr><td colspan=\"2\" align=\"center\"><b>Status:</b></td></tr>\n");
+			html->print("<tr><td colspan=\"2\" align=\"center\">");
+			html->print(tcpKissStatus1.c_str());
+			html->print("</td></tr>\n");
+			html->print("<tr><td colspan=\"2\" align=\"center\">");
+			html->print(tcpKissStatus2.c_str());
+			html->print("</td></tr>\n");
 		}
 
-		strcat(html, "<tr><td colspan=\"2\" style=\"word-wrap:break-word;white-space:normal;\"><p style=\"font-size:9pt;margin:4px 0;\">Lets PC software (Xastir, APRSIS32, etc) use this device as a KISS TNC over the local network - no cable needed. No password - anyone on this WiFi network can transmit through the radio via these ports while enabled. Port number changes need a reboot to take effect; the Enable switch does not.</p></td></tr>\n");
+		html->print("<tr><td colspan=\"2\" style=\"word-wrap:break-word;white-space:normal;\"><p style=\"font-size:9pt;margin:4px 0;\">Lets PC software (Xastir, APRSIS32, etc) use this device as a KISS TNC over the local network - no cable needed. No password - anyone on this WiFi network can transmit through the radio via these ports while enabled. Port number changes need a reboot to take effect; the Enable switch does not.</p></td></tr>\n");
 
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<input class=\"button\" id=\"submitTCPKISS\" name=\"commitTCPKISS\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitTCPKISS\"/>\n");
-		strcat(html, "</td></tr></table>\n");
-		strcat(html, "</form>\n");
-		strcat(html, "</td></tr></table>\n");
-		strcat(html, "<br />\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<input class=\"button\" id=\"submitTCPKISS\" name=\"commitTCPKISS\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
+		html->print("<input type=\"hidden\" name=\"commitTCPKISS\"/>\n");
+		html->print("</td></tr></table>\n");
+		html->print("</form>\n");
+		html->print("</td></tr></table>\n");
+		html->print("<br />\n");
 
-		strcat(html, "<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">\n");
+		html->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">\n");
 
 		/************************ AT-COMMAND **************************/
-		strcat(html, "<form id='formATCommand' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>AT-COMMAND CHANNEL</b></span></th>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td width=\"150\" align=\"right\"><b>MQTT:</b></td>\n");
+		html->print("<form id='formATCommand' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		html->print("<table>\n");
+		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
+		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
+		html->print("<th colspan=\"2\"><span><b>AT-COMMAND CHANNEL</b></span></th>\n");
+		html->print("<tr>\n");
+		html->print("<td width=\"150\" align=\"right\"><b>MQTT:</b></td>\n");
 		char cmdFlag[20] = "";
 		if (config.at_cmd_mqtt)
 			strcpy(cmdFlag, "checked");
-		strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"mqtt\" value=\"OK\" ");
-		strcat(html, cmdFlag);
-		strcat(html, "><span class=\"slider round\"></span></label></td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>MESSAGE:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"mqtt\" value=\"OK\" ");
+		html->print(cmdFlag);
+		html->print("><span class=\"slider round\"></span></label></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>MESSAGE:</b></td>\n");
 		strcpy(cmdFlag, "");
 		if (config.at_cmd_msg)
 			strcpy(cmdFlag, "checked");
-		strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"msg\" value=\"OK\" ");
-		strcat(html, cmdFlag);
-		strcat(html, "><span class=\"slider round\"></span></label></td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>BLUETOOTH:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"msg\" value=\"OK\" ");
+		html->print(cmdFlag);
+		html->print("><span class=\"slider round\"></span></label></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>BLUETOOTH:</b></td>\n");
 		strcpy(cmdFlag, "");
 		if (config.at_cmd_bluetooth)
 			strcpy(cmdFlag, "checked");
-		strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"bluetooth\" value=\"OK\" ");
-		strcat(html, cmdFlag);
-		strcat(html, "><span class=\"slider round\"></span></label></td>\n");
-		strcat(html, "</tr>\n");
+		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"bluetooth\" value=\"OK\" ");
+		html->print(cmdFlag);
+		html->print("><span class=\"slider round\"></span></label></td>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>UART PORT:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"uart\" id=\"cmdUart\">\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>UART PORT:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"uart\" id=\"cmdUart\">\n");
 		for (int i = 0; i < 5; i++)
 		{
-			strcat(html, "<option value=\"");
+			html->print("<option value=\"");
 			char *iStr6 = intToString(i);
-			strcat(html, iStr6);
-			strcat(html, "\" ");
+			html->print(iStr6);
+			html->print("\" ");
 			if (config.at_cmd_uart == i)
 			{
-				strcat(html, "selected>");
-				strcat(html, TNC_PORT[i]);
-				strcat(html, " </option>\n");
+				html->print("selected>");
+				html->print(TNC_PORT[i]);
+				html->print(" </option>\n");
 			}
 			else
 			{
-				strcat(html, ">");
-				strcat(html, TNC_PORT[i]);
-				strcat(html, " </option>\n");
+				html->print(">");
+				html->print(TNC_PORT[i]);
+				html->print(" </option>\n");
 			}
 			// Free temporary string
 			free(iStr6);
 		}
-		strcat(html, "</select>\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
+		html->print("</select>\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitCMD'  name=\"commit\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitCMD\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form><br />\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitCMD'  name=\"commit\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitCMD\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form><br />\n");
 
 #ifdef PPPOS
-		strcat(html, "<br />\n");
+		html->print("<br />\n");
 
-		strcat(html, "<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">\n");
+		html->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">\n");
 
 		/************************ PPPoS **************************/
 
-		strcat(html, "<form id='formPPPoS' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>PPP Over Serial (GSM/4G-LTE)</b></span></th>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Enable:</b></td>\n");
+		html->print("<form id='formPPPoS' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		html->print("<table>\n");
+		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
+		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
+		html->print("<th colspan=\"2\"><span><b>PPP Over Serial (GSM/4G-LTE)</b></span></th>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Enable:</b></td>\n");
 		char pppEnFlag[20] = "";
 		if (config.ppp_enable)
 			strcpy(pppEnFlag, "checked");
-		strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"pppEn\" value=\"OK\" ");
-		strcat(html, pppEnFlag);
-		strcat(html, "><span class=\"slider round\"></span></label></td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<td align=\"right\"><b>GNSS:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"pppEn\" value=\"OK\" ");
+		html->print(pppEnFlag);
+		html->print("><span class=\"slider round\"></span></label></td>\n");
+		html->print("</tr>\n");
+		html->print("<td align=\"right\"><b>GNSS:</b></td>\n");
 		strcpy(pppEnFlag, "");
 		if (config.ppp_gnss)
 			strcpy(pppEnFlag, "checked");
-		strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"pppGnss\" value=\"OK\" ");
-		strcat(html, pppEnFlag);
-		strcat(html, "><span class=\"slider round\"></span></label></td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>NAPT:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"pppGnss\" value=\"OK\" ");
+		html->print(pppEnFlag);
+		html->print("><span class=\"slider round\"></span></label></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>NAPT:</b></td>\n");
 		strcpy(pppEnFlag, "");
 		if (config.ppp_napt)
 			strcpy(pppEnFlag, "checked");
-		strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"pppNapt\" value=\"OK\" ");
-		strcat(html, pppEnFlag);
-		strcat(html, "><span class=\"slider round\"></span></label> *WiFi NAT</td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>APN:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><input maxlength=\"20\" name=\"pppAPN\" type=\"text\" value=\"");
-		strcat(html, config.ppp_apn);
-		strcat(html, "\" /></td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
+		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"pppNapt\" value=\"OK\" ");
+		html->print(pppEnFlag);
+		html->print("><span class=\"slider round\"></span></label> *WiFi NAT</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>APN:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><input maxlength=\"20\" name=\"pppAPN\" type=\"text\" value=\"");
+		html->print(config.ppp_apn);
+		html->print("\" /></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
 
-		strcat(html, "<td align=\"right\"><b>PIN:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><input min=\"0\" max=\"999999\" name=\"pppPin\" type=\"number\" value=\"");
+		html->print("<td align=\"right\"><b>PIN:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><input min=\"0\" max=\"999999\" name=\"pppPin\" type=\"number\" value=\"");
 		char *pppPinStr = intToString(atoi(config.ppp_pin));
-		strcat(html, pppPinStr);
-		strcat(html, "\" /> <i>*PIN of SIM</i></td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
+		html->print(pppPinStr);
+		html->print("\" /> <i>*PIN of SIM</i></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
 
-		strcat(html, "<td align=\"right\"><b>RX GPIO:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"50\" name=\"rx\" type=\"number\" value=\"");
+		html->print("<td align=\"right\"><b>RX GPIO:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><input min=\"-1\" max=\"50\" name=\"rx\" type=\"number\" value=\"");
 		char *pppRxStr = intToString(config.ppp_rx_gpio);
-		strcat(html, pppRxStr);
-		strcat(html, "\" /></td>\n");
-		strcat(html, "</tr>\n");
+		html->print(pppRxStr);
+		html->print("\" /></td>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>TX GPIO:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"50\" name=\"tx\" type=\"number\" value=\"");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>TX GPIO:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><input min=\"-1\" max=\"50\" name=\"tx\" type=\"number\" value=\"");
 		char *pppTxStr = intToString(config.ppp_tx_gpio);
-		strcat(html, pppTxStr);
-		strcat(html, "\" /></td>\n");
-		strcat(html, "</tr>\n");
+		html->print(pppTxStr);
+		html->print("\" /></td>\n");
+		html->print("</tr>\n");
 
 		strcpy(LowFlag, "");
 		strcpy(HighFlag, "");
@@ -5937,99 +5357,1019 @@ void handle_mod(AsyncWebServerRequest *request)
 			strcpy(HighFlag, "checked=\"checked\"");
 		else
 			strcpy(LowFlag, "checked=\"checked\"");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>RESET GPIO:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"50\"  name=\"rst\" type=\"number\" value=\"");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>RESET GPIO:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><input min=\"-1\" max=\"50\"  name=\"rst\" type=\"number\" value=\"");
 		char *pppRstStr = intToString(config.ppp_rst_gpio);
-		strcat(html, pppRstStr);
-		strcat(html, "\" /> Active:<input type=\"radio\" name=\"rst_active\" value=\"0\" ");
-		strcat(html, LowFlag);
-		strcat(html, "/>LOW <input type=\"radio\" name=\"rst_active\" value=\"1\" ");
-		strcat(html, HighFlag);
-		strcat(html, "/>HIGH </td>\n");
-		strcat(html, "</tr>\n");
+		html->print(pppRstStr);
+		html->print("\" /> Active:<input type=\"radio\" name=\"rst_active\" value=\"0\" ");
+		html->print(LowFlag);
+		html->print("/>LOW <input type=\"radio\" name=\"rst_active\" value=\"1\" ");
+		html->print(HighFlag);
+		html->print("/>HIGH </td>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<td align=\"right\"><b>RESET DELAY:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><input min=\"0\" max=\"999999\" name=\"rstDly\" type=\"number\" value=\"");
+		html->print("<td align=\"right\"><b>RESET DELAY:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><input min=\"0\" max=\"999999\" name=\"rstDly\" type=\"number\" value=\"");
 		char *pppRstDelayStr = intToString(config.ppp_rst_delay);
-		strcat(html, pppRstDelayStr);
-		strcat(html, "\" /> mSec.</td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
+		html->print(pppRstDelayStr);
+		html->print("\" /> mSec.</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PORT:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"port\" id=\"port\">\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PORT:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"port\" id=\"port\">\n");
 		for (int i = 0; i < 2; i++)
 		{
-			strcat(html, "<option value=\"");
+			html->print("<option value=\"");
 			char *iStr7 = intToString(i);
-			strcat(html, iStr7);
-			strcat(html, "\" ");
+			html->print(iStr7);
+			html->print("\" ");
 			if (config.ppp_serial == i)
 			{
-				strcat(html, "selected>");
-				strcat(html, GNSS_PORT[i + 1]);
-				strcat(html, " </option>\n");
+				html->print("selected>");
+				html->print(GNSS_PORT[i + 1]);
+				html->print(" </option>\n");
 			}
 			else
 			{
-				strcat(html, ">");
-				strcat(html, GNSS_PORT[i + 1]);
-				strcat(html, " </option>\n");
+				html->print(">");
+				html->print(GNSS_PORT[i + 1]);
+				html->print(" </option>\n");
 			}
 			// Free temporary string
 			free(iStr7);
 		}
-		strcat(html, "</select>\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
+		html->print("</select>\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Baudrate:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"baudrate\" id=\"baudrate\">\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Baudrate:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"baudrate\" id=\"baudrate\">\n");
 		for (int i = 0; i < 13; i++)
 		{
-			strcat(html, "<option value=\"");
+			html->print("<option value=\"");
 			char *baudrateStr3 = intToString(baudrate[i]);
-			strcat(html, baudrateStr3);
-			strcat(html, "\" ");
+			html->print(baudrateStr3);
+			html->print("\" ");
 			if (config.ppp_serial_baudrate == baudrate[i])
 			{
-				strcat(html, "selected>");
-				strcat(html, baudrateStr3);
-				strcat(html, " </option>\n");
+				html->print("selected>");
+				html->print(baudrateStr3);
+				html->print(" </option>\n");
 			}
 			else
 			{
-				strcat(html, ">");
-				strcat(html, baudrateStr3);
-				strcat(html, " </option>\n");
+				html->print(">");
+				html->print(baudrateStr3);
+				html->print(" </option>\n");
 			}
 			// Free temporary string
 			free(baudrateStr3);
 		}
-		strcat(html, "</select> bps\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
+		html->print("</select> bps\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitPPPoS'  name=\"commitPPPoS\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitPPPoS\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form>\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitPPPoS'  name=\"commitPPPoS\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitPPPoS\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form>\n");
 
-		strcat(html, "</td></tr></table>\n");
+		html->print("</td></tr></table>\n");
 #endif
 
-		const char* dataType = "text/html";
-		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
-		response->addHeader("MOD", "content");
-		response->addHeader("Cache-Control", "no-cache");
-		request->send(response);
-		free(html); // Free the allocated memory	
+		html->addHeader("MOD", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
+	}
+}
+
+void handle_mod2(AsyncWebServerRequest *request)
+{
+	if (!request->authenticate(config.http_username, config.http_password))
+	{
+		return request->requestAuthentication();
+	}
+	StandByTick = millis() + (config.pwr_stanby_delay * 1000);
+
+	if (request->hasArg("commitGNSS"))
+	{
+		bool En = false;
+		for (uint8_t i = 0; i < request->args(); i++)
+		{
+			// Serial.print("SERVER ARGS ");
+			// Serial.print(request->argName(i));
+			// Serial.print("=");
+			// Serial.println(request->arg(i));
+
+			if (request->argName(i) == "Enable")
+			{
+				if (request->arg(i) != "")
+				{
+					// if (isValidNumber(request->arg(i)))
+					if (String(request->arg(i)) == "OK")
+						En = true;
+				}
+			}
+
+			if (request->argName(i) == "atc")
+			{
+				if (request->arg(i) != "")
+				{
+					strcpy(config.gnss_at_command, request->arg(i).c_str());
+				}
+				else
+				{
+					memset(config.gnss_at_command, 0, sizeof(config.gnss_at_command));
+				}
+			}
+
+			if (request->argName(i) == "Host")
+			{
+				if (request->arg(i) != "")
+				{
+					strcpy(config.gnss_tcp_host, request->arg(i).c_str());
+				}
+			}
+
+			if (request->argName(i) == "Port")
+			{
+				if (isValidNumber(request->arg(i)))
+				{
+					config.gnss_tcp_port = request->arg(i).toInt();
+				}
+			}
+
+			if (request->argName(i) == "channel")
+			{
+				if (isValidNumber(request->arg(i)))
+				{
+					config.gnss_channel = request->arg(i).toInt();
+				}
+			}
+		}
+
+		config.gnss_enable = En;
+		saveConfig(request);
+	}
+	else if (request->hasArg("commitMODBUS"))
+	{
+		bool En = false;
+		for (uint8_t i = 0; i < request->args(); i++)
+		{
+			// Serial.print("SERVER ARGS ");
+			// Serial.print(request->argName(i));
+			// Serial.print("=");
+			// Serial.println(request->arg(i));
+
+			if (request->argName(i) == "Enable")
+			{
+				if (request->arg(i) != "")
+				{
+					// if (isValidNumber(request->arg(i)))
+					if (String(request->arg(i)) == "OK")
+						En = true;
+				}
+			}
+
+			if (request->argName(i) == "channel")
+			{
+				if (isValidNumber(request->arg(i)))
+				{
+					config.modbus_channel = request->arg(i).toInt();
+				}
+			}
+
+			if (request->argName(i) == "address")
+			{
+				if (isValidNumber(request->arg(i)))
+				{
+					config.modbus_address = request->arg(i).toInt();
+				}
+			}
+
+			if (request->argName(i) == "de")
+			{
+				if (request->arg(i) != "")
+				{
+					config.modbus_de_gpio = request->arg(i).toInt();
+				}
+			}
+		}
+
+		config.modbus_enable = En;
+		saveConfiguration("/default.cfg", config);
+		String html = "OK";
+		request->send(200, "text/html", html);
+	}
+	else if (request->hasArg("commitONEWIRE"))
+	{
+		bool En = false;
+		for (uint8_t i = 0; i < request->args(); i++)
+		{
+			// Serial.print("SERVER ARGS ");
+			// Serial.print(request->argName(i));
+			// Serial.print("=");
+			// Serial.println(request->arg(i));
+
+			if (request->argName(i) == "Enable")
+			{
+				if (request->arg(i) != "")
+				{
+					// if (isValidNumber(request->arg(i)))
+					if (String(request->arg(i)) == "OK")
+						En = true;
+				}
+			}
+
+			if (request->argName(i) == "data")
+			{
+				if (request->arg(i) != "")
+				{
+					config.onewire_gpio = request->arg(i).toInt();
+				}
+			}
+		}
+
+		config.onewire_enable = En;
+		saveConfiguration("/default.cfg", config);
+		String html = "OK";
+		request->send(200, "text/html", html);
+	}
+	else if (request->hasArg("commitI2C0"))
+	{
+		bool En = false;
+		for (uint8_t i = 0; i < request->args(); i++)
+		{
+			// Serial.print("SERVER ARGS ");
+			// Serial.print(request->argName(i));
+			// Serial.print("=");
+			// Serial.println(request->arg(i));
+
+			if (request->argName(i) == "Enable")
+			{
+				if (request->arg(i) != "")
+				{
+					if (String(request->arg(i)) == "OK")
+						En = true;
+				}
+			}
+
+			if (request->argName(i) == "sda")
+			{
+				if (request->arg(i) != "")
+				{
+					config.i2c_sda_pin = request->arg(i).toInt();
+				}
+			}
+			if (request->argName(i) == "sck")
+			{
+				if (request->arg(i) != "")
+				{
+					config.i2c_sck_pin = request->arg(i).toInt();
+				}
+			}
+			if (request->argName(i) == "freq")
+			{
+				if (request->arg(i) != "")
+				{
+					config.i2c_freq = request->arg(i).toInt();
+				}
+			}
+		}
+
+		config.i2c_enable = En;
+		saveConfiguration("/default.cfg", config);
+		String html = "OK";
+		request->send(200, "text/html", html);
+	}
+	else if (request->hasArg("commitI2C1"))
+	{
+		bool En = false;
+		for (uint8_t i = 0; i < request->args(); i++)
+		{
+			// Serial.print("SERVER ARGS ");
+			// Serial.print(request->argName(i));
+			// Serial.print("=");
+			// Serial.println(request->arg(i));
+
+			if (request->argName(i) == "Enable")
+			{
+				if (request->arg(i) != "")
+				{
+					if (String(request->arg(i)) == "OK")
+						En = true;
+				}
+			}
+
+			if (request->argName(i) == "sda")
+			{
+				if (request->arg(i) != "")
+				{
+					config.i2c1_sda_pin = request->arg(i).toInt();
+				}
+			}
+			if (request->argName(i) == "sck")
+			{
+				if (request->arg(i) != "")
+				{
+					config.i2c1_sck_pin = request->arg(i).toInt();
+				}
+			}
+			if (request->argName(i) == "freq")
+			{
+				if (request->arg(i) != "")
+				{
+					config.i2c1_freq = request->arg(i).toInt();
+				}
+			}
+		}
+
+		config.i2c1_enable = En;
+		saveConfiguration("/default.cfg", config);
+		String html = "OK";
+		request->send(200, "text/html", html);
+	}
+	else if (request->hasArg("commitCOUNTER0"))
+	{
+		bool En = false;
+		for (uint8_t i = 0; i < request->args(); i++)
+		{
+			// Serial.print("SERVER ARGS ");
+			// Serial.print(request->argName(i));
+			// Serial.print("=");
+			// Serial.println(request->arg(i));
+
+			if (request->argName(i) == "Enable")
+			{
+				if (request->arg(i) != "")
+				{
+					if (String(request->arg(i)) == "OK")
+						En = true;
+				}
+			}
+
+			if (request->argName(i) == "gpio")
+			{
+				if (request->arg(i) != "")
+				{
+					config.counter0_gpio = request->arg(i).toInt();
+				}
+			}
+			if (request->argName(i) == "active")
+			{
+				if (request->arg(i) != "")
+				{
+					config.counter0_active = (bool)request->arg(i).toInt();
+				}
+			}
+		}
+
+		config.counter0_enable = En;
+		saveConfiguration("/default.cfg", config);
+		String html = "OK";
+		request->send(200, "text/html", html);
+	}
+	else if (request->hasArg("commitCOUNTER1"))
+	{
+		bool En = false;
+		for (uint8_t i = 0; i < request->args(); i++)
+		{
+			// Serial.print("SERVER ARGS ");
+			// Serial.print(request->argName(i));
+			// Serial.print("=");
+			// Serial.println(request->arg(i));
+
+			if (request->argName(i) == "Enable")
+			{
+				if (request->arg(i) != "")
+				{
+					if (String(request->arg(i)) == "OK")
+						En = true;
+				}
+			}
+
+			if (request->argName(i) == "gpio")
+			{
+				if (request->arg(i) != "")
+				{
+					config.counter1_gpio = request->arg(i).toInt();
+				}
+			}
+			if (request->argName(i) == "active")
+			{
+				if (request->arg(i) != "")
+				{
+					config.counter1_active = (bool)request->arg(i).toInt();
+				}
+			}
+		}
+
+		config.counter0_enable = En;
+		saveConfiguration("/default.cfg", config);
+		String html = "OK";
+		request->send(200, "text/html", html);
+	}
+	else
+	{
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+		AsyncResponseStream *html = request->beginResponseStream("text/html", 46000);
+		if (html == NULL)
+		{
+			request->send(500, "text/html", "Memory allocation failed");
+			return;
+		}
+
+		// Locals reused across several sections below (declared once here since
+		// the sections that originally declared them stayed in handle_mod when
+		// this function was split out).
+		char enFlage[20] = "";
+		char LowFlag[20] = "", HighFlag[20] = "";
+
+		// Initialize the HTML string with the JavaScript code
+		html->print("<script type=\"text/javascript\">\n");
+		html->print("$('form').submit(function (e) {\n");
+		html->print("e.preventDefault();\n");
+		html->print("var data = new FormData(e.currentTarget);\n");
+		html->print("if(e.currentTarget.id===\"formGNSS\") document.getElementById(\"submitGNSS\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formMODBUS\") document.getElementById(\"submitMODBUS\").disabled=true;\n");
+		// html->print("if(e.currentTarget.id===\"formONEWIRE\") document.getElementById(\"submitONEWIRE\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formI2C0\") document.getElementById(\"submitI2C0\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formI2C1\") document.getElementById(\"submitI2C1\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formCOUNT0\") document.getElementById(\"submitCOUNT0\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formCOUNT1\") document.getElementById(\"submitCOUNT1\").disabled=true;\n");
+		html->print("$.ajax({\n");
+		html->print("url: '/mod2',\n");
+		html->print("type: 'POST',\n");
+		html->print("data: data,\n");
+		html->print("contentType: false,\n");
+		html->print("processData: false,\n");
+		html->print("success: function (data) {\n");
+		html->print("alert(\"Submited Successfully\\nRequire hardware REBOOT!\");\n");
+		html->print("},\n");
+		html->print("error: function (data) {\n");
+		html->print("alert(\"An error occurred.\");\n");
+		html->print("}\n");
+		html->print("});\n");
+		html->print("});\n");
+		html->print("</script>\n");
+
+		html->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">");
+		/**************1-Wire Modify******************/
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromONEWIRE\" method=\"post\">\n");
+		html->print("<table>\n");
+		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
+		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
+		html->print("<th colspan=\"2\"><span><b>1-Wire Bus Modify</b></span></th>\n");
+		html->print("<tr>");
+
+		String syncFlage = "";
+		if (config.onewire_enable)
+			syncFlage = "checked";
+		html->print("<td align=\"right\"><b>Enable</b></td>\n");
+		{
+			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(syncFlage.c_str()) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", syncFlage.c_str());
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
+		}
+		html->print("</tr>\n");
+
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>GPIO:</b></td>\n");
+		{
+			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
+			char *onewire_gpio_str = StringToCharPtr(String(config.onewire_gpio));
+			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"data\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(onewire_gpio_str) + 1);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"data\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, onewire_gpio_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
+			free(gpio_max_str);
+			free(onewire_gpio_str);
+		}
+		html->print("</tr>\n");
+
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<input class=\"button\" id=\"submitONEWIRE\" name=\"commitONEWIRE\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
+		html->print("<input type=\"hidden\" name=\"commitONEWIRE\"/>\n");
+		html->print("</td></tr></table>\n");
+		html->print("</form><br />\n");
+		html->print("</td></tr></table>\n");
+		html->print("<br />\n");
+
+		html->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">");
+		/**************I2C_0 Modify******************/
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromI2C0\" method=\"post\">\n");
+		html->print("<table>\n");
+		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
+		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
+		html->print("<th colspan=\"2\"><span><b>I2C_0(OLED) Modify</b></span></th>\n");
+		html->print("<tr>");
+
+		syncFlage = "";
+		if (config.i2c_enable)
+			syncFlage = "checked";
+		html->print("<td align=\"right\"><b>Enable</b></td>\n");
+		{
+			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(syncFlage.c_str()) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", syncFlage.c_str());
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
+		}
+		html->print("</tr>\n");
+
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>SDA GPIO:</b></td>\n");
+		{
+			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
+			char *i2c_sda_pin_str = StringToCharPtr(String(config.i2c_sda_pin));
+			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"sda\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(i2c_sda_pin_str) + 1);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"sda\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, i2c_sda_pin_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
+			free(gpio_max_str);
+			free(i2c_sda_pin_str);
+		}
+		html->print("</tr>\n");
+
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>SCK GPIO:</b></td>\n");
+		{
+			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
+			char *i2c_sck_pin_str = StringToCharPtr(String(config.i2c_sck_pin));
+			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"sck\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(i2c_sck_pin_str) + 1);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"sck\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, i2c_sck_pin_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
+			free(gpio_max_str);
+			free(i2c_sck_pin_str);
+		}
+		html->print("</tr>\n");
+
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Frequency:</b></td>\n");
+		{
+			char *freq_str = StringToCharPtr(String(config.i2c_freq));
+			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"1000\" max=\"800000\" name=\"freq\" type=\"number\" value=\"\" /></td>\n") + strlen(freq_str) + 1);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"1000\" max=\"800000\" name=\"freq\" type=\"number\" value=\"%s\" /></td>\n", freq_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
+			free(freq_str);
+		}
+		html->print("</tr>\n");
+
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<input class=\"button\" id=\"submitI2C0\" name=\"commitI2C0\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
+		html->print("<input type=\"hidden\" name=\"commitI2C0\"/>\n");
+		html->print("</td></tr></table>\n");
+		html->print("</form>\n");
+		/**************Counter_0 Modify******************/
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromCOUNTER0\" method=\"post\">\n");
+		html->print("<table>\n");
+		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
+		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
+		html->print("<th colspan=\"2\"><span><b>Counter_0 Modify</b></span></th>\n");
+		html->print("<tr>");
+
+		syncFlage = "";
+		if (config.counter0_enable)
+			syncFlage = "checked";
+		html->print("<td align=\"right\"><b>Enable</b></td>\n");
+		{
+			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(syncFlage.c_str()) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", syncFlage.c_str());
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
+		}
+		html->print("</tr>\n");
+
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>INPUT GPIO:</b></td>\n");
+		{
+			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
+			char *counter0_gpio_str = StringToCharPtr(String(config.counter0_gpio));
+			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"gpio\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(counter0_gpio_str) + 1);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"gpio\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, counter0_gpio_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
+			free(gpio_max_str);
+			free(counter0_gpio_str);
+		}
+		html->print("</tr>\n");
+
+		sprintf(LowFlag, "");
+		sprintf(HighFlag, "");
+		if (config.counter0_active)
+			strcpy(HighFlag, "checked=\"checked\"");
+		else
+			strcpy(LowFlag, "checked=\"checked\"");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\">Active</td>\n");
+		{
+			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input type=\"radio\" name=\"active\" value=\"0\"  />LOW <input type=\"radio\" name=\"active\" value=\"1\"  />HIGH </td>\n") + strlen(LowFlag) + strlen(HighFlag) + 1);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input type=\"radio\" name=\"active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"active\" value=\"1\" %s/>HIGH </td>\n", LowFlag, HighFlag);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
+		}
+		html->print("</tr>\n");
+
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<input class=\"button\" id=\"submitCOUNTER0\" name=\"commitCOUNTER0\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
+		html->print("<input type=\"hidden\" name=\"commitCOUNTER0\"/>\n");
+		html->print("</td></tr></table>\n");
+		html->print("</form>\n");
+		html->print("</td><td width=\"50%\" style=\"border:unset;\">");
+		/**************I2C_1 Modify******************/
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromI2C1\" method=\"post\">\n");
+		html->print("<table>\n");
+		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
+		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
+		html->print("<th colspan=\"2\"><span><b>I2C_1 Modify</b></span></th>\n");
+		html->print("<tr>");
+
+		syncFlage = "";
+		if (config.i2c1_enable)
+			syncFlage = "checked";
+		html->print("<td align=\"right\"><b>Enable</b></td>\n");
+		{
+			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(syncFlage.c_str()) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", syncFlage.c_str());
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
+		}
+		html->print("</tr>\n");
+
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>SDA GPIO:</b></td>\n");
+		{
+			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
+			char *i2c1_sda_pin_str = StringToCharPtr(String(config.i2c1_sda_pin));
+			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"sda\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(i2c1_sda_pin_str) + 1);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"sda\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, i2c1_sda_pin_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
+			free(gpio_max_str);
+			free(i2c1_sda_pin_str);
+		}
+		html->print("</tr>\n");
+
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>SCK GPIO:</b></td>\n");
+		{
+			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
+			char *i2c1_sck_pin_str = StringToCharPtr(String(config.i2c1_sck_pin));
+			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"sck\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(i2c1_sck_pin_str) + 1);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"sck\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, i2c1_sck_pin_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
+			free(gpio_max_str);
+			free(i2c1_sck_pin_str);
+		}
+		html->print("</tr>\n");
+
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Frequency:</b></td>\n");
+		{
+			char *freq_str = StringToCharPtr(String(config.i2c1_freq));
+			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"1000\" max=\"800000\" name=\"freq\" type=\"number\" value=\"\" /></td>\n") + strlen(freq_str) + 1);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"1000\" max=\"800000\" name=\"freq\" type=\"number\" value=\"%s\" /></td>\n", freq_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
+			free(freq_str);
+		}
+		html->print("</tr>\n");
+
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<input class=\"button\" id=\"submitI2C1\" name=\"commitI2C1\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
+		html->print("<input type=\"hidden\" name=\"commitI2C1\"/>\n");
+		html->print("</td></tr></table>\n");
+		html->print("</form>\n");
+		/**************Counter_1 Modify******************/
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromCOUNTER1\" method=\"post\">\n");
+		html->print("<table>\n");
+		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
+		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
+		html->print("<th colspan=\"2\"><span><b>Counter_1 Modify</b></span></th>\n");
+		html->print("<tr>");
+
+		syncFlage = "";
+		if (config.counter1_enable)
+			syncFlage = "checked";
+		html->print("<td align=\"right\"><b>Enable</b></td>\n");
+		{
+			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(syncFlage.c_str()) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", syncFlage.c_str());
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
+		}
+		html->print("</tr>\n");
+
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>INPUT GPIO:</b></td>\n");
+		{
+			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
+			char *counter1_gpio_str = StringToCharPtr(String(config.counter1_gpio));
+			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"gpio\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(counter1_gpio_str) + 1);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"gpio\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, counter1_gpio_str);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
+			free(gpio_max_str);
+			free(counter1_gpio_str);
+		}
+		html->print("</tr>\n");
+
+		sprintf(LowFlag, "");
+		sprintf(HighFlag, "");
+		if (config.counter1_active)
+			strcpy(HighFlag, "checked=\"checked\"");
+		else
+			strcpy(LowFlag, "checked=\"checked\"");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\">Active</td>\n");
+		{
+			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input type=\"radio\" name=\"active\" value=\"0\"  />LOW <input type=\"radio\" name=\"active\" value=\"1\"  />HIGH </td>\n") + strlen(LowFlag) + strlen(HighFlag) + 1);
+			if (temp_html)
+			{
+				sprintf(temp_html, "<td style=\"text-align: left;\"><input type=\"radio\" name=\"active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"active\" value=\"1\" %s/>HIGH </td>\n", LowFlag, HighFlag);
+				html->print(temp_html);
+				free(temp_html);
+			}
+			else
+			{
+				log_e("MOD page: temp_html allocation failed, skipping field");
+			}
+		}
+		html->print("</tr>\n");
+
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<input class=\"button\" id=\"submitCOUNTER1\" name=\"commitCOUNTER1\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
+		html->print("<input type=\"hidden\" name=\"commitCOUNTER1\"/>\n");
+		html->print("</td></tr></table>\n");
+		html->print("</form>\n");
+		html->print("</td></tr></table>\n");
+		html->print("<br />\n");
+
+		html->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">");
+		/**************GNSS Modify******************/
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromGNSS\" method=\"post\">\n");
+		html->print("<table>\n");
+		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
+		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
+		html->print("<th colspan=\"2\"><span><b>GNSS Modify</b></span></th>\n");
+		html->print("<tr>\n");
+
+		strcpy(enFlage, "");
+		if (config.gnss_enable)
+			strcpy(enFlage, "checked");
+		html->print("<td align=\"right\"><b>Enable</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ");
+		html->print(enFlage);
+		html->print("><span class=\"slider round\"></span></label></td>\n");
+		html->print("</tr>\n");
+
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PORT:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"channel\" id=\"channel\">\n");
+		for (int i = 0; i < 5; i++)
+		{
+			html->print("<option value=\"");
+			char *iStr2 = intToString(i);
+			html->print(iStr2);
+			html->print("\" ");
+			if (config.gnss_channel == i)
+			{
+				html->print("selected>");
+				html->print(GNSS_PORT[i]);
+				html->print(" </option>\n");
+			}
+			else
+			{
+				html->print(">");
+				html->print(GNSS_PORT[i]);
+				html->print(" </option>\n");
+			}
+			// Free temporary string
+			free(iStr2);
+		}
+		html->print("</select>\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
+
+		html->print("<td align=\"right\"><b>AT Command:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><input maxlength=\"30\" size=\"20\" id=\"atc\" name=\"atc\" type=\"text\" value=\"");
+		html->print(config.gnss_at_command);
+		html->print("\" /></td>\n");
+		html->print("</tr>\n");
+		html->print("<td align=\"right\"><b>TCP Host:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><input maxlength=\"20\" size=\"15\" id=\"Host\" name=\"Host\" type=\"text\" value=\"");
+		html->print(config.gnss_tcp_host);
+		html->print("\" /></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>TCP Port:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><input min=\"1024\" max=\"65535\"  id=\"Port\" name=\"Port\" type=\"number\" value=\"");
+		char *gnssTcpPortStr = intToString(config.gnss_tcp_port);
+		html->print(gnssTcpPortStr);
+		html->print("\" /></td>\n");
+		html->print("</tr>\n");
+
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<input class=\"button\" id=\"submitGNSS\" name=\"commitGNSS\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
+		html->print("<input type=\"hidden\" name=\"commitGNSS\"/>\n");
+		html->print("</td></tr></table>\n");
+
+		html->print("</form><br />\n");
+		html->print("</td><td width=\"50%\" style=\"border:unset;\">");
+		/**************MODBUS Modify******************/
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromMODBUS\" method=\"post\">\n");
+		html->print("<table>\n");
+		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
+		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
+		html->print("<th colspan=\"2\"><span><b>MODBUS Modify</b></span></th>\n");
+		html->print("<tr>\n");
+
+		strcpy(enFlage, "");
+		if (config.modbus_enable)
+			strcpy(enFlage, "checked");
+		html->print("<td align=\"right\"><b>Enable</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ");
+		html->print(enFlage);
+		html->print("><span class=\"slider round\"></span></label></td>\n");
+		html->print("</tr>\n");
+
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PORT:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"channel\" id=\"channel\">\n");
+		for (int i = 0; i < 5; i++)
+		{
+			html->print("<option value=\"");
+			char *iStr3 = intToString(i);
+			html->print(iStr3);
+			html->print("\" ");
+			if (config.modbus_channel == i)
+			{
+				html->print("selected>");
+				html->print(GNSS_PORT[i]);
+				html->print(" </option>\n");
+			}
+			else
+			{
+				html->print(">");
+				html->print(GNSS_PORT[i]);
+				html->print(" </option>\n");
+			}
+			// Free temporary string
+			free(iStr3);
+		}
+		html->print("</select>\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
+
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Address:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><input min=\"-1\" max=\"");
+		char *gpioMaxStr20 = intToString(GPIO_NUM_MAX);
+		html->print(gpioMaxStr20);
+		html->print("\" name=\"address\" type=\"number\" value=\"");
+		char *modbusAddrStr = intToString(config.modbus_address);
+		html->print(modbusAddrStr);
+		html->print("\" /></td>\n");
+		html->print("</tr>\n");
+
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>DE:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><input min=\"-1\" max=\"");
+		char *gpioMaxStr21 = intToString(GPIO_NUM_MAX);
+		html->print(gpioMaxStr21);
+		html->print("\" name=\"de\" type=\"number\" value=\"");
+		char *modbusDeStr = intToString(config.modbus_de_gpio);
+		html->print(modbusDeStr);
+		html->print("\" /></td>\n");
+		html->print("</tr>\n");
+
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<input class=\"button\" id=\"submitMODBUS\" name=\"commitMODBUS\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
+		html->print("<input type=\"hidden\" name=\"commitMODBUS\"/>\n");
+		html->print("</td></tr></table>\n");
+		html->print("</form>\n");
+		html->print("</td></tr></table>\n");
+
+		html->addHeader("MOD2", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
 	}
 }
 
@@ -6653,92 +6993,92 @@ void handle_system(AsyncWebServerRequest *request)
 		getLocalTime(&tmstruct, 100);
 		sprintf(strTime, "%d-%02d-%02d %02d:%02d:%02d", (tmstruct.tm_year) + 1900, (tmstruct.tm_mon) + 1, tmstruct.tm_mday, tmstruct.tm_hour, tmstruct.tm_min, tmstruct.tm_sec);
 
-		// Using dynamic memory allocation instead of String
-		char *html = allocateStringMemory(20000); // Initial buffer size, adjust as needed
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+		AsyncResponseStream *html = request->beginResponseStream("text/html", 48000);
 		if (!html)
 		{
 			return; // Memory allocation failed
 		}
 
-		strcpy(html, "<script type=\"text/javascript\">\n");
-		strcat(html, "$('form').submit(function (e) {\n");
-		strcat(html, "e.preventDefault();\n");
-		strcat(html, "var data = new FormData(e.currentTarget);\n");
-		strcat(html, "if(e.currentTarget.id===\"formHostName\") document.getElementById(\"updateHostName\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formTime\") document.getElementById(\"updateTime\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formNTP\") document.getElementById(\"updateTimeNtp\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formTimeZone\") document.getElementById(\"updateTimeZone\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formReboot\") document.getElementById(\"REBOOT\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formDisp\") document.getElementById(\"submitDISP\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formWebAuth\") document.getElementById(\"submitWebAuth\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formPWR\") document.getElementById(\"submitPWR\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formPath\") document.getElementById(\"submitPath\").disabled=true;\n");
-		strcat(html, "$.ajax({\n");
-		strcat(html, "url: '/system',\n");
-		strcat(html, "type: 'POST',\n");
-		strcat(html, "data: data,\n");
-		strcat(html, "contentType: false,\n");
-		strcat(html, "processData: false,\n");
-		strcat(html, "success: function (data) {\n");
-		strcat(html, "alert(\"Submited Successfully\");\n");
-		strcat(html, "},\n");
-		strcat(html, "error: function (data) {\n");
-		strcat(html, "alert(\"An error occurred.\");\n");
-		strcat(html, "}\n");
-		strcat(html, "});\n");
-		strcat(html, "});\n");
-		strcat(html, "</script>\n");
+		html->print("<script type=\"text/javascript\">\n");
+		html->print("$('form').submit(function (e) {\n");
+		html->print("e.preventDefault();\n");
+		html->print("var data = new FormData(e.currentTarget);\n");
+		html->print("if(e.currentTarget.id===\"formHostName\") document.getElementById(\"updateHostName\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formTime\") document.getElementById(\"updateTime\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formNTP\") document.getElementById(\"updateTimeNtp\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formTimeZone\") document.getElementById(\"updateTimeZone\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formReboot\") document.getElementById(\"REBOOT\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formDisp\") document.getElementById(\"submitDISP\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formWebAuth\") document.getElementById(\"submitWebAuth\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formPWR\") document.getElementById(\"submitPWR\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formPath\") document.getElementById(\"submitPath\").disabled=true;\n");
+		html->print("$.ajax({\n");
+		html->print("url: '/system',\n");
+		html->print("type: 'POST',\n");
+		html->print("data: data,\n");
+		html->print("contentType: false,\n");
+		html->print("processData: false,\n");
+		html->print("success: function (data) {\n");
+		html->print("alert(\"Submited Successfully\");\n");
+		html->print("},\n");
+		html->print("error: function (data) {\n");
+		html->print("alert(\"An error occurred.\");\n");
+		html->print("}\n");
+		html->print("});\n");
+		html->print("});\n");
+		html->print("</script>\n");
 
 		// html += "<h2>System Setting</h2>\n";
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>System Setting</b></span></th>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td style=\"text-align: right;\">Host Name:</td>\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>System Setting</b></span></th>\n");
+		html->print("<tr>\n");
+		html->print("<td style=\"text-align: right;\">Host Name:</td>\n");
 
 		// Building form with snprintf to avoid string concatenation
 		char temp_buffer[300];
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formHostName\" method=\"post\"><input name=\"SetHostName\" type=\"text\" value=\"%s\" />\n", config.host_name);
-		strcat(html, temp_buffer);
-		strcat(html, "<button type='submit' id='updateHostName'  name=\"updateHostName\"> Apply </button>\n");
-		strcat(html, "<input type=\"hidden\" name=\"updateHostName\"/></form>\n</td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>");
+		html->print(temp_buffer);
+		html->print("<button type='submit' id='updateHostName'  name=\"updateHostName\"> Apply </button>\n");
+		html->print("<input type=\"hidden\" name=\"updateHostName\"/></form>\n</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>");
 		// html += "<form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formTime\" method=\"post\">\n";
-		strcat(html, "<td style=\"text-align: right;\">LOCAL DATE/TIME </td>\n");
+		html->print("<td style=\"text-align: right;\">LOCAL DATE/TIME </td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formTime\" method=\"post\">\n<input name=\"SetTime\" type=\"text\" value=\"%s\" />\n", strTime);
-		strcat(html, temp_buffer);
-		strcat(html, "<span class=\"input-group-addon\">\n<span class=\"glyphicon glyphicon-calendar\">\n</span></span>\n");
+		html->print(temp_buffer);
+		html->print("<span class=\"input-group-addon\">\n<span class=\"glyphicon glyphicon-calendar\">\n</span></span>\n");
 		// html += "<div class=\"col-sm-3 col-xs-6\"><button class=\"btn btn-primary\" data-args=\"[true]\" data-method=\"getDate\" type=\"button\" data-related-target=\"#SetTime\" />Get Date</button></div>\n");
-		strcat(html, "<button type='submit' id='updateTime'  name=\"commit\"> Time Update </button>\n");
-		strcat(html, "<input type=\"hidden\" name=\"updateTime\"/></form>\n</td>\n");
+		html->print("<button type='submit' id='updateTime'  name=\"commit\"> Time Update </button>\n");
+		html->print("<input type=\"hidden\" name=\"updateTime\"/></form>\n</td>\n");
 		// html += "<input class=\"btn btn-primary\" id=\"updateTime\" name=\"updateTime\" type=\"submit\" value=\"Time Update\" maxlength=\"80\"/></td>\n");
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td style=\"text-align: right;\">NTP Host </td>\n");
+		html->print("<tr>\n");
+		html->print("<td style=\"text-align: right;\">NTP Host </td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formNTP\" method=\"post\"><input name=\"SetTimeNtp\" type=\"text\" value=\"%s\" />\n", config.ntp_host);
-		strcat(html, temp_buffer);
-		strcat(html, "<button type='submit' id='updateTimeNtp'  name=\"commit\"> NTP Update </button>\n");
-		strcat(html, "<input type=\"hidden\" name=\"updateTimeNtp\"/></form>\n</td>\n");
+		html->print(temp_buffer);
+		html->print("<button type='submit' id='updateTimeNtp'  name=\"commit\"> NTP Update </button>\n");
+		html->print("<input type=\"hidden\" name=\"updateTimeNtp\"/></form>\n</td>\n");
 		// html += "<input class=\"btn btn-primary\" id=\"updateTimeNtp\" name=\"updateTimeNtp\" type=\"submit\" value=\"NTP Update\" maxlength=\"80\"/></td>\n");
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td style=\"text-align: right;\">Auto REBOOT:</td>\n");
+		html->print("<tr>\n");
+		html->print("<td style=\"text-align: right;\">Auto REBOOT:</td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formAutoReset\" method=\"post\"><input  min=\"0\" max=\"65535\"  name=\"SetAutoReset\" type=\"number\" value=\"%d\" /> Minutes\n", config.reset_timeout);
-		strcat(html, temp_buffer);
-		strcat(html, "<button type='submit' id='updateAutoReset'  name=\"commit\"> Update </button> *<i>0=No reset</i>\n");
-		strcat(html, "<input type=\"hidden\" name=\"updateAutoReset\"/></form>\n</td>\n");
+		html->print(temp_buffer);
+		html->print("<button type='submit' id='updateAutoReset'  name=\"commit\"> Update </button> *<i>0=No reset</i>\n");
+		html->print("<input type=\"hidden\" name=\"updateAutoReset\"/></form>\n</td>\n");
 		// html += "<input class=\"button\" id=\"updateTimeNtp\" name=\"updateTimeNtp\" type=\"submit\" value=\"NTP Update\" maxlength=\"80\"/></td>\n");
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td style=\"text-align: right;\">Time Zone </td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formTimeZone\" method=\"post\">\n");
-		strcat(html, "<select name=\"SetTimeZone\" id=\"SetTimeZone\">\n");
+		html->print("<tr>\n");
+		html->print("<td style=\"text-align: right;\">Time Zone </td>\n");
+		html->print("<td style=\"text-align: left;\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formTimeZone\" method=\"post\">\n");
+		html->print("<select name=\"SetTimeZone\" id=\"SetTimeZone\">\n");
 		for (int i = 0; i < 40; i++)
 		{
 			if (config.timeZone == tzList[i].tz)
@@ -6749,59 +7089,59 @@ void handle_system(AsyncWebServerRequest *request)
 			{
 				snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%.1f\" >%s Sec</option>\n", tzList[i].tz, tzList[i].name);
 			}
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 		}
-		strcat(html, "</select>");
-		strcat(html, "<button type='submit' id='updateTimeZone'  name=\"commit\"> TZ Update </button>\n");
-		strcat(html, "<input type=\"hidden\" name=\"updateTimeZone\"/></form>\n</td>\n");
+		html->print("</select>");
+		html->print("<button type='submit' id='updateTimeZone'  name=\"commit\"> TZ Update </button>\n");
+		html->print("<input type=\"hidden\" name=\"updateTimeZone\"/></form>\n</td>\n");
 		// html += "<input class=\"btn btn-primary\" id=\"updateTimeZone\" name=\"updateTimeZone\" type=\"submit\" value=\"TZ Update\" maxlength=\"80\"/></td>\n");
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td style=\"text-align: right;\">SYSTEM CONTROL </td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><table><tr><td width=\"100\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formReboot\" method=\"post\"> <button type='submit' id='REBOOT'  name=\"commit\" style=\"background-color:red;color:white\"> REBOOT </button>\n");
-		strcat(html, " <input type=\"hidden\" name=\"REBOOT\"/></form></td><td width=\"100\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formFactory\" method=\"post\"> <button type='submit' id='Factory'  name=\"commit\" style=\"background-color:orange;color:white\"> Factory Reset </button>\n");
-		strcat(html, " <input type=\"hidden\" name=\"Factory\"/></form></td><td width=\"100\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formLoad\" method=\"post\"> <button type='submit' id='LoadCFG'  name=\"commit\" style=\"background-color:green;color:white\"> Load Default </button>\n");
-		strcat(html, " <input type=\"hidden\" name=\"LoadCFG\"/></form></td></tr></table></td>\n");
+		html->print("<tr>\n");
+		html->print("<td style=\"text-align: right;\">SYSTEM CONTROL </td>\n");
+		html->print("<td style=\"text-align: left;\"><table><tr><td width=\"100\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formReboot\" method=\"post\"> <button type='submit' id='REBOOT'  name=\"commit\" style=\"background-color:red;color:white\"> REBOOT </button>\n");
+		html->print(" <input type=\"hidden\" name=\"REBOOT\"/></form></td><td width=\"100\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formFactory\" method=\"post\"> <button type='submit' id='Factory'  name=\"commit\" style=\"background-color:orange;color:white\"> Factory Reset </button>\n");
+		html->print(" <input type=\"hidden\" name=\"Factory\"/></form></td><td width=\"100\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formLoad\" method=\"post\"> <button type='submit' id='LoadCFG'  name=\"commit\" style=\"background-color:green;color:white\"> Load Default </button>\n");
+		html->print(" <input type=\"hidden\" name=\"LoadCFG\"/></form></td></tr></table></td>\n");
 		// html += "<td style=\"text-align: left;\"><input type='submit' class=\"btn btn-danger\" id=\"REBOOT\" name=\"REBOOT\" value='REBOOT'></td>\n");
-		strcat(html, "</tr></table><br /><br />\n");
+		html->print("</tr></table><br /><br />\n");
 
 		/************************ WEB AUTH **************************/
-		strcat(html, "<form id='formWebAuth' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>Web Authentication</b></span></th>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Web USER:</b></td>\n");
+		html->print("<form id='formWebAuth' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>Web Authentication</b></span></th>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Web USER:</b></td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input size=\"32\" maxlength=\"32\" class=\"form-control\" name=\"webauth_user\" type=\"text\" value=\"%s\" /></td>\n", config.http_username);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Web PASSWORD:</b></td>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Web PASSWORD:</b></td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input size=\"63\" maxlength=\"63\" class=\"form-control\" name=\"webauth_pass\" type=\"password\" value=\"%s\" /></td>\n", config.http_password);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitWebAuth'  name=\"commit\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitWebAuth\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form><br /><br />");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitWebAuth'  name=\"commit\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitWebAuth\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form><br /><br />");
 
 		/**************Power Mode******************/
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formPWR\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>Power Save Mode</b></span></th>\n");
-		strcat(html, "<tr>");
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formPWR\" method=\"post\">\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>Power Save Mode</b></span></th>\n");
+		html->print("<tr>");
 
 		char enFlage[10] = "";
 		if (config.pwr_en)
 			strcpy(enFlage, "checked");
-		strcat(html, "<td align=\"right\"><b>Enable</b></td>\n");
+		html->print("<td align=\"right\"><b>Enable</b></td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", enFlage);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
 		char LowFlag[20] = "", HighFlag[20] = "";
 		strcpy(LowFlag, "");
@@ -6810,31 +7150,31 @@ void handle_system(AsyncWebServerRequest *request)
 			strcpy(HighFlag, "checked=\"checked\"");
 		else
 			strcpy(LowFlag, "checked=\"checked\"");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PWR GPIO:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PWR GPIO:</b></td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input min=\"-1\" max=\"50\"  name=\"pwr\" type=\"number\" value=\"%d\" /> Output Active:<input type=\"radio\" name=\"pwr_active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"pwr_active\" value=\"1\" %s/>HIGH </td>\n", config.pwr_gpio, LowFlag, HighFlag);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Sleep Interval:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Sleep Interval:</b></td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input min=\"0\" max=\"9999\" name=\"sleep\" type=\"number\" value=\"%d\" /></td>\n", config.pwr_sleep_interval);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>StandBy Delay:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>StandBy Delay:</b></td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input min=\"0\" max=\"9999\" name=\"stb\" type=\"number\" value=\"%d\" /></td>\n", config.pwr_stanby_delay);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Power Mode:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"mode\" id=\"mode\">\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Power Mode:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"mode\" id=\"mode\">\n");
 		for (int i = 0; i < 3; i++)
 		{
 			if (config.pwr_mode == i)
@@ -6845,18 +7185,18 @@ void handle_system(AsyncWebServerRequest *request)
 			{
 				snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" >%s </option>\n", i, PWR_MODE[i]);
 			}
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 		}
-		strcat(html, "</select> A=Reduce Speed(PWR Off),B=Light Sleep(WiFi/PWR Off),C=Deep Sleep(All Off)\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
+		html->print("</select> A=Reduce Speed(PWR Off),B=Light Sleep(WiFi/PWR Off),C=Deep Sleep(All Off)\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Event Activate:</b><br/>(For Mode C)</td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<fieldset id=\"FilterGrp\">\n");
-		strcat(html, "<legend>Events</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">\n");
-		strcat(html, "<tr style=\"background:unset;\">");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Event Activate:</b><br/>(For Mode C)</td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<fieldset id=\"FilterGrp\">\n");
+		html->print("<legend>Events</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">\n");
+		html->print("<tr style=\"background:unset;\">");
 
 		char filterFlageEn[10] = "";
 		if (config.pwr_sleep_activate & ACTIVATE_TRACKER)
@@ -6865,7 +7205,7 @@ void handle_system(AsyncWebServerRequest *request)
 			strcpy(filterFlageEn, "");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterTracker\" type=\"checkbox\" value=\"OK\" %s/>Tracker</td>\n", filterFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
 		if (config.pwr_sleep_activate & ACTIVATE_STATUS)
 			strcpy(filterFlageEn, "checked");
@@ -6873,7 +7213,7 @@ void handle_system(AsyncWebServerRequest *request)
 			strcpy(filterFlageEn, "");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterStatus\" type=\"checkbox\" value=\"OK\" %s/>Status</td>\n", filterFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
 		if (config.pwr_sleep_activate & ACTIVATE_TELEMETRY)
 			strcpy(filterFlageEn, "checked");
@@ -6881,7 +7221,7 @@ void handle_system(AsyncWebServerRequest *request)
 			strcpy(filterFlageEn, "");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterTelemetry\" type=\"checkbox\" value=\"OK\" %s/>Telemetry</td>\n", filterFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
 		if (config.pwr_sleep_activate & ACTIVATE_WX)
 			strcpy(filterFlageEn, "checked");
@@ -6889,7 +7229,7 @@ void handle_system(AsyncWebServerRequest *request)
 			strcpy(filterFlageEn, "");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterWeather\" type=\"checkbox\" value=\"OK\" %s/>Weather</td>\n", filterFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
 		if (config.pwr_sleep_activate & ACTIVATE_IGATE)
 			strcpy(filterFlageEn, "checked");
@@ -6897,7 +7237,7 @@ void handle_system(AsyncWebServerRequest *request)
 			strcpy(filterFlageEn, "");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterIGate\" type=\"checkbox\" value=\"OK\" %s/>IGate</td>\n", filterFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
 		if (config.pwr_sleep_activate & ACTIVATE_DIGI)
 			strcpy(filterFlageEn, "checked");
@@ -6905,7 +7245,7 @@ void handle_system(AsyncWebServerRequest *request)
 			strcpy(filterFlageEn, "");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterDigi\" type=\"checkbox\" value=\"OK\" %s/>Digi</td>\n", filterFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
 		if (config.pwr_sleep_activate & ACTIVATE_QUERY)
 			strcpy(filterFlageEn, "checked");
@@ -6913,7 +7253,7 @@ void handle_system(AsyncWebServerRequest *request)
 			strcpy(filterFlageEn, "");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterQuery\" type=\"checkbox\" value=\"OK\" %s/>Query</td>\n", filterFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
 		if (config.pwr_sleep_activate & ACTIVATE_WIFI)
 			strcpy(filterFlageEn, "checked");
@@ -6921,31 +7261,31 @@ void handle_system(AsyncWebServerRequest *request)
 			strcpy(filterFlageEn, "");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterWifi\" type=\"checkbox\" value=\"OK\" %s/>WiFi</td>\n", filterFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
-		strcat(html, "<td style=\"border:unset;\"></td>\n");
-		strcat(html, "</tr></table></fieldset>\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitPWR'  name=\"commitPWR\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitPWR\"/>\n");
-		strcat(html, "</td></tr></table>\n");
+		html->print("<td style=\"border:unset;\"></td>\n");
+		html->print("</tr></table></fieldset>\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitPWR'  name=\"commitPWR\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitPWR\"/>\n");
+		html->print("</td></tr></table>\n");
 
-		strcat(html, "</form><br /><br />\n");
+		html->print("</form><br /><br />\n");
 
 		#ifdef LOG_FILE
 		/**************Log File******************/
-		strcat(html, "<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formLOG\" method=\"post\">\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>Log File</b></span></th>\n");
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formLOG\" method=\"post\">\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>Log File</b></span></th>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Activate:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<fieldset id=\"FilterGrp\">\n");
-		strcat(html, "<legend>Events</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">\n");
-		strcat(html, "<tr style=\"background:unset;\">");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Activate:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<fieldset id=\"FilterGrp\">\n");
+		html->print("<legend>Events</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">\n");
+		html->print("<tr style=\"background:unset;\">");
 
 		if (config.log & LOG_TRACKER)
 			strcpy(filterFlageEn, "checked");
@@ -6953,7 +7293,7 @@ void handle_system(AsyncWebServerRequest *request)
 			strcpy(filterFlageEn, "");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"logTracker\" type=\"checkbox\" value=\"OK\" %s/>Tracker</td>\n", filterFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
 		if (config.log & LOG_IGATE)
 			strcpy(filterFlageEn, "checked");
@@ -6961,7 +7301,7 @@ void handle_system(AsyncWebServerRequest *request)
 			strcpy(filterFlageEn, "");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"logIgate\" type=\"checkbox\" value=\"OK\" %s/>IGate</td>\n", filterFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
 		if (config.log & LOG_DIGI)
 			strcpy(filterFlageEn, "checked");
@@ -6969,7 +7309,7 @@ void handle_system(AsyncWebServerRequest *request)
 			strcpy(filterFlageEn, "");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"logDigi\" type=\"checkbox\" value=\"OK\" %s/>DIGI</td>\n", filterFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
 		if (config.log & LOG_WX)
 			strcpy(filterFlageEn, "checked");
@@ -6977,104 +7317,104 @@ void handle_system(AsyncWebServerRequest *request)
 			strcpy(filterFlageEn, "");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"logWeather\" type=\"checkbox\" value=\"OK\" %s/>Weather</td>\n", filterFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
-		strcat(html, "<td style=\"border:unset;\"></td>\n");
-		strcat(html, "</tr></table></fieldset>\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitLOG'  name=\"commitLOG\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitLOG\"/>\n");
-		strcat(html, "</td></tr></table>\n");
+		html->print("<td style=\"border:unset;\"></td>\n");
+		html->print("</tr></table></fieldset>\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitLOG'  name=\"commitLOG\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitLOG\"/>\n");
+		html->print("</td></tr></table>\n");
 
-		strcat(html, "</form><br /><br />\n");
+		html->print("</form><br /><br />\n");
 		#endif
 		/************************ PATH USER define **************************/
-		strcat(html, "<form id='formPath' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>PATH USER Define</b></span></th>\n");
-		strcat(html, "<tr>\n");
+		html->print("<form id='formPath' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>PATH USER Define</b></span></th>\n");
+		html->print("<tr>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"right\"><b>PATH_1:</b></td>\n<td style=\"text-align: left;\"><input size=\"72\" maxlength=\"72\" class=\"form-control\" name=\"path1\" type=\"text\" value=\"%s\" /></td>\n", config.path[0]);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"right\"><b>PATH_2:</b></td>\n<td style=\"text-align: left;\"><input size=\"72\" maxlength=\"72\" class=\"form-control\" name=\"path2\" type=\"text\" value=\"%s\" /></td>\n", config.path[1]);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"right\"><b>PATH_3:</b></td>\n<td style=\"text-align: left;\"><input size=\"72\" maxlength=\"72\" class=\"form-control\" name=\"path3\" type=\"text\" value=\"%s\" /></td>\n", config.path[2]);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"right\"><b>PATH_4:</b></td>\n<td style=\"text-align: left;\"><input size=\"72\" maxlength=\"72\" class=\"form-control\" name=\"path4\" type=\"text\" value=\"%s\" /></td>\n", config.path[3]);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitPath'  name=\"commitPath\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitPath\"/>\n");
-		strcat(html, "</td></tr></table>\n");
-		strcat(html, "</form><br /><br />");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitPath'  name=\"commitPath\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitPath\"/>\n");
+		html->print("</td></tr></table>\n");
+		html->print("</form><br /><br />");
 
 #if defined OLED || defined ST7735_160x80 || defined GUI_LCD
-		strcat(html, "<form id='formDisp' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		html->print("<form id='formDisp' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
 		// html += "<h2>Display Setting</h2>\n";
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>Display Setting</b></span></th>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td style=\"text-align: right;\"><b>OLED/TFT Enable</b></td>\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>Display Setting</b></span></th>\n");
+		html->print("<tr>\n");
+		html->print("<td style=\"text-align: right;\"><b>OLED/TFT Enable</b></td>\n");
 		char oledFlageEn[10] = "";
 		if (config.oled_enable == true)
 			strcpy(oledFlageEn, "checked");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"oledEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", oledFlageEn);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 		if (config.disp_flip == true)
 			strcpy(oledFlageEn, "checked");
 		else
 			strcpy(oledFlageEn, "");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td style=\"text-align: right;\"><b>Flip Rotate</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td style=\"text-align: right;\"><b>Flip Rotate</b></td>\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"dispFlip\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", oledFlageEn);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td style=\"text-align: right;\"><b>TX Display</b></td>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td style=\"text-align: right;\"><b>TX Display</b></td>\n");
 		if (config.tx_display == true)
 			strcpy(oledFlageEn, "checked");
 		else
 			strcpy(oledFlageEn, "");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"txdispEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"> <i>*All TX Packet for display affter filter.</i></label></td>\n", oledFlageEn);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td style=\"text-align: right;\"><b>RX Display</b></td>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td style=\"text-align: right;\"><b>RX Display</b></td>\n");
 		if (config.rx_display == true)
 			strcpy(oledFlageEn, "checked");
 		else
 			strcpy(oledFlageEn, "");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"rxdispEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"> <i>*All RX Packet for display affter filter.</i></label></td>\n", oledFlageEn);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td style=\"text-align: right;\"><b>Head Up</b></td>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td style=\"text-align: right;\"><b>Head Up</b></td>\n");
 		if (config.h_up == true)
 			strcpy(oledFlageEn, "checked");
 		else
 			strcpy(oledFlageEn, "");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"hupEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"> <i>*The compass will rotate in the direction of movement.</i></label></td>\n", oledFlageEn);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td style=\"text-align: right;\"><b>TFT Brightness</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"dispBright\" id=\"dispBright\">\n");
+		html->print("<tr>\n");
+		html->print("<td style=\"text-align: right;\"><b>TFT Brightness</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"dispBright\" id=\"dispBright\">\n");
 		for (int i = 0; i < 255; i += 25)
 		{
 			if (config.disp_brightness == i)
@@ -7085,15 +7425,15 @@ void handle_system(AsyncWebServerRequest *request)
 			{
 				snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" >%d</option>\n", i, i);
 			}
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 		}
-		strcat(html, "</select>\n");
-		strcat(html, "</td></tr>\n");
+		html->print("</select>\n");
+		html->print("</td></tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td style=\"text-align: right;\"><b>Popup Delay</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"dispDelay\" id=\"dispDelay\">\n");
+		html->print("<tr>\n");
+		html->print("<td style=\"text-align: right;\"><b>Popup Delay</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"dispDelay\" id=\"dispDelay\">\n");
 		for (int i = 0; i < 16; i += 1)
 		{
 			if (config.dispDelay == i)
@@ -7104,14 +7444,14 @@ void handle_system(AsyncWebServerRequest *request)
 			{
 				snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" >%d Sec</option>\n", i, i);
 			}
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 		}
-		strcat(html, "</select>\n");
-		strcat(html, "</td></tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td style=\"text-align: right;\"><b>OLED/TFT Sleep</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"oled_timeout\" id=\"oled_timeout\">\n");
+		html->print("</select>\n");
+		html->print("</td></tr>\n");
+		html->print("<tr>\n");
+		html->print("<td style=\"text-align: right;\"><b>OLED/TFT Sleep</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"oled_timeout\" id=\"oled_timeout\">\n");
 		for (int i = 0; i <= 600; i += 30)
 		{
 			if (config.oled_timeout == i)
@@ -7122,10 +7462,10 @@ void handle_system(AsyncWebServerRequest *request)
 			{
 				snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" >%d Sec</option>\n", i, i);
 			}
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 		}
-		strcat(html, "</select>\n");
-		strcat(html, "</td></tr>\n");
+		html->print("</select>\n");
+		html->print("</td></tr>\n");
 		char rfFlageEn[20] = "";
 		if (config.dispRF == true)
 			strcpy(rfFlageEn, "checked");
@@ -7133,22 +7473,22 @@ void handle_system(AsyncWebServerRequest *request)
 		if (config.dispINET == true)
 			strcpy(inetFlageEn, "checked");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td style=\"text-align: right;\"><b>RX Channel</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"dispRF\" value=\"OK\" %s/>RF <input type=\"checkbox\" name=\"dispINET\" value=\"OK\" %s/>Internet </td></tr>\n", rfFlageEn, inetFlageEn);
-		strcat(html, temp_buffer);
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Filter DX:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\"><input type=\"number\" name=\"filterDX\" min=\"0\" max=\"9999\"\n");
+		html->print(temp_buffer);
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Filter DX:</b></td>\n");
+		html->print("<td style=\"text-align: left;\"><input type=\"number\" name=\"filterDX\" min=\"0\" max=\"9999\"\n");
 
 		snprintf(temp_buffer, sizeof(temp_buffer), "step=\"1\" value=\"%d\" /> Km.  <label style=\"vertical-align: bottom;font-size: 8pt;\"> <i>*Value 0 is all distant allow.</i></label></td>\n", config.filterDistant);
-		strcat(html, temp_buffer);
-		strcat(html, "</tr>\n");
+		html->print(temp_buffer);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Filter:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Filter:</b></td>\n");
 
-		strcat(html, "<td align=\"center\">\n");
-		strcat(html, "<fieldset id=\"filterDispGrp\">\n");
-		strcat(html, "<legend>Filter popup display</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">\n");
-		strcat(html, "<tr style=\"background:unset;\">");
+		html->print("<td align=\"center\">\n");
+		html->print("<fieldset id=\"filterDispGrp\">\n");
+		html->print("<legend>Filter popup display</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">\n");
+		html->print("<tr style=\"background:unset;\">");
 
 		// html += "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"dispTNC\" name=\"dispTNC\" type=\"checkbox\" value=\"OK\" " + rfFlageEn + "/>From RF</td>\n";
 
@@ -7159,80 +7499,78 @@ void handle_system(AsyncWebServerRequest *request)
 		else
 			strcpy(oledFlageEn, "");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterMessage\" name=\"filterMessage\" type=\"checkbox\" value=\"OK\" %s/>Message</td>\n", oledFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 		if (config.dispFilter & FILTER_STATUS)
 			strcpy(oledFlageEn, "checked");
 		else
 			strcpy(oledFlageEn, "");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterStatus\" name=\"filterStatus\" type=\"checkbox\" value=\"OK\" %s/>Status</td>\n", oledFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
 		if (config.dispFilter & FILTER_TELEMETRY)
 			strcpy(oledFlageEn, "checked");
 		else
 			strcpy(oledFlageEn, "");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterTelemetry\" name=\"filterTelemetry\" type=\"checkbox\" value=\"OK\" %s/>Telemetry</td>\n", oledFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
 		if (config.dispFilter & FILTER_WX)
 			strcpy(oledFlageEn, "checked");
 		else
 			strcpy(oledFlageEn, "");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterWeather\" name=\"filterWeather\" type=\"checkbox\" value=\"OK\" %s/>Weather</td>\n", oledFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
 		if (config.dispFilter & FILTER_OBJECT)
 			strcpy(oledFlageEn, "checked");
 		else
 			strcpy(oledFlageEn, "");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterObject\" name=\"filterObject\" type=\"checkbox\" value=\"OK\" %s/>Object</td>\n", oledFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
 		if (config.dispFilter & FILTER_ITEM)
 			strcpy(oledFlageEn, "checked");
 		else
 			strcpy(oledFlageEn, "");
-		strcat(html, "</tr><tr style=\"background:unset;\"><td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterItem\" name=\"filterItem\" type=\"checkbox\" value=\"OK\" ");
-		strcat(html, oledFlageEn);
-		strcat(html, "/>Item</td>\n");
+		html->print("</tr><tr style=\"background:unset;\"><td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterItem\" name=\"filterItem\" type=\"checkbox\" value=\"OK\" ");
+		html->print(oledFlageEn);
+		html->print("/>Item</td>\n");
 
 		if (config.dispFilter & FILTER_QUERY)
 			strcpy(oledFlageEn, "checked");
 		else
 			strcpy(oledFlageEn, "");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterQuery\" name=\"filterQuery\" type=\"checkbox\" value=\"OK\" %s/>Query</td>\n", oledFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
 		if (config.dispFilter & FILTER_BUOY)
 			strcpy(oledFlageEn, "checked");
 		else
 			strcpy(oledFlageEn, "");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterBuoy\" name=\"filterBuoy\" type=\"checkbox\" value=\"OK\" %s/>Buoy</td>\n", oledFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
 		if (config.dispFilter & FILTER_POSITION)
 			strcpy(oledFlageEn, "checked");
 		else
 			strcpy(oledFlageEn, "");
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterPosition\" name=\"filterPosition\" type=\"checkbox\" value=\"OK\" %s/>Position</td>\n", oledFlageEn);
-		strcat(html, temp_buffer);
+		html->print(temp_buffer);
 
-		strcat(html, "<td style=\"border:unset;\"></td>\n");
-		strcat(html, "</tr></table></fieldset>\n");
+		html->print("<td style=\"border:unset;\"></td>\n");
+		html->print("</tr></table></fieldset>\n");
 
-		strcat(html, "</td></tr>\n");
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitDISP'  name=\"commitDISP\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitDISP\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form><br />");
+		html->print("</td></tr>\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitDISP'  name=\"commitDISP\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitDISP\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form><br />");
 #endif
 
-		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
-		response->addHeader("System", "content");
-		response->addHeader("Cache-Control", "no-cache");
-		request->send(response);
-		free(html);
+		html->addHeader("System", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
 	}
 }
 
@@ -7742,112 +8080,116 @@ config.igate_phg[sizeof(config.igate_phg) - 1] = 0;
 	}
 	else
 	{
-		// Allocate initial memory for HTML content
+		// Streamed response: avoids a single large calloc() for the whole page.
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+		// instead of requiring one big contiguous heap block up front - this was
+		// the reproducible trigger for a heap corruption assert (block_trim_free)
+		// under real traffic, confirmed via heap-integrity diagnostics.
 		char tempHtml[512];
-		char *html = allocateStringMemory(25000);
+		AsyncResponseStream *html = request->beginResponseStream("text/html", 44000);
 		if (!html)
 		{
 			request->send(500, "text/html", "Memory allocation failed");
 			return;
 		}
-		strcpy(html, "<script type=\"text/javascript\">\n");
-		strcat(html, "$('form').submit(function (e) {\n");
-		strcat(html, "e.preventDefault();\n");
-		strcat(html, "var data = new FormData(e.currentTarget);\n");
-		// strcat(html, "document.getElementById(\"submitIGATE\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formIgate\") document.getElementById(\"submitIGATE\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formIgateFilter\") document.getElementById(\"submitIGATEfilter\").disabled=true;\n");
-		strcat(html, "$.ajax({\n");
-		strcat(html, "url: '/igate',\n");
-		strcat(html, "type: 'POST',\n");
-		strcat(html, "data: data,\n");
-		strcat(html, "contentType: false,\n");
-		strcat(html, "processData: false,\n");
-		strcat(html, "success: function (data) {\n");
-		strcat(html, "alert(\"Submited Successfully\");\n");
-		strcat(html, "},\n");
-		strcat(html, "error: function (data) {\n");
-		strcat(html, "alert(\"An error occurred.\");\n");
-		strcat(html, "}\n");
-		strcat(html, "});\n");
-		strcat(html, "});\n");
-		strcat(html, "</script>\n<script type=\"text/javascript\">\n");
+		html->print("<script type=\"text/javascript\">\n");
+		html->print("$('form').submit(function (e) {\n");
+		html->print("e.preventDefault();\n");
+		html->print("var data = new FormData(e.currentTarget);\n");
+		// html->print("document.getElementById(\"submitIGATE\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formIgate\") document.getElementById(\"submitIGATE\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formIgateFilter\") document.getElementById(\"submitIGATEfilter\").disabled=true;\n");
+		html->print("$.ajax({\n");
+		html->print("url: '/igate',\n");
+		html->print("type: 'POST',\n");
+		html->print("data: data,\n");
+		html->print("contentType: false,\n");
+		html->print("processData: false,\n");
+		html->print("success: function (data) {\n");
+		html->print("alert(\"Submited Successfully\");\n");
+		html->print("},\n");
+		html->print("error: function (data) {\n");
+		html->print("alert(\"An error occurred.\");\n");
+		html->print("}\n");
+		html->print("});\n");
+		html->print("});\n");
+		html->print("</script>\n<script type=\"text/javascript\">\n");
 
-		strcat(html, "function openWindowSymbol() {\n");
-		strcat(html, "var i, l, options = [{\n");
-		strcat(html, "value: 'first',\n");
-		strcat(html, "text: 'First'\n");
-		strcat(html, "}, {\n");
-		strcat(html, "value: 'second',\n");
-		strcat(html, "text: 'Second'\n");
-		strcat(html, "}],\n");
-		strcat(html, "newWindow = window.open(\"/symbol\", null, \"height=400,width=400,status=no,toolbar=no,menubar=no,location=no\");\n");
-		strcat(html, "}\n");
+		html->print("function openWindowSymbol() {\n");
+		html->print("var i, l, options = [{\n");
+		html->print("value: 'first',\n");
+		html->print("text: 'First'\n");
+		html->print("}, {\n");
+		html->print("value: 'second',\n");
+		html->print("text: 'Second'\n");
+		html->print("}],\n");
+		html->print("newWindow = window.open(\"/symbol\", null, \"height=400,width=400,status=no,toolbar=no,menubar=no,location=no\");\n");
+		html->print("}\n");
 
-		strcat(html, "function setValue(symbol,table) {\n");
-		strcat(html, "document.getElementById('igateSymbol').value = String.fromCharCode(symbol);\n");
-		strcat(html, "if(table==1){\n document.getElementById('igateTable').value='/';\n");
-		strcat(html, "}else if(table==2){\n document.getElementById('igateTable').value='\\\\';\n}\n");
-		strcat(html, "document.getElementById('igateImgSymbol').src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n");
-		strcat(html, "\n}\n");
-		strcat(html, "function calculatePHGR(){document.forms.formIgate.texttouse.value=\"PHG\"+calcPower(document.forms.formIgate.power.value)+calcHeight(document.forms.formIgate.haat.value)+calcGain(document.forms.formIgate.gain.value)+calcDirection(document.forms.formIgate.direction.selectedIndex)}function Log2(e){return Math.log(e)/Math.log(2)}function calcPerHour(e){return e<10?e:String.fromCharCode(65+(e-10))}function calcHeight(e){return String.fromCharCode(48+Math.round(Log2(e/10),0))}function calcPower(e){if(e<1)return 0;if(e>=1&&e<4)return 1;if(e>=4&&e<9)return 2;if(e>=9&&e<16)return 3;if(e>=16&&e<25)return 4;if(e>=25&&e<36)return 5;if(e>=36&&e<49)return 6;if(e>=49&&e<64)return 7;if(e>=64&&e<81)return 8;if(e>=81)return 9}function calcDirection(e){if(e==\"0\")return\"0\";if(e==\"1\")return\"1\";if(e==\"2\")return\"2\";if(e==\"3\")return\"3\";if(e==\"4\")return\"4\";if(e==\"5\")return\"5\";if(e==\"6\")return\"6\";if(e==\"7\")return\"7\";if(e==\"8\")return\"8\"}function calcGain(e){return e>9?\"9\":e<0?\"0\":Math.round(e,0)}\n");
-		strcat(html, "function onRF2INETCheck() {\n");
-		strcat(html, "if (document.querySelector('#rf2inetEnable').checked) {\n");
+		html->print("function setValue(symbol,table) {\n");
+		html->print("document.getElementById('igateSymbol').value = String.fromCharCode(symbol);\n");
+		html->print("if(table==1){\n document.getElementById('igateTable').value='/';\n");
+		html->print("}else if(table==2){\n document.getElementById('igateTable').value='\\\\';\n}\n");
+		html->print("document.getElementById('igateImgSymbol').src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n");
+		html->print("\n}\n");
+		html->print("function calculatePHGR(){document.forms.formIgate.texttouse.value=\"PHG\"+calcPower(document.forms.formIgate.power.value)+calcHeight(document.forms.formIgate.haat.value)+calcGain(document.forms.formIgate.gain.value)+calcDirection(document.forms.formIgate.direction.selectedIndex)}function Log2(e){return Math.log(e)/Math.log(2)}function calcPerHour(e){return e<10?e:String.fromCharCode(65+(e-10))}function calcHeight(e){return String.fromCharCode(48+Math.round(Log2(e/10),0))}function calcPower(e){if(e<1)return 0;if(e>=1&&e<4)return 1;if(e>=4&&e<9)return 2;if(e>=9&&e<16)return 3;if(e>=16&&e<25)return 4;if(e>=25&&e<36)return 5;if(e>=36&&e<49)return 6;if(e>=49&&e<64)return 7;if(e>=64&&e<81)return 8;if(e>=81)return 9}function calcDirection(e){if(e==\"0\")return\"0\";if(e==\"1\")return\"1\";if(e==\"2\")return\"2\";if(e==\"3\")return\"3\";if(e==\"4\")return\"4\";if(e==\"5\")return\"5\";if(e==\"6\")return\"6\";if(e==\"7\")return\"7\";if(e==\"8\")return\"8\"}function calcGain(e){return e>9?\"9\":e<0?\"0\":Math.round(e,0)}\n");
+		html->print("function onRF2INETCheck() {\n");
+		html->print("if (document.querySelector('#rf2inetEnable').checked) {\n");
 		// Checkbox has been checked
-		strcat(html, "document.getElementById(\"rf2inetFilterGrp\").disabled=false;\n");
-		strcat(html, "} else {\n");
+		html->print("document.getElementById(\"rf2inetFilterGrp\").disabled=false;\n");
+		html->print("} else {\n");
 		// Checkbox has been unchecked
-		strcat(html, "document.getElementById(\"rf2inetFilterGrp\").disabled=true;\n");
-		strcat(html, "}\n}\n");
-		strcat(html, "function onINET2RFCheck() {\n");
-		strcat(html, "if (document.querySelector('#inet2rfEnable').checked) {\n");
+		html->print("document.getElementById(\"rf2inetFilterGrp\").disabled=true;\n");
+		html->print("}\n}\n");
+		html->print("function onINET2RFCheck() {\n");
+		html->print("if (document.querySelector('#inet2rfEnable').checked) {\n");
 		// Checkbox has been checked
-		strcat(html, "document.getElementById(\"inet2rfFilterGrp\").disabled=false;\n");
-		strcat(html, "} else {\n");
+		html->print("document.getElementById(\"inet2rfFilterGrp\").disabled=false;\n");
+		html->print("} else {\n");
 		// Checkbox has been unchecked
-		strcat(html, "document.getElementById(\"inet2rfFilterGrp\").disabled=true;\n");
-		strcat(html, "}\n}\n");
+		html->print("document.getElementById(\"inet2rfFilterGrp\").disabled=true;\n");
+		html->print("}\n}\n");
 
-		strcat(html, "function selPrecision(idx) {\n");
-		strcat(html, "var x=0;\n");
-		strcat(html, "x = document.getElementsByName(\"precision\"+idx)[0].value;\n");
-		strcat(html, "document.getElementsByName(\"eqns\"+idx+\"b\")[0].value=1/Math.pow(10,x);\n");
-		strcat(html, "}\n");
-		strcat(html, "function selOffset(idx) {\n");
-		strcat(html, "var x=0;\n");
-		strcat(html, "x = document.getElementsByName(\"offset\"+idx)[0].value;\n");
-		strcat(html, "document.getElementsByName(\"eqns\"+idx+\"c\")[0].value=x*(-1);\n");
-		strcat(html, "}\n");
-		strcat(html, "</script>\n");
+		html->print("function selPrecision(idx) {\n");
+		html->print("var x=0;\n");
+		html->print("x = document.getElementsByName(\"precision\"+idx)[0].value;\n");
+		html->print("document.getElementsByName(\"eqns\"+idx+\"b\")[0].value=1/Math.pow(10,x);\n");
+		html->print("}\n");
+		html->print("function selOffset(idx) {\n");
+		html->print("var x=0;\n");
+		html->print("x = document.getElementsByName(\"offset\"+idx)[0].value;\n");
+		html->print("document.getElementsByName(\"eqns\"+idx+\"c\")[0].value=x*(-1);\n");
+		html->print("}\n");
+		html->print("</script>\n");
 		delay(1);
 		/************************ IGATE Mode **************************/
-		strcat(html, "<form id='formIgate' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		// strcat(html, "<h2>[IGATE] Internet Gateway Mode</h2>\n");
-		strcat(html, "<table>\n");
-		// strcat(html, "<tr>\n");
-		// strcat(html, "<th width=\"200\"><span><b>Setting</b></span></th>\n");
-		// strcat(html, "<th><span><b>Value</b></span></th>\n");
-		// strcat(html, "</tr>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>[IGATE] Internet Gateway Mode</b></span></th>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Enable:</b></td>\n");
+		html->print("<form id='formIgate' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		// html->print("<h2>[IGATE] Internet Gateway Mode</h2>\n");
+		html->print("<table>\n");
+		// html->print("<tr>\n");
+		// html->print("<th width=\"200\"><span><b>Setting</b></span></th>\n");
+		// html->print("<th><span><b>Value</b></span></th>\n");
+		// html->print("</tr>\n");
+		html->print("<th colspan=\"2\"><span><b>[IGATE] Internet Gateway Mode</b></span></th>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Enable:</b></td>\n");
 		char igateEnFlag[10] = "";
 		if (config.igate_en)
 			strcpy(igateEnFlag, "checked");
 		else
 			strcpy(igateEnFlag, "");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"igateEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", igateEnFlag);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Station Callsign:</b></td>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Station Callsign:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"%s\" /></td>\n", config.aprs_mycall);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Station SSID:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"mySSID\" id=\"mySSID\">\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Station SSID:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"mySSID\" id=\"mySSID\">\n");
 		for (uint8_t ssid = 0; ssid <= 15; ssid++)
 		{
 			if (config.aprs_ssid == ssid)
@@ -7858,12 +8200,12 @@ config.igate_phg[sizeof(config.igate_phg) - 1] = 0;
 				{
 				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%d</option>\n", ssid, ssid);
 				}
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 		}
-		strcat(html, "</select></td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Station Symbol:</b></td>\n");
+		html->print("</select></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Station Symbol:</b></td>\n");
 		const char *table = "1";
 		if (config.igate_symbol[0] == 47)
 			table = "1";
@@ -7871,17 +8213,17 @@ config.igate_phg[sizeof(config.igate_phg) - 1] = 0;
 			table = "2";
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"igateTable\" name=\"igateTable\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"igateSymbol\" name=\"igateSymbol\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"igateImgSymbol\" onclick=\"openWindowSymbol();\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-%s.png\"> <i>*Click icon for select symbol</i></td>\n",
 						 config.igate_symbol[0], config.igate_symbol[1], (int)config.igate_symbol[1], table);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Item/Obj Name:</b></td>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Item/Obj Name:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"9\" size=\"9\" id=\"igateObject\" name=\"igateObject\" type=\"text\" value=\"%s\" /><i> *If not used, leave it blank.In use 3-9 charactor</i></td>\n", config.igate_object);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PATH:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"igatePath\" id=\"igatePath\">\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PATH:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"igatePath\" id=\"igatePath\">\n");
 		for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
 			{
 				if (config.igate_path == pthIdx)
@@ -7892,37 +8234,37 @@ config.igate_phg[sizeof(config.igate_phg) - 1] = 0;
 				{
 				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%s</option>\n", pthIdx, PATH_NAME[pthIdx]);
 				}
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 		}
-		strcat(html, "</select></td>\n");
-		// strcat(html, "<td style=\"text-align: left;\"><input maxlength=\"72\" size=\"72\" id=\"igatePath\" name=\"igatePath\" type=\"text\" value=\"" + String(config.igate_path) + "\" /></td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Server Host:</b></td>\n");
+		html->print("</select></td>\n");
+		// html->print("<td style=\"text-align: left;\"><input maxlength=\"72\" size=\"72\" id=\"igatePath\" name=\"igatePath\" type=\"text\" value=\"" + String(config.igate_path) + "\" /></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Server Host:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"20\" size=\"20\" id=\"aprsHost\" name=\"aprsHost\" type=\"text\" value=\"%s\" /> *APRS-IS by T2THAI at <a href=\"http://aprs.nakhonthai.net:14501\" target=\"_t2thai\">aprs.nakhonthai.net:14580</a>,CBAPRS at <a href=\"http://aprs.nakhonthai.net:24501\" target=\"_t2thai\">aprs.nakhonthai.net:24580</a></td>\n", config.aprs_host);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Server Port:</b></td>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Server Port:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input min=\"1\" max=\"65535\" step=\"1\" id=\"aprsPort\" name=\"aprsPort\" type=\"number\" value=\"%d\" /> *AMPR Host at <a href=\"http://aprs.hs5tqa.ampr.org:14501\" target=\"_t2thai\">aprs.hs5tqa.ampr.org:14580</a></td>\n", config.aprs_port);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Server Filter:</b></td>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Server Filter:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"30\" size=\"30\" id=\"aprsFilter\" name=\"aprsFilter\" type=\"text\" value=\"%s\" /> *Filter: <a target=\"_blank\" href=\"http://www.aprs-is.net/javAPRSFilter.aspx\">http://www.aprs-is.net/javAPRSFilter.aspx</a></td>\n", config.aprs_filter);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Text Comment:</b></td>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Text Comment:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"25\" size=\"30\" id=\"igateComment\" name=\"igateComment\" type=\"text\" value=\"%s\" /></td>\n", config.igate_comment);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Text Status:</b></td>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Text Status:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"60\" id=\"igateStatus\" name=\"igateStatus\" type=\"text\" value=\"%s\" />  Interval:<input min=\"0\" max=\"3600\" step=\"1\" name=\"igateSTSInv\" type=\"number\" value=\"%d\" />Sec.</td>\n", config.igate_status, config.igate_sts_interval);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
 
 		char rf2inetFlag[10];
 		if (config.rf2inet)
@@ -7930,76 +8272,76 @@ config.igate_phg[sizeof(config.igate_phg) - 1] = 0;
 		else
 			strcpy(rf2inetFlag, "");
 		snprintf(tempHtml, sizeof(tempHtml), "<td align=\"right\"><b>RF2INET:</b></td>\n<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"rf2inetEnable\" name=\"rf2inetEnable\" onclick=\"onRF2INETCheck()\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch RF to Internet gateway</i></label></td>\n", rf2inetFlag);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
 		char inet2rfEnFlag[10];
 		if (config.inet2rf)
 			strcpy(inet2rfEnFlag, "checked");
 		else
 			strcpy(inet2rfEnFlag, "");
 		snprintf(tempHtml, sizeof(tempHtml), "<td align=\"right\"><b>INET2RF:</b></td>\n<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"inet2rfEnable\" name=\"inet2rfEnable\" onclick=\"onINET2RFCheck()\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch Internet to RF gateway</i></label></td>\n", inet2rfEnFlag);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
 			const char *timeStampFlag = config.igate_timestamp ? "checked" : "";
 		snprintf(tempHtml, sizeof(tempHtml), "<td align=\"right\"><b>Time Stamp:</b></td>\n<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"igateTimeStamp\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", timeStampFlag);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n<tr>");
+		html->print(tempHtml);
+		html->print("</tr>\n<tr>");
 
-		strcat(html, "<td align=\"right\"><b>POSITION:</b></td>\n");
-		strcat(html, "<td align=\"center\">\n");
-		strcat(html, "<table>");
+		html->print("<td align=\"right\"><b>POSITION:</b></td>\n");
+		html->print("<td align=\"center\">\n");
+		html->print("<table>");
 			const char *igateBcnEnFlag = config.igate_bcn ? "checked" : "";
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Beacon:</td><td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"igateBcnEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\">  Interval:<input min=\"0\" max=\"3600\" step=\"1\" id=\"igatePosInv\" name=\"igatePosInv\" type=\"number\" value=\"%d\" />Sec.</label></td></tr>", igateBcnEnFlag, config.igate_interval);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 		const char *igatePosFixFlag = config.igate_gps ? "" : "checked=\"checked\"";
 		const char *igatePosGPSFlag = config.igate_gps ? "checked=\"checked\"" : "";
 		const char *igatePos2RFFlag = config.igate_loc2rf ? "checked" : "";
 		const char *igatePos2INETFlag = config.igate_loc2inet ? "checked" : "";
 
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"igatePosSel\" value=\"0\" %s/>Fix <input type=\"radio\" name=\"igatePosSel\" value=\"1\" %s/>GPS </td></tr>\n", igatePosFixFlag, igatePosGPSFlag);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">TX Channel:</td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"igatePos2RF\" value=\"OK\" %s/>RF <input type=\"checkbox\" name=\"igatePos2INET\" value=\"OK\" %s/>Internet </td></tr>\n", igatePos2RFFlag, igatePos2INETFlag);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" id=\"igatePosLat\" name=\"igatePosLat\" type=\"number\" value=\"%.5f\" />degrees (positive for North, negative for South)</td></tr>\n", config.igate_lat);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" id=\"igatePosLon\" name=\"igatePosLon\" type=\"number\" value=\"%.5f\" />degrees (positive for East, negative for West)</td></tr>\n", config.igate_lon);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" id=\"igatePosAlt\" name=\"igatePosAlt\" type=\"number\" value=\"%.2f\" /> meter. *Value 0 is not send height</td></tr>\n", config.igate_alt);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
-		strcat(html, "</table></td>");
-		strcat(html, "</tr>\n");
+		html->print("</table></td>");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PHG:</b></td>\n");
-		strcat(html, "<td align=\"center\">\n");
-		strcat(html, "<table>");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\">Radio TX Power</td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"power\" id=\"power\">\n");
-		strcat(html, "<option value=\"1\" selected>1</option>\n");
-		strcat(html, "<option value=\"5\">5</option>\n");
-		strcat(html, "<option value=\"10\">10</option>\n");
-		strcat(html, "<option value=\"15\">15</option>\n");
-		strcat(html, "<option value=\"25\">25</option>\n");
-		strcat(html, "<option value=\"35\">35</option>\n");
-		strcat(html, "<option value=\"50\">50</option>\n");
-		strcat(html, "<option value=\"65\">65</option>\n");
-		strcat(html, "<option value=\"80\">80</option>\n");
-		strcat(html, "</select> Watts</td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr><td style=\"text-align: right;\">Antenna Gain</td><td style=\"text-align: left;\"><input size=\"3\" min=\"0\" max=\"100\" step=\"0.1\" id=\"gain\" name=\"gain\" type=\"number\" value=\"6\" /> dBi</td></tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\">Height</td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"haat\" id=\"haat\">\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PHG:</b></td>\n");
+		html->print("<td align=\"center\">\n");
+		html->print("<table>");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\">Radio TX Power</td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"power\" id=\"power\">\n");
+		html->print("<option value=\"1\" selected>1</option>\n");
+		html->print("<option value=\"5\">5</option>\n");
+		html->print("<option value=\"10\">10</option>\n");
+		html->print("<option value=\"15\">15</option>\n");
+		html->print("<option value=\"25\">25</option>\n");
+		html->print("<option value=\"35\">35</option>\n");
+		html->print("<option value=\"50\">50</option>\n");
+		html->print("<option value=\"65\">65</option>\n");
+		html->print("<option value=\"80\">80</option>\n");
+		html->print("</select> Watts</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr><td style=\"text-align: right;\">Antenna Gain</td><td style=\"text-align: left;\"><input size=\"3\" min=\"0\" max=\"100\" step=\"0.1\" id=\"gain\" name=\"gain\" type=\"number\" value=\"6\" /> dBi</td></tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\">Height</td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"haat\" id=\"haat\">\n");
 		int k = 10;
 		for (uint8_t w = 0; w < 10; w++)
 		{
@@ -8014,44 +8356,44 @@ config.igate_phg[sizeof(config.igate_phg) - 1] = 0;
 				{
 					snprintf(temp_opt, 256, "<option value=\"%d\">%d</option>\n", k, k);
 				}
-				strcat(html, temp_opt);
+				html->print(temp_opt);
 				free(temp_opt);
 			}
 			k += k;
 		}
-		strcat(html, "</select> Feet</td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\">Antenna/Direction</td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"direction\" id=\"direction\">\n");
-		strcat(html, "<option>Omni</option><option>NE</option><option>E</option><option>SE</option><option>S</option><option>SW</option><option>W</option><option>NW</option><option>N</option>\n");
-		strcat(html, "</select></td>\n");
-		strcat(html, "</tr>\n");
+		html->print("</select> Feet</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\">Antenna/Direction</td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"direction\" id=\"direction\">\n");
+		html->print("<option>Omni</option><option>NE</option><option>E</option><option>SE</option><option>S</option><option>SW</option><option>W</option><option>NW</option><option>N</option>\n");
+		html->print("</select></td>\n");
+		html->print("</tr>\n");
 
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td align=\"right\"><b>PHG Text</b></td><td align=\"left\"><input name=\"texttouse\" type=\"text\" size=\"6\" style=\"background-color: rgb(97, 239, 170);\" value=\"%s\"/> <input type=\"button\" value=\"Calculate PHG\" onclick=\"javascript:calculatePHGR()\" /></td></tr>\n", config.igate_phg);
-		strcat(html, tempHtml);
-		strcat(html, "</table></td>");
-		strcat(html, "</tr>\n");
+		html->print(tempHtml);
+		html->print("</table></td>");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n");
-		strcat(html, "<td align=\"center\"><table>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n");
+		html->print("<td align=\"center\"><table>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"igateTlmInv\" name=\"igateTlmInv\" type=\"number\" value=\"%d\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>", config.igate_tlm_interval);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 		for (int ax = 0; ax < 5; ax++)
 		{
 			snprintf(tempHtml, sizeof(tempHtml), "<tr><td align=\"right\"><b>CH A%d:</b></td>\n", ax + 1);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 
-			strcat(html, "<td align=\"center\">\n");
-			strcat(html, "<table>");
+			html->print("<td align=\"center\">\n");
+			html->print("<table>");
 
-			strcat(html, "<tr><td style=\"text-align: right;\">Sensor:</td>\n");
-			strcat(html, "<td style=\"text-align: left;\">CH: ");
+			html->print("<tr><td style=\"text-align: right;\">Sensor:</td>\n");
+			html->print("<td style=\"text-align: left;\">CH: ");
 
 			snprintf(tempHtml, sizeof(tempHtml), "<select name=\"sensorCH%d\" id=\"sensorCH%d\">\n", ax, ax);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 
 			for (uint8_t idx = 0; idx < 11; idx++)
 				{
@@ -8077,157 +8419,155 @@ config.igate_phg[sizeof(config.igate_phg) - 1] = 0;
 						snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">SENSOR#%d</option>\n", idx, idx);
 						}
 					}
-				strcat(html, tempHtml);
+				html->print(tempHtml);
 			}
-			strcat(html, "</select></td>\n");
+			html->print("</select></td>\n");
 
 			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Name: <input maxlength=\"10\" size=\"8\" name=\"param%d\" type=\"text\" value=\"%s\" /></td>\n", ax, config.igate_tlm_PARM[ax]);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 
 			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit%d\" type=\"text\" value=\"%s\" /></td>\n", ax, config.igate_tlm_UNIT[ax]);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 
 			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision%d\" type=\"text\" value=\"%d\" onchange=\"selPrecision(%d)\"/></td></tr>\n", ax, config.igate_tlm_precision[ax], ax);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 
 			snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%da\" type=\"number\" value=\"%.5f\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%db\" type=\"number\" value=\"%.5f\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%dc\" type=\"number\" value=\"%.5f\" /> (av<sup>2</sup>+bv+c) </td>\n",
 							 ax, config.igate_tlm_EQNS[ax][0], ax, config.igate_tlm_EQNS[ax][1], ax, config.igate_tlm_EQNS[ax][2]);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 
 			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset%d\" type=\"text\" value=\"%.5f\" onchange=\"selOffset(%d)\"/></td></tr>\n", ax, config.igate_tlm_offset[ax], ax);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 
-			strcat(html, "</table></td>");
-			strcat(html, "</tr>\n");
+			html->print("</table></td>");
+			html->print("</tr>\n");
 		}
-		strcat(html, "</table></td></tr>\n");
+		html->print("</table></td></tr>\n");
 
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitIGATE'  name=\"commitIGATE\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitIGATE\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form><br /><br />");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitIGATE'  name=\"commitIGATE\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitIGATE\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form><br /><br />");
 
-		strcat(html, "<form id='formIgateFilter' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>[IGATE] Filter</b></span></th>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>RF2INET Filter:</b></td>\n");
+		html->print("<form id='formIgateFilter' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>[IGATE] Filter</b></span></th>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>RF2INET Filter:</b></td>\n");
 
-		strcat(html, "<td align=\"center\">\n");
+		html->print("<td align=\"center\">\n");
 		if (config.rf2inet)
-			strcat(html, "<fieldset id=\"rf2inetFilterGrp\">\n");
+			html->print("<fieldset id=\"rf2inetFilterGrp\">\n");
 		else
-			strcat(html, "<fieldset id=\"rf2inetFilterGrp\" disabled>\n");
-		strcat(html, "<legend>Filter RF to Internet</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">");
-		strcat(html, "<tr style=\"background:unset;\">");
+			html->print("<fieldset id=\"rf2inetFilterGrp\" disabled>\n");
+		html->print("<legend>Filter RF to Internet</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">");
+		html->print("<tr style=\"background:unset;\">");
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterMessage\" type=\"checkbox\" value=\"OK\" %s/>Message</td>\n",
 						 (config.rf2inetFilter & FILTER_MESSAGE) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterStatus\" type=\"checkbox\" value=\"OK\" %s/>Status</td>\n",
 						 (config.rf2inetFilter & FILTER_STATUS) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterTelemetry\" type=\"checkbox\" value=\"OK\" %s/>Telemetry</td>\n",
 						 (config.rf2inetFilter & FILTER_TELEMETRY) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterWeather\" type=\"checkbox\" value=\"OK\" %s/>Weather</td>\n",
 						 (config.rf2inetFilter & FILTER_WX) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterObject\" type=\"checkbox\" value=\"OK\" %s/>Object</td>\n",
 						 (config.rf2inetFilter & FILTER_OBJECT) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "</tr><tr style=\"background:unset;\"><td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterItem\" type=\"checkbox\" value=\"OK\" %s/>Item</td>\n",
 						 (config.rf2inetFilter & FILTER_ITEM) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterQuery\" type=\"checkbox\" value=\"OK\" %s/>Query</td>\n",
 						 (config.rf2inetFilter & FILTER_QUERY) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterBuoy\" type=\"checkbox\" value=\"OK\" %s/>Buoy</td>\n",
 						 (config.rf2inetFilter & FILTER_BUOY) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterPosition\" type=\"checkbox\" value=\"OK\" %s/>Position</td>\n",
 						 (config.rf2inetFilter & FILTER_POSITION) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterAll\" type=\"checkbox\" value=\"OK\" %s/>ALL</td>\n",
 				 (config.rf2inetFilter & FILTER_ENABLE_ALL) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
-		strcat(html, "<td style=\"border:unset;\"></td>");
-		strcat(html, "</tr></table></fieldset>\n");
-		strcat(html, "</td></tr>\n");
+		html->print("<td style=\"border:unset;\"></td>");
+		html->print("</tr></table></fieldset>\n");
+		html->print("</td></tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>INET2RF Filter:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>INET2RF Filter:</b></td>\n");
 
-		strcat(html, "<td align=\"center\">\n");
+		html->print("<td align=\"center\">\n");
 		if (config.inet2rf)
-			strcat(html, "<fieldset id=\"inet2rfFilterGrp\">\n");
+			html->print("<fieldset id=\"inet2rfFilterGrp\">\n");
 		else
-			strcat(html, "<fieldset id=\"inet2rfFilterGrp\" disabled>\n");
-		strcat(html, "<legend>Filter Internet to RF</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">");
-		strcat(html, "<tr style=\"background:unset;\">");
+			html->print("<fieldset id=\"inet2rfFilterGrp\" disabled>\n");
+		html->print("<legend>Filter Internet to RF</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">");
+		html->print("<tr style=\"background:unset;\">");
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterMessage\" type=\"checkbox\" value=\"OK\" %s/>Message</td>\n",
 						 (config.inet2rfFilter & FILTER_MESSAGE) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterStatus\" type=\"checkbox\" value=\"OK\" %s/>Status</td>\n",
 						 (config.inet2rfFilter & FILTER_STATUS) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterTelemetry\" type=\"checkbox\" value=\"OK\" %s/>Telemetry</td>\n",
 						 (config.inet2rfFilter & FILTER_TELEMETRY) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterWeather\" type=\"checkbox\" value=\"OK\" %s/>Weather</td>\n",
 						 (config.inet2rfFilter & FILTER_WX) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterObject\" type=\"checkbox\" value=\"OK\" %s/>Object</td>\n",
 						 (config.inet2rfFilter & FILTER_OBJECT) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "</tr><tr style=\"background:unset;\"><td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterItem\" type=\"checkbox\" value=\"OK\" %s/>Item</td>\n",
 						 (config.inet2rfFilter & FILTER_ITEM) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterQuery\" type=\"checkbox\" value=\"OK\" %s/>Query</td>\n",
 						 (config.inet2rfFilter & FILTER_QUERY) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterBuoy\" type=\"checkbox\" value=\"OK\" %s/>Buoy</td>\n",
 						 (config.inet2rfFilter & FILTER_BUOY) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterPosition\" type=\"checkbox\" value=\"OK\" %s/>Position</td>\n",
 						 (config.inet2rfFilter & FILTER_POSITION) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
-		strcat(html, "<td style=\"border:unset;\"></td>");
-		strcat(html, "</tr></table></fieldset>\n");
-		strcat(html, "</td></tr>\n");
+		html->print("<td style=\"border:unset;\"></td>");
+		html->print("</tr></table></fieldset>\n");
+		html->print("</td></tr>\n");
 
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitIGATEfilter'  name=\"commitIGATEfilter\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitIGATEfilter\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form><br />");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitIGATEfilter'  name=\"commitIGATEfilter\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitIGATEfilter\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form><br />");
 
-		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
-		response->addHeader("IGATE", "content");
-		response->addHeader("Cache-Control", "no-cache");
-		request->send(response);
-		free(html); // Free the allocated memory
+		html->addHeader("IGATE", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
 	}
 }
 
@@ -8616,104 +8956,104 @@ config.digi_phg[sizeof(config.digi_phg) - 1] = 0;
 	}
 	else
 	{
-		// Allocate initial memory for HTML content
-		char *html = allocateStringMemory(20000); // Start with 12KB buffer
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+		AsyncResponseStream *html = request->beginResponseStream("text/html", 30000);
 		if (!html)
 		{
 			request->send(500, "text/html", "Memory allocation failed");
 			return;
 		}
 		char tempHtml[512];
-		strcpy(html, "<script type=\"text/javascript\">\n");
-		strcat(html, "$('form').submit(function (e) {\n");
-		strcat(html, "e.preventDefault();\n");
-		strcat(html, "var data = new FormData(e.currentTarget);\n");
-		strcat(html, "document.getElementById(\"submitDIGI\").disabled=true;\n");
-		strcat(html, "$.ajax({\n");
-		strcat(html, "url: '/digi',\n");
-		strcat(html, "type: 'POST',\n");
-		strcat(html, "data: data,\n");
-		strcat(html, "contentType: false,\n");
-		strcat(html, "processData: false,\n");
-		strcat(html, "success: function (data) {\n");
-		strcat(html, "alert(\"Submited Successfully\");\n");
-		strcat(html, "},\n");
-		strcat(html, "error: function (data) {\n");
-		strcat(html, "alert(\"An error occurred.\");\n");
-		strcat(html, "}\n");
-		strcat(html, "});\n");
-		strcat(html, "});\n");
-		strcat(html, "</script>\n<script type=\"text/javascript\">\n");
-		strcat(html, "function openWindowSymbol() {\n");
-		strcat(html, "var i, l, options = [{\n");
-		strcat(html, "value: 'first',\n");
-		strcat(html, "text: 'First'\n");
-		strcat(html, "}, {\n");
-		strcat(html, "value: 'second',\n");
-		strcat(html, "text: 'Second'\n");
-		strcat(html, "}],\n");
-		strcat(html, "newWindow = window.open(\"/symbol\", null, \"height=400,width=400,status=no,toolbar=no,menubar=no,titlebar=no,location=no\");\n");
-		strcat(html, "}\n");
+		html->print("<script type=\"text/javascript\">\n");
+		html->print("$('form').submit(function (e) {\n");
+		html->print("e.preventDefault();\n");
+		html->print("var data = new FormData(e.currentTarget);\n");
+		html->print("document.getElementById(\"submitDIGI\").disabled=true;\n");
+		html->print("$.ajax({\n");
+		html->print("url: '/digi',\n");
+		html->print("type: 'POST',\n");
+		html->print("data: data,\n");
+		html->print("contentType: false,\n");
+		html->print("processData: false,\n");
+		html->print("success: function (data) {\n");
+		html->print("alert(\"Submited Successfully\");\n");
+		html->print("},\n");
+		html->print("error: function (data) {\n");
+		html->print("alert(\"An error occurred.\");\n");
+		html->print("}\n");
+		html->print("});\n");
+		html->print("});\n");
+		html->print("</script>\n<script type=\"text/javascript\">\n");
+		html->print("function openWindowSymbol() {\n");
+		html->print("var i, l, options = [{\n");
+		html->print("value: 'first',\n");
+		html->print("text: 'First'\n");
+		html->print("}, {\n");
+		html->print("value: 'second',\n");
+		html->print("text: 'Second'\n");
+		html->print("}],\n");
+		html->print("newWindow = window.open(\"/symbol\", null, \"height=400,width=400,status=no,toolbar=no,menubar=no,titlebar=no,location=no\");\n");
+		html->print("}\n");
 
-		strcat(html, "function setValue(symbol,table) {\n");
-		strcat(html, "document.getElementById('digiSymbol').value = String.fromCharCode(symbol);\n");
-		strcat(html, "if(table==1){\n document.getElementById('digiTable').value='/';\n");
-		strcat(html, "}else if(table==2){\n document.getElementById('digiTable').value='\\\\';\n}\n");
-		strcat(html, "document.getElementById('digiImgSymbol').src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n");
-		strcat(html, "\n}\n");
-		strcat(html, "function calculatePHGR(){document.forms.formDIGI.texttouse.value=\"PHG\"+calcPower(document.forms.formDIGI.power.value)+calcHeight(document.forms.formDIGI.haat.value)+calcGain(document.forms.formDIGI.gain.value)+calcDirection(document.forms.formDIGI.direction.selectedIndex)}function Log2(e){return Math.log(e)/Math.log(2)}function calcPerHour(e){return e<10?e:String.fromCharCode(65+(e-10))}function calcHeight(e){return String.fromCharCode(48+Math.round(Log2(e/10),0))}function calcPower(e){if(e<1)return 0;if(e>=1&&e<4)return 1;if(e>=4&&e<9)return 2;if(e>=9&&e<16)return 3;if(e>=16&&e<25)return 4;if(e>=25&&e<36)return 5;if(e>=36&&e<49)return 6;if(e>=49&&e<64)return 7;if(e>=64&&e<81)return 8;if(e>=81)return 9}function calcDirection(e){if(e==\"0\")return\"0\";if(e==\"1\")return\"1\";if(e==\"2\")return\"2\";if(e==\"3\")return\"3\";if(e==\"4\")return\"4\";if(e==\"5\")return\"5\";if(e==\"6\")return\"6\";if(e==\"7\")return\"7\";if(e==\"8\")return\"8\"}function calcGain(e){return e>9?\"9\":e<0?\"0\":Math.round(e,0)}\n");
-		strcat(html, "function selPrecision(idx) {\n");
-		strcat(html, "var x=0;\n");
-		strcat(html, "x = document.getElementsByName(\"precision\"+idx)[0].value;\n");
-		strcat(html, "document.getElementsByName(\"eqns\"+idx+\"b\")[0].value=1/Math.pow(10,x);\n");
-		strcat(html, "}\n");
-		strcat(html, "function selOffset(idx) {\n");
-		strcat(html, "var x=0;\n");
-		strcat(html, "x = document.getElementsByName(\"offset\"+idx)[0].value;\n");
-		strcat(html, "document.getElementsByName(\"eqns\"+idx+\"c\")[0].value=x*(-1);\n");
-		strcat(html, "}\n");
-		strcat(html, "</script>\n");
+		html->print("function setValue(symbol,table) {\n");
+		html->print("document.getElementById('digiSymbol').value = String.fromCharCode(symbol);\n");
+		html->print("if(table==1){\n document.getElementById('digiTable').value='/';\n");
+		html->print("}else if(table==2){\n document.getElementById('digiTable').value='\\\\';\n}\n");
+		html->print("document.getElementById('digiImgSymbol').src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n");
+		html->print("\n}\n");
+		html->print("function calculatePHGR(){document.forms.formDIGI.texttouse.value=\"PHG\"+calcPower(document.forms.formDIGI.power.value)+calcHeight(document.forms.formDIGI.haat.value)+calcGain(document.forms.formDIGI.gain.value)+calcDirection(document.forms.formDIGI.direction.selectedIndex)}function Log2(e){return Math.log(e)/Math.log(2)}function calcPerHour(e){return e<10?e:String.fromCharCode(65+(e-10))}function calcHeight(e){return String.fromCharCode(48+Math.round(Log2(e/10),0))}function calcPower(e){if(e<1)return 0;if(e>=1&&e<4)return 1;if(e>=4&&e<9)return 2;if(e>=9&&e<16)return 3;if(e>=16&&e<25)return 4;if(e>=25&&e<36)return 5;if(e>=36&&e<49)return 6;if(e>=49&&e<64)return 7;if(e>=64&&e<81)return 8;if(e>=81)return 9}function calcDirection(e){if(e==\"0\")return\"0\";if(e==\"1\")return\"1\";if(e==\"2\")return\"2\";if(e==\"3\")return\"3\";if(e==\"4\")return\"4\";if(e==\"5\")return\"5\";if(e==\"6\")return\"6\";if(e==\"7\")return\"7\";if(e==\"8\")return\"8\"}function calcGain(e){return e>9?\"9\":e<0?\"0\":Math.round(e,0)}\n");
+		html->print("function selPrecision(idx) {\n");
+		html->print("var x=0;\n");
+		html->print("x = document.getElementsByName(\"precision\"+idx)[0].value;\n");
+		html->print("document.getElementsByName(\"eqns\"+idx+\"b\")[0].value=1/Math.pow(10,x);\n");
+		html->print("}\n");
+		html->print("function selOffset(idx) {\n");
+		html->print("var x=0;\n");
+		html->print("x = document.getElementsByName(\"offset\"+idx)[0].value;\n");
+		html->print("document.getElementsByName(\"eqns\"+idx+\"c\")[0].value=x*(-1);\n");
+		html->print("}\n");
+		html->print("</script>\n");
 
 		/************************ DIGI Mode **************************/
-		strcat(html, "<form id='formDIGI' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		// strcat(html, "<h2>[DIGI] Digital Repeater Mode</h2>\n");
-		strcat(html, "<table>\n");
-		// strcat(html, "<tr>\n");
-		// strcat(html, "<th width=\"200\"><span><b>Setting</b></span></th>\n");
-		// strcat(html, "<th><span><b>Value</b></span></th>\n");
-		// strcat(html, "</tr>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>[DIGI] Digital Repeater Mode</b></span></th>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Enable:</b></td>\n");
+		html->print("<form id='formDIGI' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		// html->print("<h2>[DIGI] Digital Repeater Mode</h2>\n");
+		html->print("<table>\n");
+		// html->print("<tr>\n");
+		// html->print("<th width=\"200\"><span><b>Setting</b></span></th>\n");
+		// html->print("<th><span><b>Value</b></span></th>\n");
+		// html->print("</tr>\n");
+		html->print("<th colspan=\"2\"><span><b>[DIGI] Digital Repeater Mode</b></span></th>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Enable:</b></td>\n");
 		char digiFlag[10] = "";
 		if (config.digi_en)
 			strcpy(digiFlag, "checked");
 		else
 			strcpy(digiFlag, "");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", digiFlag);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Auto Enable:</b></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Auto Enable:</b></td>\n");
 
 		if (config.digi_auto)
 			strcpy(digiFlag, "checked");
 		else
 			strcpy(digiFlag, "");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiAuto\" value=\"OK\" %s><span class=\"slider round\"></span></label> <i>*Automatic enable when APRS-IS disconnected</i></td>\n", digiFlag);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Station Callsign:</b></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Station Callsign:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"%s\" /></td>\n", config.digi_mycall);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Station SSID:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"mySSID\" id=\"mySSID\">\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Station SSID:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"mySSID\" id=\"mySSID\">\n");
 		for (uint8_t ssid = 0; ssid <= 15; ssid++)
 		{
 			if (config.digi_ssid == ssid)
@@ -8724,12 +9064,12 @@ config.digi_phg[sizeof(config.digi_phg) - 1] = 0;
 			{
 				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%d</option>\n", ssid, ssid);
 			}
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 		}
-		strcat(html, "</select></td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Station Symbol:</b></td>\n");
+		html->print("</select></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Station Symbol:</b></td>\n");
 		char table[3] = "1";
 		if (config.digi_symbol[0] == 47)
 			strcpy(table, "1");
@@ -8737,13 +9077,13 @@ config.digi_phg[sizeof(config.digi_phg) - 1] = 0;
 			strcpy(table, "2");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"digiTable\" name=\"digiTable\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"digiSymbol\" name=\"digiSymbol\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"digiImgSymbol\" onclick=\"openWindowSymbol();\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-%s.png\"> <i>*Click icon for select symbol</i></td>\n",
 				 config.digi_symbol[0], config.digi_symbol[1], (int)config.digi_symbol[1], table);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PATH:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"digiPath\" id=\"digiPath\">\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PATH:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"digiPath\" id=\"digiPath\">\n");
 		for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
 		{
 			if (config.digi_path == pthIdx)
@@ -8754,41 +9094,41 @@ config.digi_phg[sizeof(config.digi_phg) - 1] = 0;
 			{
 				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%s</option>\n", pthIdx, PATH_NAME[pthIdx]);
 			}
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 		}
-		strcat(html, "</select></td>\n");
-		// strcat(html, "<td style=\"text-align: left;\"><input maxlength=\"72\" size=\"72\" id=\"digiPath\" name=\"digiPath\" type=\"text\" value=\"" + String(config.digi_path) + "\" /></td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Text Comment:</b></td>\n");
+		html->print("</select></td>\n");
+		// html->print("<td style=\"text-align: left;\"><input maxlength=\"72\" size=\"72\" id=\"digiPath\" name=\"digiPath\" type=\"text\" value=\"" + String(config.digi_path) + "\" /></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Text Comment:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"25\" size=\"30\" id=\"digiComment\" name=\"digiComment\" type=\"text\" value=\"%s\" /></td>\n", config.digi_comment);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Text Status:</b></td>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Text Status:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"60\" id=\"digiStatus\" name=\"digiStatus\" type=\"text\" value=\"%s\" />  Interval:<input min=\"0\" max=\"3600\" step=\"1\" name=\"digiSTSInv\" type=\"number\" value=\"%d\" />Sec.</td>\n", config.digi_status, config.digi_sts_interval);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\"><b>Repeat Delay:</b></td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"100\" id=\"digiDelay\" name=\"digiDelay\" type=\"number\" value=\"%d\" /> mSec. <i>*0 is auto,Other random of delay time</i></td></tr>", config.digi_delay);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Time Stamp:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Time Stamp:</b></td>\n");
 		char timeStampFlag[10];
 		if (config.digi_timestamp)
 			strcpy(timeStampFlag, "checked");
 		else
 			strcpy(timeStampFlag, "");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiTimeStamp\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", timeStampFlag);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr><td align=\"right\"><b>POSITION:</b></td>\n");
-		strcat(html, "<td align=\"center\">\n");
-		strcat(html, "<table>");
+		html->print("<tr><td align=\"right\"><b>POSITION:</b></td>\n");
+		html->print("<td align=\"center\">\n");
+		html->print("<table>");
 
 		if (config.digi_bcn)
 			strcpy(digiFlag, "checked");
@@ -8796,7 +9136,7 @@ config.digi_phg[sizeof(config.digi_phg) - 1] = 0;
 			strcpy(digiFlag, "");
 
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Beacon:</td><td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiBcnEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\">  Interval:<input min=\"0\" max=\"3600\" step=\"1\" id=\"digiPosInv\" name=\"digiPosInv\" type=\"number\" value=\"%d\" />Sec.</label></td></tr>", digiFlag, config.digi_interval);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		String digiPosFixFlag = "";
 		String digiPosGPSFlag = "";
@@ -8813,46 +9153,46 @@ config.digi_phg[sizeof(config.digi_phg) - 1] = 0;
 			digiPos2INETFlag = "checked";
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"digiPosSel\" value=\"0\" %s/>Fix <input type=\"radio\" name=\"digiPosSel\" value=\"1\" %s/>GPS </td></tr>\n",
 				 digiPosFixFlag.c_str(), digiPosGPSFlag.c_str());
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">TX Channel:</td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"digiPos2RF\" value=\"OK\" %s/>RF <input type=\"checkbox\" name=\"digiPos2INET\" value=\"OK\" %s/>Internet </td></tr>\n",
 				 digiPos2RFFlag.c_str(), digiPos2INETFlag.c_str());
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" id=\"digiPosLat\" name=\"digiPosLat\" type=\"number\" value=\"%.5f\" />degrees (positive for North, negative for South)</td></tr>\n", config.digi_lat);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" id=\"digiPosLon\" name=\"digiPosLon\" type=\"number\" value=\"%.5f\" />degrees (positive for East, negative for West)</td></tr>\n", config.digi_lon);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" id=\"digiPosAlt\" name=\"digiPosAlt\" type=\"number\" value=\"%.2f\" /> meter. *Value 0 is not send height</td></tr>\n", config.digi_alt);
-		strcat(html, tempHtml);
-		strcat(html, "</table></td>");
-		strcat(html, "</tr>\n");
+		html->print(tempHtml);
+		html->print("</table></td>");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PHG:</b></td>\n");
-		strcat(html, "<td align=\"center\">\n");
-		strcat(html, "<table>");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\">Radio TX Power</td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"power\" id=\"power\">\n");
-		strcat(html, "<option value=\"1\" selected>1</option>\n");
-		strcat(html, "<option value=\"5\">5</option>\n");
-		strcat(html, "<option value=\"10\">10</option>\n");
-		strcat(html, "<option value=\"15\">15</option>\n");
-		strcat(html, "<option value=\"25\">25</option>\n");
-		strcat(html, "<option value=\"35\">35</option>\n");
-		strcat(html, "<option value=\"50\">50</option>\n");
-		strcat(html, "<option value=\"65\">65</option>\n");
-		strcat(html, "<option value=\"80\">80</option>\n");
-		strcat(html, "</select> Watts</td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr><td style=\"text-align: right;\">Antenna Gain</td><td style=\"text-align: left;\"><input size=\"3\" min=\"0\" max=\"100\" step=\"0.1\" id=\"gain\" name=\"gain\" type=\"number\" value=\"6\" /> dBi</td></tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\">Height</td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"haat\" id=\"haat\">\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PHG:</b></td>\n");
+		html->print("<td align=\"center\">\n");
+		html->print("<table>");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\">Radio TX Power</td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"power\" id=\"power\">\n");
+		html->print("<option value=\"1\" selected>1</option>\n");
+		html->print("<option value=\"5\">5</option>\n");
+		html->print("<option value=\"10\">10</option>\n");
+		html->print("<option value=\"15\">15</option>\n");
+		html->print("<option value=\"25\">25</option>\n");
+		html->print("<option value=\"35\">35</option>\n");
+		html->print("<option value=\"50\">50</option>\n");
+		html->print("<option value=\"65\">65</option>\n");
+		html->print("<option value=\"80\">80</option>\n");
+		html->print("</select> Watts</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr><td style=\"text-align: right;\">Antenna Gain</td><td style=\"text-align: left;\"><input size=\"3\" min=\"0\" max=\"100\" step=\"0.1\" id=\"gain\" name=\"gain\" type=\"number\" value=\"6\" /> dBi</td></tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\">Height</td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"haat\" id=\"haat\">\n");
 		int k = 10;
 		for (uint8_t w = 0; w < 10; w++)
 		{
@@ -8864,88 +9204,88 @@ config.digi_phg[sizeof(config.digi_phg) - 1] = 0;
 			{
 				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%d</option>\n", k, k);
 			}
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 			k += k;
 		}
-		strcat(html, "</select> Feet</td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\">Antenna/Direction</td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"direction\" id=\"direction\">\n");
-		strcat(html, "<option>Omni</option><option>NE</option><option>E</option><option>SE</option><option>S</option><option>SW</option><option>W</option><option>NW</option><option>N</option>\n");
-		strcat(html, "</select></td>\n");
-		strcat(html, "</tr>\n");
+		html->print("</select> Feet</td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\">Antenna/Direction</td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"direction\" id=\"direction\">\n");
+		html->print("<option>Omni</option><option>NE</option><option>E</option><option>SE</option><option>S</option><option>SW</option><option>W</option><option>NW</option><option>N</option>\n");
+		html->print("</select></td>\n");
+		html->print("</tr>\n");
 
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td align=\"right\"><b>PHG Text</b></td><td align=\"left\"><input name=\"texttouse\" type=\"text\" size=\"6\" style=\"background-color: rgb(97, 239, 170);\" value=\"%s\"/> <input type=\"button\" value=\"Calculate PHG\" onclick=\"javascript:calculatePHGR()\" /></td></tr>\n", config.digi_phg);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
-		strcat(html, "</table></tr>");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Filter:</b></td>\n");
+		html->print("</table></tr>");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Filter:</b></td>\n");
 
-		strcat(html, "<td align=\"center\">\n");
-		strcat(html, "<fieldset id=\"FilterGrp\">\n");
-		strcat(html, "<legend>Filter repeater</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">");
-		strcat(html, "<tr style=\"background:unset;\">");
+		html->print("<td align=\"center\">\n");
+		html->print("<fieldset id=\"FilterGrp\">\n");
+		html->print("<legend>Filter repeater</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">");
+		html->print("<tr style=\"background:unset;\">");
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterMessage\" type=\"checkbox\" value=\"OK\" %s/>Message</td>\n",
 				 (config.digiFilter & FILTER_MESSAGE) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterStatus\" type=\"checkbox\" value=\"OK\" %s/>Status</td>\n",
 				 (config.digiFilter & FILTER_STATUS) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterTelemetry\" type=\"checkbox\" value=\"OK\" %s/>Telemetry</td>\n",
 				 (config.digiFilter & FILTER_TELEMETRY) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterWeather\" type=\"checkbox\" value=\"OK\" %s/>Weather</td>\n",
 				 (config.digiFilter & FILTER_WX) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterObject\" type=\"checkbox\" value=\"OK\" %s/>Object</td>\n",
 				 (config.digiFilter & FILTER_OBJECT) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "</tr><tr style=\"background:unset;\"><td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterItem\" type=\"checkbox\" value=\"OK\" %s/>Item</td>\n",
 				 (config.digiFilter & FILTER_ITEM) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterQuery\" type=\"checkbox\" value=\"OK\" %s/>Query</td>\n",
 				 (config.digiFilter & FILTER_QUERY) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterBuoy\" type=\"checkbox\" value=\"OK\" %s/>Buoy</td>\n",
 				 (config.digiFilter & FILTER_BUOY) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterPosition\" type=\"checkbox\" value=\"OK\" %s/>Position</td>\n",
 				 (config.digiFilter & FILTER_POSITION) ? "checked" : "");
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
-		strcat(html, "<td style=\"border:unset;\"></td>");
-		strcat(html, "</tr></table></fieldset>\n");
-		strcat(html, "</td></tr>\n");
+		html->print("<td style=\"border:unset;\"></td>");
+		html->print("</tr></table></fieldset>\n");
+		html->print("</td></tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n");
-		strcat(html, "<td align=\"center\"><table>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n");
+		html->print("<td align=\"center\"><table>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"digiTlmInv\" name=\"digiTlmInv\" type=\"number\" value=\"%d\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>", config.digi_tlm_interval);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 		for (int ax = 0; ax < 5; ax++)
 		{
 			snprintf(tempHtml, sizeof(tempHtml), "<tr><td align=\"right\"><b>CH A%d:</b></td>\n", ax + 1);
-			strcat(html, tempHtml);
-			strcat(html, "<td align=\"center\">\n");
-			strcat(html, "<table>");
+			html->print(tempHtml);
+			html->print("<td align=\"center\">\n");
+			html->print("<table>");
 
-			strcat(html, "<tr><td style=\"text-align: right;\">Sensor:</td>\n");
-			strcat(html, "<td style=\"text-align: left;\">CH: ");
+			html->print("<tr><td style=\"text-align: right;\">Sensor:</td>\n");
+			html->print("<td style=\"text-align: left;\">CH: ");
 
 			snprintf(tempHtml, sizeof(tempHtml), "<select name=\"sensorCH%d\" id=\"sensorCH%d\">\n", ax, ax);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 
 			for (uint8_t idx = 0; idx < 11; idx++)
 			{
@@ -8971,40 +9311,38 @@ config.digi_phg[sizeof(config.digi_phg) - 1] = 0;
 						snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">SENSOR#%d</option>\n", idx, idx);
 					}
 				}
-				strcat(html, tempHtml);
+				html->print(tempHtml);
 			}
-			strcat(html, "</select></td>\n");
+			html->print("</select></td>\n");
 
 			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Name: <input maxlength=\"10\" size=\"8\" name=\"param%d\" type=\"text\" value=\"%s\" /></td>\n", ax, config.digi_tlm_PARM[ax]);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit%d\" type=\"text\" value=\"%s\" /></td>\n", ax, config.digi_tlm_UNIT[ax]);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 
 			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision%d\" type=\"text\" value=\"%d\" onchange=\"selPrecision(%d)\"/></td></tr>\n", ax, config.digi_tlm_precision[ax], ax);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 
 			snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%da\" type=\"number\" value=\"%.5f\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%db\" type=\"number\" value=\"%.5f\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%dc\" type=\"number\" value=\"%.5f\" /> (av<sup>2</sup>+bv+c) </td>\n",
 					 ax, config.digi_tlm_EQNS[ax][0], ax, config.digi_tlm_EQNS[ax][1], ax, config.digi_tlm_EQNS[ax][2]);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 
 			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset%d\" type=\"text\" value=\"%.5f\" onchange=\"selOffset(%d)\" /></td></tr>\n", ax, config.digi_tlm_offset[ax], ax);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 
-			strcat(html, "</table></td>");
-			strcat(html, "</tr>\n");
+			html->print("</table></td>");
+			html->print("</tr>\n");
 		}
-		strcat(html, "</table></td></tr>\n");
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitDIGI'  name=\"commitDIGI\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitDIGI\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form><br />");
+		html->print("</table></td></tr>\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitDIGI'  name=\"commitDIGI\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitDIGI\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form><br />");
 
-		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
-		response->addHeader("digi", "content");
-		response->addHeader("Cache-Control", "no-cache");
-		request->send(response);
-		free(html); // Free the allocated memory
+		html->addHeader("digi", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
 	}
 }
 
@@ -9218,55 +9556,57 @@ void handle_wx(AsyncWebServerRequest *request)
 	{
 		// Allocate initial memory for HTML content
 		char tempHtml[300];
-		char *html = allocateStringMemory(26000); // Start with 8KB buffer
+		log_e("[WX] before alloc: freeHeap=%u largestFreeBlock=%u", ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+		AsyncResponseStream *html = request->beginResponseStream("text/html", 28000);
 		if (!html)
 		{
 			request->send(500, "text/html", "Memory allocation failed");
 			return;
 		}
-		strcpy(html, "<script type=\"text/javascript\">\n");
-		strcat(html, "$('form').submit(function (e) {\n");
-		strcat(html, "e.preventDefault();\n");
-		strcat(html, "var data = new FormData(e.currentTarget);\n");
-		strcat(html, "document.getElementById(\"submitWX\").disabled=true;\n");
-		strcat(html, "$.ajax({\n");
-		strcat(html, "url: '/wx',\n");
-		strcat(html, "type: 'POST',\n");
-		strcat(html, "data: data,\n");
-		strcat(html, "contentType: false,\n");
-		strcat(html, "processData: false,\n");
-		strcat(html, "success: function (data) {\n");
-		strcat(html, "alert(\"Submited Successfully\");\n");
-		strcat(html, "},\n");
-		strcat(html, "error: function (data) {\n");
-		strcat(html, "alert(\"An error occurred.\");\n");
-		strcat(html, "}\n");
-		strcat(html, "});\n");
-		strcat(html, "});\n");
-		strcat(html, "</script>\n");
+		html->print("<script type=\"text/javascript\">\n");
+		html->print("$('form').submit(function (e) {\n");
+		html->print("e.preventDefault();\n");
+		html->print("var data = new FormData(e.currentTarget);\n");
+		html->print("document.getElementById(\"submitWX\").disabled=true;\n");
+		html->print("$.ajax({\n");
+		html->print("url: '/wx',\n");
+		html->print("type: 'POST',\n");
+		html->print("data: data,\n");
+		html->print("contentType: false,\n");
+		html->print("processData: false,\n");
+		html->print("success: function (data) {\n");
+		html->print("alert(\"Submited Successfully\");\n");
+		html->print("},\n");
+		html->print("error: function (data) {\n");
+		html->print("alert(\"An error occurred.\");\n");
+		html->print("}\n");
+		html->print("});\n");
+		html->print("});\n");
+		html->print("</script>\n");
 
 		/************************ WX Mode **************************/
-		strcat(html, "<form id='formWX' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>[WX] Weather Station</b></span></th>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Enable:</b></td>\n");
+		html->print("<form id='formWX' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>[WX] Weather Station</b></span></th>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Enable:</b></td>\n");
 		char EnFlag[10] = "";
 		if (config.wx_en)
 			strcpy(EnFlag, "checked");
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", EnFlag);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Station Callsign:</b></td>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Station Callsign:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"%s\" /></td>\n", config.wx_mycall);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Station SSID:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"mySSID\" id=\"mySSID\">\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Station SSID:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"mySSID\" id=\"mySSID\">\n");
 		for (uint8_t ssid = 0; ssid <= 15; ssid++)
 		{
 			if (config.wx_ssid == ssid)
@@ -9277,19 +9617,19 @@ void handle_wx(AsyncWebServerRequest *request)
 			{
 				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%d</option>\n", ssid, ssid);
 			}
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 		}
-		strcat(html, "</select></td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Object Name:</b></td>\n");
+		html->print("</select></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Object Name:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"9\" size=\"9\" name=\"Object\" type=\"text\" value=\"%s\" /><i> *If not used, leave it blank.In use 3-9 charactor</i></td>\n", config.wx_object);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PATH:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"Path\" id=\"Path\">\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PATH:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"Path\" id=\"Path\">\n");
 		for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
 		{
 			if (config.wx_path == pthIdx)
@@ -9300,19 +9640,19 @@ void handle_wx(AsyncWebServerRequest *request)
 			{
 				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%s</option>\n", pthIdx, PATH_NAME[pthIdx]);
 			}
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 		}
-		strcat(html, "</select></td>\n");
-		// strcat(html, "<td style=\"text-align: left;\"><input maxlength=\"72\" size=\"72\" name=\"Path\" type=\"text\" value=\"" + String(config.wx_path) + "\" /></td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Text Comment:</b></td>\n");
+		html->print("</select></td>\n");
+		// html->print("<td style=\"text-align: left;\"><input maxlength=\"72\" size=\"72\" name=\"Path\" type=\"text\" value=\"" + String(config.wx_path) + "\" /></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Text Comment:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"50\" name=\"Comment\" type=\"text\" value=\"%s\" /></td>\n", config.wx_comment);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Time Stamp:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Time Stamp:</b></td>\n");
 		char timeStampFlag[10];
 		if (config.wx_timestamp)
 			strcpy(timeStampFlag, "checked");
@@ -9320,14 +9660,14 @@ void handle_wx(AsyncWebServerRequest *request)
 			strcpy(timeStampFlag, "");
 
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wxTimeStamp\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", timeStampFlag);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
 
-		strcat(html, "<tr><td align=\"right\"><b>POSITION:</b></td>\n");
-		strcat(html, "<td align=\"center\">\n");
-		strcat(html, "<table>");
+		html->print("<tr><td align=\"right\"><b>POSITION:</b></td>\n");
+		html->print("<td align=\"center\">\n");
+		html->print("<table>");
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"3600\" step=\"1\" id=\"PosInv\" name=\"PosInv\" type=\"number\" value=\"%d\" />Sec.</td></tr>", config.wx_interval);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 		String PosFixFlag = "";
 		String PosGPSFlag = "";
 		String Pos2RFFlag = "";
@@ -9343,64 +9683,64 @@ void handle_wx(AsyncWebServerRequest *request)
 			Pos2INETFlag = "checked";
 
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"PosSel\" value=\"0\" %s/>Fix <input type=\"radio\" name=\"PosSel\" value=\"1\" %s/>GPS </td></tr>\n", PosFixFlag.c_str(), PosGPSFlag.c_str());
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">TX Channel:</td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"Pos2RF\" value=\"OK\" %s/>RF <input type=\"checkbox\" name=\"Pos2INET\" value=\"OK\" %s/>Internet </td></tr>\n", Pos2RFFlag.c_str(), Pos2INETFlag.c_str());
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" name=\"PosLat\" type=\"number\" value=\"%.5f\" />degrees (positive for North, negative for South)</td></tr>\n", config.wx_lat);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" name=\"PosLon\" type=\"number\" value=\"%.5f\" />degrees (positive for East, negative for West)</td></tr>\n", config.wx_lon);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" name=\"PosAlt\" type=\"number\" value=\"%.2f\" /> meter. *The altitude in meters(m) above sea level</td></tr>\n", config.wx_alt);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 
-		strcat(html, "</table></td>");
-		strcat(html, "</tr>\n");
+		html->print("</table></td>");
+		html->print("</tr>\n");
 
-		// strcat(html, "<tr>\n");
-		// strcat(html, "<td align=\"right\"><b>PORT:</b></td>\n");
-		// strcat(html, "<td style=\"text-align: left;\">\n");
-		// strcat(html, "<select name=\"channel\" id=\"channel\">\n");
+		// html->print("<tr>\n");
+		// html->print("<td align=\"right\"><b>PORT:</b></td>\n");
+		// html->print("<td style=\"text-align: left;\">\n");
+		// html->print("<select name=\"channel\" id=\"channel\">\n");
 		// for (int i = 0; i < 5; i++)
 		// {
 		// 	if (config.wx_channel == i)
-		// 		strcat(html, "<option value=\"" + String(i) + "\" selected>" + String(WX_PORT[i]) + " </option>\n");
+		// 		html->print("<option value=\"" + String(i) + "\" selected>" + String(WX_PORT[i]) + " </option>\n");
 		// 	else
-		// 		strcat(html, "<option value=\"" + String(i) + "\" >" + String(WX_PORT[i]) + " </option>\n");
+		// 		html->print("<option value=\"" + String(i) + "\" >" + String(WX_PORT[i]) + " </option>\n");
 		// }
-		// strcat(html, "</select>\n");
-		// strcat(html, "</td>\n");
-		// strcat(html, "</tr>\n");
+		// html->print("</select>\n");
+		// html->print("</td>\n");
+		// html->print("</tr>\n");
 		/************************ Sensor Config Mode **************************/
-		// strcat(html, "<form id='formSENSOR' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		// strcat(html, "<table>\n");
-		// strcat(html, "<th colspan=\"2\"><span><b>Sensor Config</b></span></th>\n");
+		// html->print("<form id='formSENSOR' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		// html->print("<table>\n");
+		// html->print("<th colspan=\"2\"><span><b>Sensor Config</b></span></th>\n");
 
-		strcat(html, "<tr><td align=\"right\"><b>SENSOR:<br />Selection</b></td>\n");
-		strcat(html, "<td align=\"center\">\n");
-		strcat(html, "<table>");
+		html->print("<tr><td align=\"right\"><b>SENSOR:<br />Selection</b></td>\n");
+		html->print("<td align=\"center\">\n");
+		html->print("<table>");
 
 		for (int ax = 0; ax < WX_SENSOR_NUM; ax++)
 		{
 			snprintf(tempHtml, sizeof(tempHtml), "<tr><td align=\"right\"><b>%s:</b> \n", WX_SENSOR[ax]);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 
 			char EnFlag[16] = "";
 			if (config.wx_sensor_enable[ax])
 				snprintf(EnFlag, sizeof(EnFlag), "checked");
 
 			snprintf(tempHtml, sizeof(tempHtml), "<label class=\"switch\"><input type=\"checkbox\" name=\"senEn%d\" value=\"OK\" %s><span class=\"slider round\"></span></label>", ax, EnFlag);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 
-			strcat(html, "</td>\n");
+			html->print("</td>\n");
 
-			// strcat(html, "<td style=\"text-align: lefe;\">Sensor:</td>\n");
-			strcat(html, "<td style=\"text-align: left;\">Sensor Channel: ");
+			// html->print("<td style=\"text-align: lefe;\">Sensor:</td>\n");
+			html->print("<td style=\"text-align: left;\">Sensor Channel: ");
 
 			snprintf(tempHtml, sizeof(tempHtml), "<select name=\"sensorCH%d\" id=\"sensorCH%d\">\n", ax, ax);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 			for (uint8_t idx = 0; idx < 11; idx++)
 			{
 				if (idx == 0)
@@ -9425,9 +9765,9 @@ void handle_wx(AsyncWebServerRequest *request)
 						snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">SENSOR#%d</option>\n", idx, idx);
 					}
 				}
-				strcat(html, tempHtml);
+				html->print(tempHtml);
 			}
-			strcat(html, "</select>\n");
+			html->print("</select>\n");
 			String avgFlag = "";
 			String sampleFlag = "";
 			if (config.wx_sensor_avg[ax])
@@ -9436,21 +9776,19 @@ void handle_wx(AsyncWebServerRequest *request)
 				sampleFlag = "checked=\"checked\"";
 
 			snprintf(tempHtml, sizeof(tempHtml), "<input type=\"radio\" name=\"avgSel%d\" value=\"0\" %s/>Sample <input type=\"radio\" name=\"avgSel%d\" value=\"1\" %s/>Average", ax, sampleFlag.c_str(), ax, avgFlag.c_str());
-			strcat(html, tempHtml);
-			strcat(html, "</td></tr>");
+			html->print(tempHtml);
+			html->print("</td></tr>");
 		}
-		strcat(html, "</table></td></tr>\n");
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitWX'  name=\"commitWX\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitWX\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form><br />");
+		html->print("</table></td></tr>\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitWX'  name=\"commitWX\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitWX\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form><br />");
 
-		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
-		response->addHeader("Weather", "content");
-		response->addHeader("Cache-Control", "no-cache");
-		request->send(response);
-		free(html); // Free the allocated memory
+		html->addHeader("Weather", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
 	}
 }
 
@@ -9628,40 +9966,40 @@ void handle_tlm(AsyncWebServerRequest *request)
 	}
 	else
 	{
-		// Allocate initial memory for HTML content
-		char *html = allocateStringMemory(18000); // Start with 8KB buffer
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+		AsyncResponseStream *html = request->beginResponseStream("text/html", 20000);
 		if (!html)
 		{
 			request->send(500, "text/html", "Memory allocation failed");
 			return;
 		}
-		strcpy(html, "<script type=\"text/javascript\">\n");
-		strcat(html, "$('form').submit(function (e) {\n");
-		strcat(html, "e.preventDefault();\n");
-		strcat(html, "var data = new FormData(e.currentTarget);\n");
-		strcat(html, "document.getElementById(\"submitTLM\").disabled=true;\n");
-		strcat(html, "$.ajax({\n");
-		strcat(html, "url: '/tlm',\n");
-		strcat(html, "type: 'POST',\n");
-		strcat(html, "data: data,\n");
-		strcat(html, "contentType: false,\n");
-		strcat(html, "processData: false,\n");
-		strcat(html, "success: function (data) {\n");
-		strcat(html, "alert(\"Submited Successfully\");\n");
-		strcat(html, "},\n");
-		strcat(html, "error: function (data) {\n");
-		strcat(html, "alert(\"An error occurred.\");\n");
-		strcat(html, "}\n");
-		strcat(html, "});\n");
-		strcat(html, "});\n");
-		strcat(html, "</script>\n");
+		html->print("<script type=\"text/javascript\">\n");
+		html->print("$('form').submit(function (e) {\n");
+		html->print("e.preventDefault();\n");
+		html->print("var data = new FormData(e.currentTarget);\n");
+		html->print("document.getElementById(\"submitTLM\").disabled=true;\n");
+		html->print("$.ajax({\n");
+		html->print("url: '/tlm',\n");
+		html->print("type: 'POST',\n");
+		html->print("data: data,\n");
+		html->print("contentType: false,\n");
+		html->print("processData: false,\n");
+		html->print("success: function (data) {\n");
+		html->print("alert(\"Submited Successfully\");\n");
+		html->print("},\n");
+		html->print("error: function (data) {\n");
+		html->print("alert(\"An error occurred.\");\n");
+		html->print("}\n");
+		html->print("});\n");
+		html->print("});\n");
+		html->print("</script>\n");
 
 		/************************ TLM Mode **************************/
-		strcat(html, "<form id='formTLM' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>System Telemetry</b></span></th>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Enable:</b></td>\n");
+		html->print("<form id='formTLM' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>System Telemetry</b></span></th>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Enable:</b></td>\n");
 		char EnFlag[10] = "";
 		if (config.tlm0_en)
 			strcpy(EnFlag, "checked");
@@ -9670,26 +10008,26 @@ void handle_tlm(AsyncWebServerRequest *request)
 			if (temp_flag)
 			{
 				snprintf(temp_flag, 512, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", EnFlag);
-				strcat(html, temp_flag);
+				html->print(temp_flag);
 				free(temp_flag);
 			}
 		}
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
 		{
 			char *temp_callsign = allocateStringMemory(512);
 			if (temp_callsign)
 			{
 				snprintf(temp_callsign, 512, "<td align=\"right\"><b>Station Callsign:</b></td>\n<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"%s\" /></td>\n", config.tlm0_mycall);
-				strcat(html, temp_callsign);
+				html->print(temp_callsign);
 				free(temp_callsign);
 			}
 		}
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Station SSID:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"mySSID\" id=\"mySSID\">\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Station SSID:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"mySSID\" id=\"mySSID\">\n");
 		for (uint8_t ssid = 0; ssid <= 15; ssid++)
 		{
 			char *temp_option = allocateStringMemory(256);
@@ -9703,17 +10041,17 @@ void handle_tlm(AsyncWebServerRequest *request)
 				{
 					snprintf(temp_option, 256, "<option value=\"%d\">%d</option>\n", ssid, ssid);
 				}
-				strcat(html, temp_option);
+				html->print(temp_option);
 				free(temp_option);
 			}
 		}
-		strcat(html, "</select></td>\n");
-		strcat(html, "</tr>\n");
+		html->print("</select></td>\n");
+		html->print("</tr>\n");
 
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PATH:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"Path\" id=\"Path\">\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PATH:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"Path\" id=\"Path\">\n");
 		for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
 		{
 			{
@@ -9728,34 +10066,34 @@ void handle_tlm(AsyncWebServerRequest *request)
 					{
 						snprintf(temp_path, 256, "<option value=\"%d\">%s</option>\n", pthIdx, PATH_NAME[pthIdx]);
 					}
-					strcat(html, temp_path);
+					html->print(temp_path);
 					free(temp_path);
 				}
 			}
 		}
-		strcat(html, "</select></td>\n");
-		// strcat(html, "<td style=\"text-align: left;\"><input maxlength=\"72\" size=\"72\" name=\"Path\" type=\"text\" value=\"" + String(config.tlm0_path) + "\" /></td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
+		html->print("</select></td>\n");
+		// html->print("<td style=\"text-align: left;\"><input maxlength=\"72\" size=\"72\" name=\"Path\" type=\"text\" value=\"" + String(config.tlm0_path) + "\" /></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
 		{
 			char *temp_comment = allocateStringMemory(512);
 			if (temp_comment)
 			{
 				snprintf(temp_comment, 512, "<td align=\"right\"><b>Text Comment:</b></td>\n<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"50\" name=\"Comment\" type=\"text\" value=\"%s\" /></td>\n", config.tlm0_comment);
-				strcat(html, temp_comment);
+				html->print(temp_comment);
 				free(temp_comment);
 			}
 		}
-		strcat(html, "</tr>\n");
+		html->print("</tr>\n");
 
 		{
 			char *temp_intervals = allocateStringMemory(1024);
 			if (temp_intervals)
 			{
 				snprintf(temp_intervals, 1024, "<tr><td style=\"text-align: right;\">Info Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"3600\" step=\"1\" name=\"infoInv\" type=\"number\" value=\"%d\" />Sec.</td></tr>", config.tlm0_info_interval);
-				strcat(html, temp_intervals);
+				html->print(temp_intervals);
 				snprintf(temp_intervals, 1024, "<tr><td style=\"text-align: right;\">Data Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"3600\" step=\"1\" name=\"dataInv\" type=\"number\" value=\"%d\" />Sec.</td></tr>", config.tlm0_data_interval);
-				strcat(html, temp_intervals);
+				html->print(temp_intervals);
 				free(temp_intervals);
 			}
 		}
@@ -9771,18 +10109,18 @@ void handle_tlm(AsyncWebServerRequest *request)
 			if (temp_channels)
 			{
 				snprintf(temp_channels, 1024, "<tr><td style=\"text-align: right;\">TX Channel:</td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"Pos2RF\" value=\"OK\" %s/>RF <input type=\"checkbox\" name=\"Pos2INET\" value=\"OK\" %s/>Internet </td></tr>\n", Pos2RFFlag, Pos2INETFlag);
-				strcat(html, temp_channels);
+				html->print(temp_channels);
 				free(temp_channels);
 			}
 		}
 
-		// strcat(html, "<tr>\n");
-		// strcat(html, "<td align=\"right\"><b>Time Stamp:</b></td>\n");
+		// html->print("<tr>\n");
+		// html->print("<td align=\"right\"><b>Time Stamp:</b></td>\n");
 		// String timeStampFlag = "";
 		// if (config.wx_timestamp)
 		// 	timeStampFlag = "checked";
-		// strcat(html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wxTimeStamp\" value=\"OK\" " + timeStampFlag + "><span class=\"slider round\"></span></label></td>\n");
-		// strcat(html, "</tr>\n");
+		// html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wxTimeStamp\" value=\"OK\" " + timeStampFlag + "><span class=\"slider round\"></span></label></td>\n");
+		// html->print("</tr>\n");
 		for (int ax = 0; ax < 5; ax++)
 		{
 			{
@@ -9790,23 +10128,23 @@ void handle_tlm(AsyncWebServerRequest *request)
 				if (temp_channel_a)
 				{
 					snprintf(temp_channel_a, 512, "<tr><td align=\"right\"><b>Channel A%d:</b></td>\n", ax + 1);
-					strcat(html, temp_channel_a);
+					html->print(temp_channel_a);
 					free(temp_channel_a);
 				}
 			}
-			strcat(html, "<td align=\"center\">\n");
-			strcat(html, "<table>");
+			html->print("<td align=\"center\">\n");
+			html->print("<table>");
 
-			// strcat(html, "<tr><td style=\"text-align: right;\">Name:</td><td style=\"text-align: center;\"><i>Sensor Type</i></td><td style=\"text-align: center;\"><i>Parameter</i></td><td style=\"text-align: center;\"><i>Unit</i></td></tr>\n");
+			// html->print("<tr><td style=\"text-align: right;\">Name:</td><td style=\"text-align: center;\"><i>Sensor Type</i></td><td style=\"text-align: center;\"><i>Parameter</i></td><td style=\"text-align: center;\"><i>Unit</i></td></tr>\n");
 
-			strcat(html, "<tr><td style=\"text-align: right;\">Type/Name:</td>\n");
-			strcat(html, "<td style=\"text-align: left;\">Sensor Type: ");
+			html->print("<tr><td style=\"text-align: right;\">Type/Name:</td>\n");
+			html->print("<td style=\"text-align: left;\">Sensor Type: ");
 			{
 				char *temp_select = allocateStringMemory(256);
 				if (temp_select)
 				{
 					snprintf(temp_select, 256, "<select name=\"sensorCH%d\" id=\"sensorCH%d\">\n", ax, ax);
-					strcat(html, temp_select);
+					html->print(temp_select);
 					free(temp_select);
 				}
 			}
@@ -9824,19 +10162,19 @@ void handle_tlm(AsyncWebServerRequest *request)
 						{
 							snprintf(temp_option, 256, "<option value=\"%d\">%s</option>\n", idx, SYSTEM_NAME[idx]);
 						}
-						strcat(html, temp_option);
+						html->print(temp_option);
 						free(temp_option);
 					}
 				}
 			}
-			strcat(html, "</select></td>\n");
+			html->print("</select></td>\n");
 
 			{
 				char *temp_param = allocateStringMemory(512);
 				if (temp_param)
 				{
 					snprintf(temp_param, 512, "<td style=\"text-align: left;\">Parameter: <input maxlength=\"10\" size=\"8\" name=\"param%d\" type=\"text\" value=\"%s\" /></td>\n", ax, config.tlm0_PARM[ax]);
-					strcat(html, temp_param);
+					html->print(temp_param);
 					free(temp_param);
 				}
 			}
@@ -9845,23 +10183,23 @@ void handle_tlm(AsyncWebServerRequest *request)
 				if (temp_unit)
 				{
 					snprintf(temp_unit, 512, "<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit%d\" type=\"text\" value=\"%s\" /></td>\n", ax, config.tlm0_UNIT[ax]);
-					strcat(html, temp_unit);
+					html->print(temp_unit);
 					free(temp_unit);
 				}
 			}
-			strcat(html, "</tr>\n");
+			html->print("</tr>\n");
 			{
 				char *temp_eqns = allocateStringMemory(1024);
 				if (temp_eqns)
 				{
 					snprintf(temp_eqns, 1024, "<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.0001\" name=\"eqns%da\" type=\"number\" value=\"%.3f\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.0001\" name=\"eqns%db\" type=\"number\" value=\"%.3f\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.0001\" name=\"eqns%dc\" type=\"number\" value=\"%.3f\" /> (av<sup>2</sup>+bv+c)</td></tr>\n",
 							 ax, config.tlm0_EQNS[ax][0], ax, config.tlm0_EQNS[ax][1], ax, config.tlm0_EQNS[ax][2]);
-					strcat(html, temp_eqns);
+					html->print(temp_eqns);
 					free(temp_eqns);
 				}
 			}
-			strcat(html, "</table></td>");
-			strcat(html, "</tr>\n");
+			html->print("</table></td>");
+			html->print("</tr>\n");
 		}
 
 		uint8_t b = 1;
@@ -9872,21 +10210,21 @@ void handle_tlm(AsyncWebServerRequest *request)
 				if (temp_channel_b)
 				{
 					snprintf(temp_channel_b, 512, "<tr><td align=\"right\"><b>Channel B%d:</b></td>\n", ax + 1);
-					strcat(html, temp_channel_b);
+					html->print(temp_channel_b);
 					free(temp_channel_b);
 				}
 			}
-			strcat(html, "<td align=\"center\">\n");
-			strcat(html, "<table>");
+			html->print("<td align=\"center\">\n");
+			html->print("<table>");
 
-			// strcat(html, "<tr><td style=\"text-align: right;\">Type/Name:</td>\n");
-			strcat(html, "<td style=\"text-align: left;\">Type: ");
+			// html->print("<tr><td style=\"text-align: right;\">Type/Name:</td>\n");
+			html->print("<td style=\"text-align: left;\">Type: ");
 			{
 				char *temp_select_b = allocateStringMemory(256);
 				if (temp_select_b)
 				{
 					snprintf(temp_select_b, 256, "<select name=\"sensorCH%d\" id=\"sensorCH%d\">\n", ax + 5, ax);
-					strcat(html, temp_select_b);
+					html->print(temp_select_b);
 					free(temp_select_b);
 				}
 			}
@@ -9904,19 +10242,19 @@ void handle_tlm(AsyncWebServerRequest *request)
 						{
 							snprintf(temp_option_b, 256, "<option value=\"%d\">%s</option>\n", idx, SYSTEM_BITS_NAME[idx]);
 						}
-						strcat(html, temp_option_b);
+						html->print(temp_option_b);
 						free(temp_option_b);
 					}
 				}
 			}
-			strcat(html, "</select></td>\n");
+			html->print("</select></td>\n");
 
 			{
 				char *temp_param_b = allocateStringMemory(512);
 				if (temp_param_b)
 				{
 					snprintf(temp_param_b, 512, "<td style=\"text-align: left;\">Parameter: <input maxlength=\"10\" size=\"8\" name=\"param%d\" type=\"text\" value=\"%s\" /></td>\n", ax + 5, config.tlm0_PARM[ax + 5]);
-					strcat(html, temp_param_b);
+					html->print(temp_param_b);
 					free(temp_param_b);
 				}
 			}
@@ -9925,7 +10263,7 @@ void handle_tlm(AsyncWebServerRequest *request)
 				if (temp_unit_b)
 				{
 					snprintf(temp_unit_b, 512, "<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit%d\" type=\"text\" value=\"%s\" /></td>\n", ax + 5, config.tlm0_UNIT[ax + 5]);
-					strcat(html, temp_unit_b);
+					html->print(temp_unit_b);
 					free(temp_unit_b);
 				}
 			}
@@ -9939,18 +10277,18 @@ void handle_tlm(AsyncWebServerRequest *request)
 				if (temp_radio_b)
 				{
 					snprintf(temp_radio_b, 512, "<td style=\"text-align: left;\"> Active:<input type=\"radio\" name=\"bitact%d\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"bitact%d\" value=\"1\" %s/>HIGH </td>\n", ax, LowFlag, ax, HighFlag);
-					strcat(html, temp_radio_b);
+					html->print(temp_radio_b);
 					free(temp_radio_b);
 				}
 			}
-			strcat(html, "</tr>\n");
-			// strcat(html, "<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax + 1) + "a\" type=\"number\" value=\"" + String(config.tlm0_EQNS[ax][0], 3) + "\" />  b:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax + 1) + "b\" type=\"number\" value=\"" + String(config.tlm0_EQNS[ax][1], 3) + "\" /> c:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax + 1) + "c\" type=\"number\" value=\"" + String(config.tlm0_EQNS[ax][2], 3) + "\" /> (av<sup>2</sup>+bv+c)</td></tr>\n";
-			strcat(html, "</table></td>");
-			strcat(html, "</tr>\n");
+			html->print("</tr>\n");
+			// html->print("<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax + 1) + "a\" type=\"number\" value=\"" + String(config.tlm0_EQNS[ax][0], 3) + "\" />  b:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax + 1) + "b\" type=\"number\" value=\"" + String(config.tlm0_EQNS[ax][1], 3) + "\" /> c:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax + 1) + "c\" type=\"number\" value=\"" + String(config.tlm0_EQNS[ax][2], 3) + "\" /> (av<sup>2</sup>+bv+c)</td></tr>\n";
+			html->print("</table></td>");
+			html->print("</tr>\n");
 			b <<= 1;
 		}
 
-		// strcat(html, "<tr><td align=\"right\"><b>Parameter Name:</b></td>\n";
+		// html->print("<tr><td align=\"right\"><b>Parameter Name:</b></td>\n";
 		// strcat(html, "<td align=\"center\">\n";
 		// strcat(html, "<table>";
 
@@ -9959,17 +10297,15 @@ void handle_tlm(AsyncWebServerRequest *request)
 		// // strcat(html, "<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" name=\"PosAlt\" type=\"number\" value=\"" + String(config.wx_alt, 2) + "\" /> meter. *Value 0 is not send height</td></tr>\n";
 		// strcat(html, "</table></td>";
 		// strcat(html, "</tr>\n";
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitTLM'  name=\"commitTLM\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitTLM\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form><br />");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitTLM'  name=\"commitTLM\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitTLM\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form><br />");
 
-		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
-		response->addHeader("Telemetry", "content");
-		response->addHeader("Cache-Control", "no-cache");
-		request->send(response);
-		free(html); // Free the allocated memory
+		html->addHeader("Telemetry", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
 	}
 }
 
@@ -10084,315 +10420,315 @@ void handle_sensor(AsyncWebServerRequest *request)
 	{
 		// Allocate initial memory for HTML content
 		char temp_buffer[512];
-		char *html = allocateStringMemory(25000); // Start with 8KB buffer
+		log_e("[SENSOR] before alloc: freeHeap=%u largestFreeBlock=%u", ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+		AsyncResponseStream *html = request->beginResponseStream("text/html", 36000);
 		if (!html)
 		{
 			request->send(500, "text/html", "Memory allocation failed");
 			return;
 		}
-		strcpy(html, "<script type=\"text/javascript\">\n");
-		strcat(html, "$('form').submit(function (e) {\n");
-		strcat(html, "e.preventDefault();\n");
-		strcat(html, "var data = new FormData(e.currentTarget);\n");
-		strcat(html, "document.getElementById(\"submitSENSOR\").disabled=true;\n");
-		strcat(html, "$.ajax({\n");
-		strcat(html, "url: '/sensor',\n");
-		strcat(html, "type: 'POST',\n");
-		strcat(html, "data: data,\n");
-		strcat(html, "contentType: false,\n");
-		strcat(html, "processData: false,\n");
-		strcat(html, "success: function (data) {\n");
-		strcat(html, "alert(\"Submited Successfully\");\n");
-		strcat(html, "},\n");
-		strcat(html, "error: function (data) {\n");
-		strcat(html, "alert(\"An error occurred.\");\n");
-		strcat(html, "}\n");
-		strcat(html, "});\n");
-		strcat(html, "});\n");
-		strcat(html, "function setElm(name,val) {\n");
-		strcat(html, "document.getElementById(name).value=val;\n");
-		strcat(html, "};\n");
-		strcat(html, "function selSensorType(idx) {\n");
-		strcat(html, "var x=0;\n");
-		strcat(html, "var parm=\"param\"+idx;\n");
-		strcat(html, "var unit=\"unit\"+idx;\n");
-		strcat(html, "x = document.getElementById(\"sensorCH\"+idx).value;\n");
-		strcat(html, "if (x==1) {\n");
-		strcat(html, "setElm(parm,\"Co2\");");
-		strcat(html, "setElm(unit,\"ppm\");\n");
-		strcat(html, "}else if (x==2) {\n");
-		strcat(html, "setElm(parm,\"CH2O\");");
-		strcat(html, "setElm(unit,\"μg/m³\");\n");
-		strcat(html, "}else if (x==3) {\n");
-		strcat(html, "setElm(parm,\"TVOC\");");
-		strcat(html, "setElm(unit,\"μg/m³\");\n");
-		strcat(html, "}else if (x==4) {\n");
-		strcat(html, "setElm(parm,\"PM2.5\");");
-		strcat(html, "setElm(unit,\"μg/m³\");\n");
-		strcat(html, "}else if (x==5) {\n");
-		strcat(html, "setElm(parm,\"PM10.0\");");
-		strcat(html, "setElm(unit,\"μg/m³\");\n");
-		strcat(html, "}else if (x==6) {\n");
-		strcat(html, "setElm(parm,\"Temperature\");");
-		strcat(html, "setElm(unit,\"°C\");\n");
-		strcat(html, "}else if (x==7) {\n");
-		strcat(html, "setElm(parm,\"Humidity\");");
-		strcat(html, "setElm(unit,\"%RH\");\n");
-		strcat(html, "}else if (x==8) {\n");
-		strcat(html, "setElm(parm,\"Pressure\");");
-		strcat(html, "setElm(unit,\"hPa\");\n");
-		strcat(html, "}else if (x==9) {\n");
-		strcat(html, "setElm(parm,\"WindSpeed\");");
-		strcat(html, "setElm(unit,\"kPh\");\n");
-		strcat(html, "}else if (x==10) {\n");
-		strcat(html, "setElm(parm,\"WindCourse\");");
-		strcat(html, "setElm(unit,\"°\");\n");
-		strcat(html, "}else if (x==11) {\n");
-		strcat(html, "setElm(parm,\"Rain\");");
-		strcat(html, "setElm(unit,\"mm\");\n");
-		strcat(html, "}else if (x==12) {\n");
-		strcat(html, "setElm(parm,\"Luminosity\");");
-		strcat(html, "setElm(unit,\"W/m³\");\n");
-		strcat(html, "}else if (x==13) {\n");
-		strcat(html, "setElm(parm,\"SoilTemp\");");
-		strcat(html, "setElm(unit,\"°C\");\n");
-		strcat(html, "}else if (x==14) {\n");
-		strcat(html, "setElm(parm,\"SoilMoisture\");");
-		strcat(html, "setElm(unit,\"%VWC\");\n");
-		strcat(html, "}else if (x==15) {\n");
-		strcat(html, "setElm(parm,\"WaterTemp\");");
-		strcat(html, "setElm(unit,\"°C\");\n");
-		strcat(html, "}else if (x==16) {\n");
-		strcat(html, "setElm(parm,\"WaterTDS\");");
-		strcat(html, "setElm(unit,\" \");\n");
-		strcat(html, "}else if (x==17) {\n");
-		strcat(html, "setElm(parm,\"WaterLevel\");");
-		strcat(html, "setElm(unit,\"mm\");\n");
-		strcat(html, "}else if (x==18) {\n");
-		strcat(html, "setElm(parm,\"WaterFlow\");");
-		strcat(html, "setElm(unit,\"L/min\");\n");
-		strcat(html, "}else if (x==19) {\n");
-		strcat(html, "setElm(parm,\"Voltage\");");
-		strcat(html, "setElm(unit,\"V\");\n");
-		strcat(html, "}else if (x==20) {\n");
-		strcat(html, "setElm(parm,\"Current\");");
-		strcat(html, "setElm(unit,\"A\");\n");
-		strcat(html, "}else if (x==21) {\n");
-		strcat(html, "setElm(parm,\"Power\");");
-		strcat(html, "setElm(unit,\"W\");\n");
-		strcat(html, "}else if (x==22) {\n");
-		strcat(html, "setElm(parm,\"Energy\");");
-		strcat(html, "setElm(unit,\"Wh\");\n");
-		strcat(html, "}else if (x==23) {\n");
-		strcat(html, "setElm(parm,\"Frequency\");");
-		strcat(html, "setElm(unit,\"Hz\");\n");
-		strcat(html, "}else if (x==24) {\n");
-		strcat(html, "setElm(parm,\"PF\");");
-		strcat(html, "setElm(unit,\" \");\n");
-		strcat(html, "}else if (x==25) {\n");
-		strcat(html, "setElm(parm,\"Satellite\");");
-		strcat(html, "setElm(unit,\" \");\n");
-		strcat(html, "}else if (x==26) {\n");
-		strcat(html, "setElm(parm,\"HDOP\");");
-		strcat(html, "setElm(unit,\" \");\n");
-		strcat(html, "}else if (x==27) {\n");
-		strcat(html, "setElm(parm,\"Battery\");");
-		strcat(html, "setElm(unit,\"V\");\n");
-		strcat(html, "}else if (x==28) {\n");
-		strcat(html, "setElm(parm,\"BattLevel\");");
-		strcat(html, "setElm(unit,\"%\");\n");
-		strcat(html, "}\n}\n");
+		html->print("<script type=\"text/javascript\">\n");
+		html->print("$('form').submit(function (e) {\n");
+		html->print("e.preventDefault();\n");
+		html->print("var data = new FormData(e.currentTarget);\n");
+		html->print("document.getElementById(\"submitSENSOR\").disabled=true;\n");
+		html->print("$.ajax({\n");
+		html->print("url: '/sensor',\n");
+		html->print("type: 'POST',\n");
+		html->print("data: data,\n");
+		html->print("contentType: false,\n");
+		html->print("processData: false,\n");
+		html->print("success: function (data) {\n");
+		html->print("alert(\"Submited Successfully\");\n");
+		html->print("},\n");
+		html->print("error: function (data) {\n");
+		html->print("alert(\"An error occurred.\");\n");
+		html->print("}\n");
+		html->print("});\n");
+		html->print("});\n");
+		html->print("function setElm(name,val) {\n");
+		html->print("document.getElementById(name).value=val;\n");
+		html->print("};\n");
+		html->print("function selSensorType(idx) {\n");
+		html->print("var x=0;\n");
+		html->print("var parm=\"param\"+idx;\n");
+		html->print("var unit=\"unit\"+idx;\n");
+		html->print("x = document.getElementById(\"sensorCH\"+idx).value;\n");
+		html->print("if (x==1) {\n");
+		html->print("setElm(parm,\"Co2\");");
+		html->print("setElm(unit,\"ppm\");\n");
+		html->print("}else if (x==2) {\n");
+		html->print("setElm(parm,\"CH2O\");");
+		html->print("setElm(unit,\"μg/m³\");\n");
+		html->print("}else if (x==3) {\n");
+		html->print("setElm(parm,\"TVOC\");");
+		html->print("setElm(unit,\"μg/m³\");\n");
+		html->print("}else if (x==4) {\n");
+		html->print("setElm(parm,\"PM2.5\");");
+		html->print("setElm(unit,\"μg/m³\");\n");
+		html->print("}else if (x==5) {\n");
+		html->print("setElm(parm,\"PM10.0\");");
+		html->print("setElm(unit,\"μg/m³\");\n");
+		html->print("}else if (x==6) {\n");
+		html->print("setElm(parm,\"Temperature\");");
+		html->print("setElm(unit,\"°C\");\n");
+		html->print("}else if (x==7) {\n");
+		html->print("setElm(parm,\"Humidity\");");
+		html->print("setElm(unit,\"%RH\");\n");
+		html->print("}else if (x==8) {\n");
+		html->print("setElm(parm,\"Pressure\");");
+		html->print("setElm(unit,\"hPa\");\n");
+		html->print("}else if (x==9) {\n");
+		html->print("setElm(parm,\"WindSpeed\");");
+		html->print("setElm(unit,\"kPh\");\n");
+		html->print("}else if (x==10) {\n");
+		html->print("setElm(parm,\"WindCourse\");");
+		html->print("setElm(unit,\"°\");\n");
+		html->print("}else if (x==11) {\n");
+		html->print("setElm(parm,\"Rain\");");
+		html->print("setElm(unit,\"mm\");\n");
+		html->print("}else if (x==12) {\n");
+		html->print("setElm(parm,\"Luminosity\");");
+		html->print("setElm(unit,\"W/m³\");\n");
+		html->print("}else if (x==13) {\n");
+		html->print("setElm(parm,\"SoilTemp\");");
+		html->print("setElm(unit,\"°C\");\n");
+		html->print("}else if (x==14) {\n");
+		html->print("setElm(parm,\"SoilMoisture\");");
+		html->print("setElm(unit,\"%VWC\");\n");
+		html->print("}else if (x==15) {\n");
+		html->print("setElm(parm,\"WaterTemp\");");
+		html->print("setElm(unit,\"°C\");\n");
+		html->print("}else if (x==16) {\n");
+		html->print("setElm(parm,\"WaterTDS\");");
+		html->print("setElm(unit,\" \");\n");
+		html->print("}else if (x==17) {\n");
+		html->print("setElm(parm,\"WaterLevel\");");
+		html->print("setElm(unit,\"mm\");\n");
+		html->print("}else if (x==18) {\n");
+		html->print("setElm(parm,\"WaterFlow\");");
+		html->print("setElm(unit,\"L/min\");\n");
+		html->print("}else if (x==19) {\n");
+		html->print("setElm(parm,\"Voltage\");");
+		html->print("setElm(unit,\"V\");\n");
+		html->print("}else if (x==20) {\n");
+		html->print("setElm(parm,\"Current\");");
+		html->print("setElm(unit,\"A\");\n");
+		html->print("}else if (x==21) {\n");
+		html->print("setElm(parm,\"Power\");");
+		html->print("setElm(unit,\"W\");\n");
+		html->print("}else if (x==22) {\n");
+		html->print("setElm(parm,\"Energy\");");
+		html->print("setElm(unit,\"Wh\");\n");
+		html->print("}else if (x==23) {\n");
+		html->print("setElm(parm,\"Frequency\");");
+		html->print("setElm(unit,\"Hz\");\n");
+		html->print("}else if (x==24) {\n");
+		html->print("setElm(parm,\"PF\");");
+		html->print("setElm(unit,\" \");\n");
+		html->print("}else if (x==25) {\n");
+		html->print("setElm(parm,\"Satellite\");");
+		html->print("setElm(unit,\" \");\n");
+		html->print("}else if (x==26) {\n");
+		html->print("setElm(parm,\"HDOP\");");
+		html->print("setElm(unit,\" \");\n");
+		html->print("}else if (x==27) {\n");
+		html->print("setElm(parm,\"Battery\");");
+		html->print("setElm(unit,\"V\");\n");
+		html->print("}else if (x==28) {\n");
+		html->print("setElm(parm,\"BattLevel\");");
+		html->print("setElm(unit,\"%\");\n");
+		html->print("}\n}\n");
 
-		strcat(html, "function selSensor(idx) {\n");
-		strcat(html, "var x=0;\n");
-		strcat(html, "x = document.getElementById(\"sensorP\"+idx).value;\n");
-		strcat(html, "if (x>=10 && x<=13) {\n");
+		html->print("function selSensor(idx) {\n");
+		html->print("var x=0;\n");
+		html->print("x = document.getElementById(\"sensorP\"+idx).value;\n");
+		html->print("if (x>=10 && x<=13) {\n");
 #ifdef TTGO_T_Beam_S3_SUPREME_V3
-		strcat(html, "document.getElementById(\"address\"+idx).value=119;\n");
+		html->print("document.getElementById(\"address\"+idx).value=119;\n");
 #else
-		strcat(html, "document.getElementById(\"address\"+idx).value=118;\n");
+		html->print("document.getElementById(\"address\"+idx).value=118;\n");
 #endif
-		strcat(html, "}else if (x==16 || x==17) {\n");
-		strcat(html, "document.getElementById(\"address\"+idx).value=90;\n");
-		strcat(html, "}else if (x==23) {\n");
-		strcat(html, "document.getElementById(\"address\"+idx).value=1;\n");
-		strcat(html, "}else if (x==24 || x==25) {\n");
-		strcat(html, "document.getElementById(\"address\"+idx).value=1000;\n");
-		strcat(html, "}else{\n");
-		strcat(html, "document.getElementById(\"address\"+idx).value=0;\n");
-		strcat(html, "}\n}\n");
-		strcat(html, "</script>\n");
+		html->print("}else if (x==16 || x==17) {\n");
+		html->print("document.getElementById(\"address\"+idx).value=90;\n");
+		html->print("}else if (x==23) {\n");
+		html->print("document.getElementById(\"address\"+idx).value=1;\n");
+		html->print("}else if (x==24 || x==25) {\n");
+		html->print("document.getElementById(\"address\"+idx).value=1000;\n");
+		html->print("}else{\n");
+		html->print("document.getElementById(\"address\"+idx).value=0;\n");
+		html->print("}\n}\n");
+		html->print("</script>\n");
 
 		/************************ Sensor Monitor **************************/
-		// strcat(html, "<form id='formSENSOR' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"5\"><span><b>Sensor Monitor</b></span></th>\n");
+		// html->print("<form id='formSENSOR' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"5\"><span><b>Sensor Monitor</b></span></th>\n");
 		int ax = 0;
 		for (int r = 0; r < 3; r++)
 		{
-			strcat(html, "<tr>\n");
+			html->print("<tr>\n");
 			for (int c = 0; c < 5; c++)
 			{
-				strcat(html, "<td align=\"center\">\n");
+				html->print("<td align=\"center\">\n");
 				if (config.sensor[ax].enable)
 				{
 					snprintf(temp_buffer, sizeof(temp_buffer), "<fieldset id=\"SenGrp%d\">\n", ax + 1);
-					strcat(html, temp_buffer);
+					html->print(temp_buffer);
 				}
 				else
 				{
 					snprintf(temp_buffer, sizeof(temp_buffer), "<fieldset id=\"SenGrp%d\" disabled>\n", ax + 1);
-					strcat(html, temp_buffer);
+					html->print(temp_buffer);
 				}
 
 				snprintf(temp_buffer, sizeof(temp_buffer), "<legend>SEN#%d-%s</legend>\n", ax + 1, config.sensor[ax].parm);
-				strcat(html, temp_buffer);
+				html->print(temp_buffer);
 				snprintf(temp_buffer, sizeof(temp_buffer), "<input id=\"sVal%d\" style=\"text-align:right;\" size=\"5\" type=\"text\" value=\"%.2f\" readonly/> %s\n", ax, sen[ax].sample, config.sensor[ax].unit);
-				strcat(html, temp_buffer);
-				strcat(html, "</td>\n");
+				html->print(temp_buffer);
+				html->print("</td>\n");
 				ax++;
 				if (ax >= SENSOR_NUMBER)
 					break;
 			}
-			strcat(html, "</tr>\n");
+			html->print("</tr>\n");
 			if (ax >= SENSOR_NUMBER)
 				break;
 		}
-		strcat(html, "</table>< /br>\n");
+		html->print("</table>< /br>\n");
 
 		/************************ Sensor Config Mode **************************/
-		strcat(html, "<form id='formSENSOR' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>Sensor Config</b></span></th>\n");
+		html->print("<form id='formSENSOR' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>Sensor Config</b></span></th>\n");
 		String EnFlag = "";
 
 		for (int ax = 0; ax < SENSOR_NUMBER; ax++)
 		{
 			snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td align=\"right\"><b>SENSOR#%d:</b><br />\n", ax + 1);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 			EnFlag = "";
 			if (config.sensor[ax].enable)
 				EnFlag = "checked";
 			{
 				snprintf(temp_buffer, sizeof(temp_buffer), "<label class=\"switch\"><input type=\"checkbox\" name=\"En%d\" value=\"OK\" %s><span class=\"slider round\"></span></label>", ax, EnFlag.c_str());
-				strcat(html, temp_buffer);
+				html->print(temp_buffer);
 			}
-			strcat(html, "</td><td align=\"center\">\n");
-			strcat(html, "<table>");
+			html->print("</td><td align=\"center\">\n");
+			html->print("<table>");
 
-			strcat(html, "<tr><td style=\"text-align: right;\">Type:</td>\n");
-			strcat(html, "<td style=\"text-align: left;\">");
+			html->print("<tr><td style=\"text-align: right;\">Type:</td>\n");
+			html->print("<td style=\"text-align: left;\">");
 			{
 				snprintf(temp_buffer, sizeof(temp_buffer), "<select name=\"sensorCH%d\" id=\"sensorCH%d\" onchange=\"selSensorType(%d)\">\n", ax, ax, ax);
-				strcat(html, temp_buffer);
+				html->print(temp_buffer);
 			}
 			// for (uint8_t idx = 0; idx < SENSOR_NAME_NUM; idx++)
 			// {
 			// 	if (config.sensor[ax].type == idx)
 			// 	{
-			// 		strcat(html, "<option value=\"" + String(idx) + "\" selected>" + String(SENSOR_NAME[idx]) + "</option>\n");
+			// 		html->print("<option value=\"" + String(idx) + "\" selected>" + String(SENSOR_NAME[idx]) + "</option>\n");
 			// 	}
 			// 	else
 			// 	{
-			// 		strcat(html, "<option value=\"" + String(idx) + "\">" + String(SENSOR_NAME[idx]) + "</option>\n");
+			// 		html->print("<option value=\"" + String(idx) + "\">" + String(SENSOR_NAME[idx]) + "</option>\n");
 			// 	}
 			// }
-			strcat(html, "</select></td>\n");
+			html->print("</select></td>\n");
 
 			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\">Name: <input maxlength=\"15\" size=\"15\" name=\"param%d\" id=\"param%d\" type=\"text\" value=\"%s\" /></td>\n", ax, ax, config.sensor[ax].parm);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 
 			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\">Unit: <input maxlength=\"10\" size=\"5\" name=\"unit%d\" id=\"unit%d\" type=\"text\" value=\"%s\" /></td>\n", ax, ax, config.sensor[ax].unit);
-			strcat(html, temp_buffer);
-			strcat(html, "</tr>\n");
-			// strcat(html, "<tr><td style=\"text-align: right;\">Port:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax) + "a\" type=\"number\" value=\"" + String(config.sensor[ax].eqns[0], 3) + "\" />  b:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax) + "b\" type=\"number\" value=\"" + String(config.sensor[ax].eqns[1], 3) + "\" /> c:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax) + "c\" type=\"number\" value=\"" + String(config.sensor[ax].eqns[2], 3) + "\" /> (av<sup>2</sup>+bv+c)</td></tr>\n";
+			html->print(temp_buffer);
+			html->print("</tr>\n");
+			// html->print("<tr><td style=\"text-align: right;\">Port:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax) + "a\" type=\"number\" value=\"" + String(config.sensor[ax].eqns[0], 3) + "\" />  b:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax) + "b\" type=\"number\" value=\"" + String(config.sensor[ax].eqns[1], 3) + "\" /> c:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax) + "c\" type=\"number\" value=\"" + String(config.sensor[ax].eqns[2], 3) + "\" /> (av<sup>2</sup>+bv+c)</td></tr>\n";
 			snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td style=\"text-align: right;\">PORT:</td>\n<td style=\"text-align: left;\">\n<select name=\"sensorP%d\" id=\"sensorP%d\" onchange=\"selSensor(%d)\">\n", ax, ax, ax);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 			// for (uint8_t idx = 0; idx < SENSOR_PORT_NUM; idx++)
 			// {
 			// 	if (config.sensor[ax].port == idx)
 			// 	{
-			// 		strcat(html, "<option value=\"" + String(idx) + "\" selected>" + String(SENSOR_PORT[idx]) + "</option>\n";
+			// 		html->print("<option value=\"" + String(idx) + "\" selected>" + String(SENSOR_PORT[idx]) + "</option>\n";
 			// 	}
 			// 	else
 			// 	{
 			// 		strcat(html, "<option value=\"" + String(idx) + "\">" + String(SENSOR_PORT[idx]) + "</option>\n";
 			// 	}
 			// }
-			strcat(html, "</select></td>\n");
+			html->print("</select></td>\n");
 			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\">Addr/Reg/GPIO: <input style=\"text-align:right;\" min=\"0\" max=\"6500\" step=\"1\" name=\"address%d\" id=\"address%d\" type=\"number\" value=\"%d\" /></td>\n", ax, ax, config.sensor[ax].address);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\">Sample: <input style=\"text-align:right;\" min=\"0\" max=\"9999\" step=\"1\" name=\"sample%d\" type=\"number\" value=\"%d\" />Sec.\n", ax, config.sensor[ax].samplerate);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 			snprintf(temp_buffer, sizeof(temp_buffer), "Average: <input style=\"text-align:right;\" min=\"0\" max=\"999\" step=\"1\" name=\"avg%d\" type=\"number\" value=\"%d\" />Sec.</td></tr>\n", ax, config.sensor[ax].averagerate);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 			snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-999\" max=\"999\" step=\"0.00001\" name=\"eqns%da\" type=\"number\" value=\"%.5f\" />  b:<input min=\"-999\" max=\"999\" step=\"0.00001\" name=\"eqns%db\" type=\"number\" value=\"%.5f\" /> c:<input min=\"-999\" max=\"999\" step=\"0.00001\" name=\"eqns%dc\" type=\"number\" value=\"%.5f\" /> (av<sup>2</sup>+bv+c)</td></tr>\n",
 							 ax, config.sensor[ax].eqns[0], ax, config.sensor[ax].eqns[1], ax, config.sensor[ax].eqns[2]);
-			strcat(html, temp_buffer);
-			strcat(html, "</table></td>");
-			strcat(html, "</tr>\n");
+			html->print(temp_buffer);
+			html->print("</table></td>");
+			html->print("</tr>\n");
 		}
 
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitSENSOR'  name=\"commitSENSOR\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitSENSOR\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form><br />");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitSENSOR'  name=\"commitSENSOR\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitSENSOR\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form><br />");
 
-		strcat(html, "<script type=\"text/javascript\">\n");
-		strcat(html, "if (typeof typeArry === 'undefined'){let typeArry = [];};\n");
-		strcat(html, "typeArry = new Array(");
+		html->print("<script type=\"text/javascript\">\n");
+		html->print("if (typeof typeArry === 'undefined'){let typeArry = [];};\n");
+		html->print("typeArry = new Array(");
 		for (uint8_t idx = 0; idx < SENSOR_NAME_NUM; idx++)
 		{
 			snprintf(temp_buffer, sizeof(temp_buffer), "'%s'", SENSOR_NAME[idx]);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 			if (idx < SENSOR_NAME_NUM - 1)
-				strcat(html, ",");
+				html->print(",");
 		}
-		strcat(html, ");\n");
-		strcat(html, "if (typeof portArry === 'undefined'){let portArry = [];};\n");
-		strcat(html, "portArry = new Array(");
+		html->print(");\n");
+		html->print("if (typeof portArry === 'undefined'){let portArry = [];};\n");
+		html->print("portArry = new Array(");
 		for (uint8_t idx = 0; idx < SENSOR_PORT_NUM; idx++)
 		{
 			snprintf(temp_buffer, sizeof(temp_buffer), "'%s'", SENSOR_PORT[idx]);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 			if (idx < SENSOR_PORT_NUM - 1)
-				strcat(html, ",");
+				html->print(",");
 		}
-		strcat(html, ");\n");
-		// strcat(html, "delete typeSel;delete listType;delete portSel;delete listPort;\n";
-		strcat(html, "if (typeof typeSel === 'undefined'){var typeSel = [];};\n");
-		strcat(html, "if (typeof listType === 'undefined'){var listType = [];};\n");
-		strcat(html, "if (typeof portSel === 'undefined'){var portSel = [];};\n");
-		strcat(html, "if (typeof listPort === 'undefined'){var listPort = [];};\n");
+		html->print(");\n");
+		// html->print("delete typeSel;delete listType;delete portSel;delete listPort;\n";
+		html->print("if (typeof typeSel === 'undefined'){var typeSel = [];};\n");
+		html->print("if (typeof listType === 'undefined'){var listType = [];};\n");
+		html->print("if (typeof portSel === 'undefined'){var portSel = [];};\n");
+		html->print("if (typeof listPort === 'undefined'){var listPort = [];};\n");
 		for (int i = 0; i < 10; i++)
 		{
 			snprintf(temp_buffer, sizeof(temp_buffer), "listType[%d] = document.querySelector('#sensorCH%d');typeSel[%d]=%d;\n", i, i, i, config.sensor[i].type);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 			snprintf(temp_buffer, sizeof(temp_buffer), "listPort[%d] = document.querySelector('#sensorP%d');portSel[%d]=%d;\n", i, i, i, config.sensor[i].port);
-			strcat(html, temp_buffer);
+			html->print(temp_buffer);
 		}
 
-		strcat(html, "for (let n = 0; n < 10; n++){\n");
-		strcat(html, "for (let i = 0; i < typeArry.length; i++) {\n");
-		strcat(html, "const optionType = new Option(typeArry[i], i);\n");
-		strcat(html, "listType[n].add(optionType, undefined);\n");
-		strcat(html, "};\n");
-		strcat(html, "listType[n].options[typeSel[n]].selected = true;\n");
-		strcat(html, "for (let p = 0; p < portArry.length; p++) {\n");
-		strcat(html, "const optionPort = new Option(portArry[p], p);\n");
-		strcat(html, "listPort[n].add(optionPort, undefined);\n");
-		strcat(html, "};\n");
-		strcat(html, "listPort[n].options[portSel[n]].selected = true;\n");
-		strcat(html, "};\n");
+		html->print("for (let n = 0; n < 10; n++){\n");
+		html->print("for (let i = 0; i < typeArry.length; i++) {\n");
+		html->print("const optionType = new Option(typeArry[i], i);\n");
+		html->print("listType[n].add(optionType, undefined);\n");
+		html->print("};\n");
+		html->print("listType[n].options[typeSel[n]].selected = true;\n");
+		html->print("for (let p = 0; p < portArry.length; p++) {\n");
+		html->print("const optionPort = new Option(portArry[p], p);\n");
+		html->print("listPort[n].add(optionPort, undefined);\n");
+		html->print("};\n");
+		html->print("listPort[n].options[portSel[n]].selected = true;\n");
+		html->print("};\n");
 
-		strcat(html, "</script>\n");
+		html->print("</script>\n");
 
-		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
-		response->addHeader("Sensor", "content");
-		response->addHeader("Cache-Control", "no-cache");
-		request->send(response);
-		free(html); // Free the allocated memory
+		html->addHeader("Sensor", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
 	}
 }
 
@@ -10789,96 +11125,96 @@ void handle_tracker(AsyncWebServerRequest *request)
 		saveConfig(request);
 	}
 
-	// Allocate initial memory for HTML content
+	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
 	char tempHtml[500];
-	char *html = allocateStringMemory(22000); // Start with 8KB buffer
+	AsyncResponseStream *html = request->beginResponseStream("text/html", 30000);
 	if (!html)
 	{
 		request->send(500, "text/html", "Memory allocation failed");
 		return;
 	}
-	strcpy(html, "<script type=\"text/javascript\">\n");
-	strcat(html, "$('form').submit(function (e) {\n");
-	strcat(html, "e.preventDefault();\n");
-	strcat(html, "var data = new FormData(e.currentTarget);\n");
-	strcat(html, "document.getElementById(\"submitTRACKER\").disabled=true;\n");
-	strcat(html, "$.ajax({\n");
-	strcat(html, "url: '/tracker',\n");
-	strcat(html, "type: 'POST',\n");
-	strcat(html, "data: data,\n");
-	strcat(html, "contentType: false,\n");
-	strcat(html, "processData: false,\n");
-	strcat(html, "success: function (data) {\n");
-	strcat(html, "alert(\"Submited Successfully\");\n");
-	strcat(html, "},\n");
-	strcat(html, "error: function (data) {\n");
-	strcat(html, "alert(\"An error occurred.\");\n");
-	strcat(html, "}\n");
-	strcat(html, "});\n");
-	strcat(html, "});\n");
-	strcat(html, "</script>\n<script type=\"text/javascript\">\n");
-	strcat(html, "function openWindowSymbol(sel) {\n");
-	strcat(html, "var i, l, options = [{\n");
-	strcat(html, "value: 'first',\n");
-	strcat(html, "text: 'First'\n");
-	strcat(html, "}, {\n");
-	strcat(html, "value: 'second',\n");
-	strcat(html, "text: 'Second'\n");
-	strcat(html, "}],\n");
-	strcat(html, "newWindow = window.open(\"/symbol?sel=\"+sel.toString(), null, \"height=400,width=400,status=no,toolbar=no,menubar=no,location=no\");\n");
-	strcat(html, "}\n");
+	html->print("<script type=\"text/javascript\">\n");
+	html->print("$('form').submit(function (e) {\n");
+	html->print("e.preventDefault();\n");
+	html->print("var data = new FormData(e.currentTarget);\n");
+	html->print("document.getElementById(\"submitTRACKER\").disabled=true;\n");
+	html->print("$.ajax({\n");
+	html->print("url: '/tracker',\n");
+	html->print("type: 'POST',\n");
+	html->print("data: data,\n");
+	html->print("contentType: false,\n");
+	html->print("processData: false,\n");
+	html->print("success: function (data) {\n");
+	html->print("alert(\"Submited Successfully\");\n");
+	html->print("},\n");
+	html->print("error: function (data) {\n");
+	html->print("alert(\"An error occurred.\");\n");
+	html->print("}\n");
+	html->print("});\n");
+	html->print("});\n");
+	html->print("</script>\n<script type=\"text/javascript\">\n");
+	html->print("function openWindowSymbol(sel) {\n");
+	html->print("var i, l, options = [{\n");
+	html->print("value: 'first',\n");
+	html->print("text: 'First'\n");
+	html->print("}, {\n");
+	html->print("value: 'second',\n");
+	html->print("text: 'Second'\n");
+	html->print("}],\n");
+	html->print("newWindow = window.open(\"/symbol?sel=\"+sel.toString(), null, \"height=400,width=400,status=no,toolbar=no,menubar=no,location=no\");\n");
+	html->print("}\n");
 
-	strcat(html, "function setValue(sel,symbol,table) {\n");
-	strcat(html, "var txtsymbol=document.getElementById('trackerSymbol');\n");
-	strcat(html, "var txttable=document.getElementById('trackerTable');\n");
-	strcat(html, "var imgicon=document.getElementById('trackerImgSymbol');\n");
-	strcat(html, "if(sel==1){\n");
-	strcat(html, "txtsymbol=document.getElementById('moveSymbol');\n");
-	strcat(html, "txttable=document.getElementById('moveTable');\n");
-	strcat(html, "imgicon= document.getElementById('moveImgSymbol');\n");
-	strcat(html, "}else if(sel==2){\n");
-	strcat(html, "txtsymbol=document.getElementById('stopSymbol');\n");
-	strcat(html, "txttable=document.getElementById('stopTable');\n");
-	strcat(html, "imgicon= document.getElementById('stopImgSymbol');\n");
-	strcat(html, "}\n");
-	strcat(html, "txtsymbol.value = String.fromCharCode(symbol);\n");
-	strcat(html, "if(table==1){\n txttable.value='/';\n");
-	strcat(html, "}else if(table==2){\n txttable.value='\\\\';\n}\n");
-	strcat(html, "imgicon.src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n");
-	strcat(html, "\n}\n");
-	strcat(html, "function onSmartCheck() {\n");
-	strcat(html, "if (document.querySelector('#smartBcnEnable').checked) {\n");
+	html->print("function setValue(sel,symbol,table) {\n");
+	html->print("var txtsymbol=document.getElementById('trackerSymbol');\n");
+	html->print("var txttable=document.getElementById('trackerTable');\n");
+	html->print("var imgicon=document.getElementById('trackerImgSymbol');\n");
+	html->print("if(sel==1){\n");
+	html->print("txtsymbol=document.getElementById('moveSymbol');\n");
+	html->print("txttable=document.getElementById('moveTable');\n");
+	html->print("imgicon= document.getElementById('moveImgSymbol');\n");
+	html->print("}else if(sel==2){\n");
+	html->print("txtsymbol=document.getElementById('stopSymbol');\n");
+	html->print("txttable=document.getElementById('stopTable');\n");
+	html->print("imgicon= document.getElementById('stopImgSymbol');\n");
+	html->print("}\n");
+	html->print("txtsymbol.value = String.fromCharCode(symbol);\n");
+	html->print("if(table==1){\n txttable.value='/';\n");
+	html->print("}else if(table==2){\n txttable.value='\\\\';\n}\n");
+	html->print("imgicon.src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n");
+	html->print("\n}\n");
+	html->print("function onSmartCheck() {\n");
+	html->print("if (document.querySelector('#smartBcnEnable').checked) {\n");
 	// Checkbox has been checked
-	strcat(html, "document.getElementById(\"smartbcnGrp\").disabled=false;\n");
-	strcat(html, "} else {\n");
+	html->print("document.getElementById(\"smartbcnGrp\").disabled=false;\n");
+	html->print("} else {\n");
 	// Checkbox has been unchecked
-	strcat(html, "document.getElementById(\"smartbcnGrp\").disabled=true;\n");
-	strcat(html, "}\n}\n");
+	html->print("document.getElementById(\"smartbcnGrp\").disabled=true;\n");
+	html->print("}\n}\n");
 
-	strcat(html, "function selPrecision(idx) {\n");
-	strcat(html, "var x=0;\n");
-	strcat(html, "x = document.getElementsByName(\"precision\"+idx)[0].value;\n");
-	strcat(html, "document.getElementsByName(\"eqns\"+idx+\"b\")[0].value=1/Math.pow(10,x);\n");
-	strcat(html, "}\n");
-	strcat(html, "function selOffset(idx) {\n");
-	strcat(html, "var x=0;\n");
-	strcat(html, "x = document.getElementsByName(\"offset\"+idx)[0].value;\n");
-	strcat(html, "document.getElementsByName(\"eqns\"+idx+\"c\")[0].value=x*(-1);\n");
-	strcat(html, "}\n");
-	strcat(html, "</script>\n");
+	html->print("function selPrecision(idx) {\n");
+	html->print("var x=0;\n");
+	html->print("x = document.getElementsByName(\"precision\"+idx)[0].value;\n");
+	html->print("document.getElementsByName(\"eqns\"+idx+\"b\")[0].value=1/Math.pow(10,x);\n");
+	html->print("}\n");
+	html->print("function selOffset(idx) {\n");
+	html->print("var x=0;\n");
+	html->print("x = document.getElementsByName(\"offset\"+idx)[0].value;\n");
+	html->print("document.getElementsByName(\"eqns\"+idx+\"c\")[0].value=x*(-1);\n");
+	html->print("}\n");
+	html->print("</script>\n");
 
 	delay(1);
 	/************************ tracker Mode **************************/
-	strcat(html, "<form id='formtracker' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-	// strcat(html, "<h2>[TRACKER] Tracker Position Mode</h2>\n");
-	strcat(html, "<table>\n");
-	// strcat(html, "<tr>\n");
-	// strcat(html, "<th width=\"200\"><span><b>Setting</b></span></th>\n");
-	// strcat(html, "<th><span><b>Value</b></span></th>\n");
-	// strcat(html, "</tr>\n");
-	strcat(html, "<th colspan=\"2\"><span><b>[TRACKER] Tracker Position Mode</b></span></th>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td align=\"right\"><b>Enable:</b></td>\n");
+	html->print("<form id='formtracker' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+	// html->print("<h2>[TRACKER] Tracker Position Mode</h2>\n");
+	html->print("<table>\n");
+	// html->print("<tr>\n");
+	// html->print("<th width=\"200\"><span><b>Setting</b></span></th>\n");
+	// html->print("<th><span><b>Value</b></span></th>\n");
+	// html->print("</tr>\n");
+	html->print("<th colspan=\"2\"><span><b>[TRACKER] Tracker Position Mode</b></span></th>\n");
+	html->print("<tr>\n");
+	html->print("<td align=\"right\"><b>Enable:</b></td>\n");
 	char trackerEnFlag[10] = "";
 	if (config.trk_en)
 		strcpy(trackerEnFlag, "checked");
@@ -10886,19 +11222,19 @@ void handle_tracker(AsyncWebServerRequest *request)
 		strcpy(trackerEnFlag, "");
 
 	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"trackerEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", trackerEnFlag);
-	strcat(html, tempHtml);
+	html->print(tempHtml);
 
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td align=\"right\"><b>Station Callsign:</b></td>\n");
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+	html->print("<td align=\"right\"><b>Station Callsign:</b></td>\n");
 	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"%s\" /></td>\n", config.trk_mycall);
-	strcat(html, tempHtml);
+	html->print(tempHtml);
 
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td align=\"right\"><b>Station SSID:</b></td>\n");
-	strcat(html, "<td style=\"text-align: left;\">\n");
-	strcat(html, "<select name=\"mySSID\" id=\"mySSID\">\n");
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+	html->print("<td align=\"right\"><b>Station SSID:</b></td>\n");
+	html->print("<td style=\"text-align: left;\">\n");
+	html->print("<select name=\"mySSID\" id=\"mySSID\">\n");
 	for (uint8_t ssid = 0; ssid <= 15; ssid++)
 	{
 		if (config.trk_ssid == ssid)
@@ -10909,20 +11245,20 @@ void handle_tracker(AsyncWebServerRequest *request)
 		{
 			snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%d</option>\n", ssid, ssid);
 		}
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 	}
-	strcat(html, "</select></td>\n");
-	strcat(html, "</tr>\n");
+	html->print("</select></td>\n");
+	html->print("</tr>\n");
 
-	strcat(html, "<tr>\n");
-	strcat(html, "<td align=\"right\"><b>Item/Obj Name:</b></td>\n");
+	html->print("<tr>\n");
+	html->print("<td align=\"right\"><b>Item/Obj Name:</b></td>\n");
 	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"9\" size=\"9\" id=\"trackerObject\" name=\"trackerObject\" type=\"text\" value=\"%s\" /><i> *If not used, leave it blank.In use 3-9 charactor</i></td>\n", config.trk_item);
-	strcat(html, tempHtml);
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td align=\"right\"><b>PATH:</b></td>\n");
-	strcat(html, "<td style=\"text-align: left;\">\n");
-	strcat(html, "<select name=\"trackerPath\" id=\"trackerPath\">\n");
+	html->print(tempHtml);
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+	html->print("<td align=\"right\"><b>PATH:</b></td>\n");
+	html->print("<td style=\"text-align: left;\">\n");
+	html->print("<select name=\"trackerPath\" id=\"trackerPath\">\n");
 	for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
 	{
 		if (config.trk_path == pthIdx)
@@ -10933,44 +11269,44 @@ void handle_tracker(AsyncWebServerRequest *request)
 		{
 			snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%s</option>\n", pthIdx, PATH_NAME[pthIdx]);
 		}
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 	}
-	strcat(html, "</select></td>\n");
-	// strcat(html, "<td style=\"text-align: left;\"><input maxlength=\"72\" size=\"72\" id=\"trackerPath\" name=\"trackerPath\" type=\"text\" value=\"" + String(config.trk_path) + "\" /></td>\n";
-	strcat(html, "</tr>\n");
+	html->print("</select></td>\n");
+	// html->print("<td style=\"text-align: left;\"><input maxlength=\"72\" size=\"72\" id=\"trackerPath\" name=\"trackerPath\" type=\"text\" value=\"" + String(config.trk_path) + "\" /></td>\n";
+	html->print("</tr>\n");
 
-	strcat(html, "<tr>\n");
-	strcat(html, "<td align=\"right\"><b>Text Comment:</b></td>\n");
+	html->print("<tr>\n");
+	html->print("<td align=\"right\"><b>Text Comment:</b></td>\n");
 	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"25\" size=\"30\" id=\"trackerComment\" name=\"trackerComment\" type=\"text\" value=\"%s\" /></td>\n", config.trk_comment);
-	strcat(html, tempHtml);
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td align=\"right\"><b>Text Status:</b></td>\n");
+	html->print(tempHtml);
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+	html->print("<td align=\"right\"><b>Text Status:</b></td>\n");
 	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"60\" id=\"trkStatus\" name=\"trkStatus\" type=\"text\" value=\"%s\" />  Interval:<input min=\"0\" max=\"3600\" step=\"1\" name=\"trkSTSInv\" type=\"number\" value=\"%d\" />Sec.</td>\n", config.trk_status, config.trk_sts_interval);
-	strcat(html, tempHtml);
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td align=\"right\"><b>Smart Beacon:</b></td>\n");
+	html->print(tempHtml);
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+	html->print("<td align=\"right\"><b>Smart Beacon:</b></td>\n");
 	char smartBcnEnFlag[10] = "";
 	if (config.trk_smartbeacon)
 		strcpy(smartBcnEnFlag, "checked");
 
 	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"smartBcnEnable\" name=\"smartBcnEnable\" onclick=\"onSmartCheck()\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch use to smart beacon mode</i></label></td>\n", smartBcnEnFlag);
-	strcat(html, tempHtml);
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td align=\"right\"><b>Compress:</b></td>\n");
+	html->print(tempHtml);
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+	html->print("<td align=\"right\"><b>Compress:</b></td>\n");
 	char compressEnFlag[10] = "";
 	if (config.trk_compress)
 		strcpy(compressEnFlag, "checked");
 
 	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"compressEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch compress packet</i></label></td>\n", compressEnFlag);
-	strcat(html, tempHtml);
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td align=\"right\"><b>Mic-E Type:</b></td>\n");
-	strcat(html, "<td style=\"text-align: left;\">\n");
-	strcat(html, "<select name=\"trkMicEType\" id=\"trkMicEType\">\n");
+	html->print(tempHtml);
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+	html->print("<td align=\"right\"><b>Mic-E Type:</b></td>\n");
+	html->print("<td style=\"text-align: left;\">\n");
+	html->print("<select name=\"trkMicEType\" id=\"trkMicEType\">\n");
 	for (uint8_t micEIdx = 0; micEIdx < 9; micEIdx++)
 	{
 		if (config.trk_mice_type == micEIdx)
@@ -10981,21 +11317,21 @@ void handle_tracker(AsyncWebServerRequest *request)
 		{
 			snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%s</option>\n", micEIdx, MIC_E_MSG[micEIdx]);
 		}
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 	}
-	strcat(html, "</select><label style=\"vertical-align: bottom;font-size: 8pt;\"><i>*Support if Compress is enabled and not use Item/Obj,Time Stamp or UnUsed</i></label></td>\n");
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td align=\"right\"><b>Time Stamp:</b></td>\n");
+	html->print("</select><label style=\"vertical-align: bottom;font-size: 8pt;\"><i>*Support if Compress is enabled and not use Item/Obj,Time Stamp or UnUsed</i></label></td>\n");
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+	html->print("<td align=\"right\"><b>Time Stamp:</b></td>\n");
 
 	char timeStampFlag[10] = "";
 	if (config.trk_timestamp)
 		strcpy(timeStampFlag, "checked");
 	{
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"trackerTimeStamp\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", timeStampFlag);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 	}
-	strcat(html, "</tr>\n");
+	html->print("</tr>\n");
 	char trackerPos2RFFlag[10] = "";
 	char trackerPos2INETFlag[10] = "";
 	if (config.trk_loc2rf)
@@ -11003,7 +11339,7 @@ void handle_tracker(AsyncWebServerRequest *request)
 	if (config.trk_loc2inet)
 		strcpy(trackerPos2INETFlag, "checked");
 	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"trackerPos2RF\" value=\"OK\" %s/>RF <input type=\"checkbox\" name=\"trackerPos2INET\" value=\"OK\" %s/>Internet </td></tr>\n", trackerPos2RFFlag, trackerPos2INETFlag);
-	strcat(html, tempHtml);
+	html->print(tempHtml);
 	char trackerOptBatFlag[10] = "";
 	char trackerOptSatFlag[10] = "";
 	char trackerOptAltFlag[10] = "";
@@ -11019,14 +11355,14 @@ void handle_tracker(AsyncWebServerRequest *request)
 
 	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\"><b>Option:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"trackerOptCST\" value=\"OK\" %s/>Telemetry <input type=\"checkbox\" name=\"trackerOptAlt\" value=\"OK\" %s/>Altutude <input type=\"checkbox\" name=\"trackerOptBat\" value=\"OK\" %s/>Audio Request </td></tr>\n",
 			 trackerOptCSTFlag, trackerOptAltFlag, trackerOptBatFlag);
-	strcat(html, tempHtml);
+	html->print(tempHtml);
 
-	strcat(html, "<tr>");
-	strcat(html, "<td align=\"right\"><b>POSITION:</b></td>\n");
-	strcat(html, "<td align=\"center\">\n");
-	strcat(html, "<table>");
+	html->print("<tr>");
+	html->print("<td align=\"right\"><b>POSITION:</b></td>\n");
+	html->print("<td align=\"center\">\n");
+	html->print("<table>");
 	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"3600\" step=\"1\" id=\"trackerPosInv\" name=\"trackerPosInv\" type=\"number\" value=\"%d\" />Sec.</label></td></tr>", config.trk_interval);
-	strcat(html, tempHtml);
+	html->print(tempHtml);
 	char trackerPosFixFlag[20] = "";
 	char trackerPosGPSFlag[20] = "";
 
@@ -11037,9 +11373,9 @@ void handle_tracker(AsyncWebServerRequest *request)
 
 	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"trackerPosSel\" value=\"0\" %s/>Fix <input type=\"radio\" name=\"trackerPosSel\" value=\"1\" %s/>GPS </td></tr>\n",
 			 trackerPosFixFlag, trackerPosGPSFlag);
-	strcat(html, tempHtml);
-	strcat(html, "<tr>\n");
-	strcat(html, "<td align=\"right\">Symbol Icon:</td>\n");
+	html->print(tempHtml);
+	html->print("<tr>\n");
+	html->print("<td align=\"right\">Symbol Icon:</td>\n");
 	char table[5] = "1";
 	if (config.trk_symbol[0] == 47)
 		strcpy(table, "1");
@@ -11047,27 +11383,27 @@ void handle_tracker(AsyncWebServerRequest *request)
 		strcpy(table, "2");
 	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"trackerTable\" name=\"trackerTable\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"trackerSymbol\" name=\"trackerSymbol\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"trackerImgSymbol\" onclick=\"openWindowSymbol(0);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-%s.png\"> <i>*Click icon for select symbol</i></td>\n",
 			 config.trk_symbol[0], config.trk_symbol[1], (int)config.trk_symbol[1], table);
-	strcat(html, tempHtml);
-	strcat(html, "</tr>\n");
+	html->print(tempHtml);
+	html->print("</tr>\n");
 	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" id=\"trackerPosLat\" name=\"trackerPosLat\" type=\"number\" value=\"%.5f\" />degrees (positive for North, negative for South)</td></tr>\n", config.trk_lat);
-	strcat(html, tempHtml);
+	html->print(tempHtml);
 	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" id=\"trackerPosLon\" name=\"trackerPosLon\" type=\"number\" value=\"%.5f\" />degrees (positive for East, negative for West)</td></tr>\n", config.trk_lon);
-	strcat(html, tempHtml);
+	html->print(tempHtml);
 	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" id=\"trackerPosAlt\" name=\"trackerPosAlt\" type=\"number\" value=\"%.2f\" /> meter. *Value 0 is not send height</td></tr>\n", config.trk_alt);
-	strcat(html, tempHtml);
-	strcat(html, "</table></td>");
-	strcat(html, "</tr>\n");
+	html->print(tempHtml);
+	html->print("</table></td>");
+	html->print("</tr>\n");
 
-	strcat(html, "<tr>\n");
-	strcat(html, "<td align=\"right\"><b>Smart Beacon:</b></td>\n");
-	strcat(html, "<td align=\"center\">\n");
+	html->print("<tr>\n");
+	html->print("<td align=\"right\"><b>Smart Beacon:</b></td>\n");
+	html->print("<td align=\"center\">\n");
 	if (config.trk_smartbeacon)
-		strcat(html, "<fieldset id=\"smartbcnGrp\">\n");
+		html->print("<fieldset id=\"smartbcnGrp\">\n");
 	else
-		strcat(html, "<fieldset id=\"smartbcnGrp\" disabled>\n");
-	strcat(html, "<legend>Smart beacon configuration</legend>\n<table>");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td align=\"right\">Move Symbol:</td>\n");
+		html->print("<fieldset id=\"smartbcnGrp\" disabled>\n");
+	html->print("<legend>Smart beacon configuration</legend>\n<table>");
+	html->print("<tr>\n");
+	html->print("<td align=\"right\">Move Symbol:</td>\n");
 	strcpy(table, "1");
 	if (config.trk_symmove[0] == 47)
 		strcpy(table, "1");
@@ -11075,10 +11411,10 @@ void handle_tracker(AsyncWebServerRequest *request)
 		strcpy(table, "2");
 	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"moveTable\" name=\"moveTable\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"moveSymbol\" name=\"moveSymbol\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"moveImgSymbol\" onclick=\"openWindowSymbol(1);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-%s.png\"> <i>*Click icon for select MOVE symbol</i></td>\n",
 			 config.trk_symmove[0], config.trk_symmove[1], (int)config.trk_symmove[1], table);
-	strcat(html, tempHtml);
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<td align=\"right\">Stop Symbol:</td>\n");
+	html->print(tempHtml);
+	html->print("</tr>\n");
+	html->print("<tr>\n");
+	html->print("<td align=\"right\">Stop Symbol:</td>\n");
 	strcpy(table, "1");
 	if (config.trk_symstop[0] == 47)
 		strcpy(table, "1");
@@ -11086,39 +11422,39 @@ void handle_tracker(AsyncWebServerRequest *request)
 		strcpy(table, "2");
 	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"stopTable\" name=\"stopTable\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"stopSymbol\" name=\"stopSymbol\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"stopImgSymbol\" onclick=\"openWindowSymbol(2);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-%s.png\"> <i>*Click icon for select STOP symbol</i></td>\n",
 			 config.trk_symstop[0], config.trk_symstop[1], (int)config.trk_symstop[1], table);
-	strcat(html, tempHtml);
-	strcat(html, "</tr>\n");
+	html->print(tempHtml);
+	html->print("</tr>\n");
 	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">High Speed:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"10\" max=\"1000\" step=\"1\" id=\"hspeed\" name=\"hspeed\" type=\"number\" value=\"%d\" /> km/h</td></tr>\n", config.trk_hspeed);
-	strcat(html, tempHtml);
+	html->print(tempHtml);
 	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Low Speed:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"1\" max=\"250\" step=\"1\" id=\"lspeed\" name=\"lspeed\" type=\"number\" value=\"%d\" /> km/h</td></tr>\n", config.trk_lspeed);
-	strcat(html, tempHtml);
+	html->print(tempHtml);
 	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Slow Interval:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"60\" max=\"3600\" step=\"1\" id=\"slowInterval\" name=\"slowInterval\" type=\"number\" value=\"%d\" /> Sec.</td></tr>\n", config.trk_slowinterval);
-	strcat(html, tempHtml);
+	html->print(tempHtml);
 	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Max Interval:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"10\" max=\"255\" step=\"1\" id=\"maxInterval\" name=\"maxInterval\" type=\"number\" value=\"%d\" /> Sec.</td></tr>\n", config.trk_maxinterval);
-	strcat(html, tempHtml);
+	html->print(tempHtml);
 	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Min Interval:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"1\" max=\"100\" step=\"1\" id=\"minInterval\" name=\"minInterval\" type=\"number\" value=\"%d\" /> Sec.</td></tr>\n", config.trk_mininterval);
-	strcat(html, tempHtml);
+	html->print(tempHtml);
 	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Min Angle:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"1\" max=\"359\" step=\"1\" id=\"minAngle\" name=\"minAngle\" type=\"number\" value=\"%d\" /> Degree.</td></tr>\n", config.trk_minangle);
-	strcat(html, tempHtml);
+	html->print(tempHtml);
 
-	strcat(html, "</table></fieldset></tr>");
+	html->print("</table></fieldset></tr>");
 
-	strcat(html, "<tr>\n");
-	strcat(html, "<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n");
-	strcat(html, "<td align=\"center\"><table>\n");
+	html->print("<tr>\n");
+	html->print("<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n");
+	html->print("<td align=\"center\"><table>\n");
 	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"trkTlmInv\" name=\"trkTlmInv\" type=\"number\" value=\"%d\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>", config.trk_tlm_interval);
-	strcat(html, tempHtml);
+	html->print(tempHtml);
 	for (int ax = 0; ax < 5; ax++)
 	{
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td align=\"right\"><b>CH A%d:</b></td>\n", ax + 1);
-		strcat(html, tempHtml);
-		strcat(html, "<td align=\"center\">\n");
-		strcat(html, "<table>");
+		html->print(tempHtml);
+		html->print("<td align=\"center\">\n");
+		html->print("<table>");
 
-		strcat(html, "<tr><td style=\"text-align: right;\">Sensor:</td>\n");
-		strcat(html, "<td style=\"text-align: left;\">CH: ");
+		html->print("<tr><td style=\"text-align: right;\">Sensor:</td>\n");
+		html->print("<td style=\"text-align: left;\">CH: ");
 		snprintf(tempHtml, sizeof(tempHtml), "<select name=\"sensorCH%d\" id=\"sensorCH%d\">\n", ax, ax);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 		for (uint8_t idx = 0; idx < 11; idx++)
 		{
 			if (idx == 0)
@@ -11143,35 +11479,33 @@ void handle_tracker(AsyncWebServerRequest *request)
 					snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">SENSOR#%d</option>\n", idx, idx);
 				}
 			}
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 		}
-		strcat(html, "</select></td>\n");
+		html->print("</select></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Name: <input maxlength=\"10\" size=\"8\" name=\"param%d\" type=\"text\" value=\"%s\" /></td>\n", ax, config.trk_tlm_PARM[ax]);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit%d\" type=\"text\" value=\"%s\" /></td>\n", ax, config.trk_tlm_UNIT[ax]);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision%d\" type=\"text\" value=\"%d\" onchange=\"selPrecision(%d)\" /></td></tr>\n", ax, config.trk_tlm_precision[ax], ax);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%da\" type=\"number\" value=\"%.5f\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%db\" type=\"number\" value=\"%.5f\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%dc\" type=\"number\" value=\"%.5f\" /> (av<sup>2</sup>+bv+c) </td>\n",
 				 ax, config.trk_tlm_EQNS[ax][0], ax, config.trk_tlm_EQNS[ax][1], ax, config.trk_tlm_EQNS[ax][2]);
-		strcat(html, tempHtml);
+		html->print(tempHtml);
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset%d\" type=\"text\" value=\"%.5f\"  onchange=\"selOffset(%d)\" /></td></tr>\n", ax, config.trk_tlm_offset[ax], ax);
-		strcat(html, tempHtml);
-		strcat(html, "</table></td>");
-		strcat(html, "</tr>\n");
+		html->print(tempHtml);
+		html->print("</table></td>");
+		html->print("</tr>\n");
 	}
-	strcat(html, "</table></td></tr>\n");
-	strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-	strcat(html, "<div><button class=\"button\" type='submit' id='submitTRACKER'  name=\"commitTRACKER\"> Apply Change </button></div>\n");
-	strcat(html, "<input type=\"hidden\" name=\"commitTRACKER\"/>\n");
-	strcat(html, "</td></tr></table><br />\n");
-	strcat(html, "</form><br />");
+	html->print("</table></td></tr>\n");
+	html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+	html->print("<div><button class=\"button\" type='submit' id='submitTRACKER'  name=\"commitTRACKER\"> Apply Change </button></div>\n");
+	html->print("<input type=\"hidden\" name=\"commitTRACKER\"/>\n");
+	html->print("</td></tr></table><br />\n");
+	html->print("</form><br />");
 
-	AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
-	response->addHeader("Tracker", "content");
-	response->addHeader("Cache-Control", "no-cache");
-	request->send(response);
-	free(html); // Free the allocated memory	
+	html->addHeader("Tracker", "content");
+	html->addHeader("Cache-Control", "no-cache");
+	request->send(html);
 }
 
 void handle_wireless(AsyncWebServerRequest *request)
@@ -11364,124 +11698,124 @@ void handle_wireless(AsyncWebServerRequest *request)
 	#endif
 	else
 	{
-		// Allocate initial memory for HTML content
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
 		char tempHtml[256] = "";
-		char *html = allocateStringMemory(12000); // Start with 12KB buffer
+		AsyncResponseStream *html = request->beginResponseStream("text/html", 20000);
 		if (!html)
 		{
 			request->send(500, "text/html", "Memory allocation failed");
 			return;
 		}
-		strcpy(html, "<script type=\"text/javascript\">\n");
-		strcat(html, "$('form').submit(function (e) {\n");
-		strcat(html, "e.preventDefault();\n");
-		strcat(html, "var data = new FormData(e.currentTarget);\n");
-		strcat(html, "if(e.currentTarget.id===\"formBluetooth\") document.getElementById(\"submitBluetooth\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formWiFiAP\") document.getElementById(\"submitWiFiAP\").disabled=true;\n");
-		strcat(html, "if(e.currentTarget.id===\"formWiFiClient\") document.getElementById(\"submitWiFiClient\").disabled=true;\n");
-		strcat(html, "$.ajax({\n");
-		strcat(html, "url: '/wireless',\n");
-		strcat(html, "type: 'POST',\n");
-		strcat(html, "data: data,\n");
-		strcat(html, "contentType: false,\n");
-		strcat(html, "processData: false,\n");
-		strcat(html, "success: function (data) {\n");
-		strcat(html, "alert(\"Submited Successfully\");\n");
-		strcat(html, "},\n");
-		strcat(html, "error: function (data) {\n");
-		strcat(html, "alert(\"An error occurred.\");\n");
-		strcat(html, "}\n");
-		strcat(html, "});\n");
-		strcat(html, "});\n");
-		strcat(html, "</script>\n");
+		html->print("<script type=\"text/javascript\">\n");
+		html->print("$('form').submit(function (e) {\n");
+		html->print("e.preventDefault();\n");
+		html->print("var data = new FormData(e.currentTarget);\n");
+		html->print("if(e.currentTarget.id===\"formBluetooth\") document.getElementById(\"submitBluetooth\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formWiFiAP\") document.getElementById(\"submitWiFiAP\").disabled=true;\n");
+		html->print("if(e.currentTarget.id===\"formWiFiClient\") document.getElementById(\"submitWiFiClient\").disabled=true;\n");
+		html->print("$.ajax({\n");
+		html->print("url: '/wireless',\n");
+		html->print("type: 'POST',\n");
+		html->print("data: data,\n");
+		html->print("contentType: false,\n");
+		html->print("processData: false,\n");
+		html->print("success: function (data) {\n");
+		html->print("alert(\"Submited Successfully\");\n");
+		html->print("},\n");
+		html->print("error: function (data) {\n");
+		html->print("alert(\"An error occurred.\");\n");
+		html->print("}\n");
+		html->print("});\n");
+		html->print("});\n");
+		html->print("</script>\n");
 		
 		/************************ WiFi AP **************************/
-		strcat(html, "<form id='formWiFiAP' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>WiFi Access Point</b></span></th>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\" width=\"120\"><b>Enable:</b></td>\n");
+		html->print("<form id='formWiFiAP' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>WiFi Access Point</b></span></th>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\" width=\"120\"><b>Enable:</b></td>\n");
 		const char *wifiAPEnFlagMode = (config.wifi_mode & WIFI_AP_FIX) ? "checked" : "";
 		{
 			char *temp_flag = allocateStringMemory(512);
 			if (temp_flag)
 			{
 				snprintf(temp_flag, 512, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wifiAP\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", wifiAPEnFlagMode);
-				strcat(html, temp_flag);
+				html->print(temp_flag);
 				free(temp_flag);
 			}
 		}
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>WiFi AP SSID:</b></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>WiFi AP SSID:</b></td>\n");
 		{
 			char *temp_ssid = allocateStringMemory(512);
 			if (temp_ssid)
 			{
 				snprintf(temp_ssid, 512, "<td style=\"text-align: left;\"><input size=\"32\" maxlength=\"32\" class=\"form-control\" id=\"wifi_ssidAP\" name=\"wifi_ssidAP\" type=\"text\" value=\"%s\" /></td>\n", config.wifi_ap_ssid);
-				strcat(html, temp_ssid);
+				html->print(temp_ssid);
 				free(temp_ssid);
 			}
 		}
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>WiFi AP PASSWORD:</b></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>WiFi AP PASSWORD:</b></td>\n");
 		{
 			char *temp_pass = allocateStringMemory(512);
 			if (temp_pass)
 			{
 				snprintf(temp_pass, 512, "<td style=\"text-align: left;\"><input size=\"63\" maxlength=\"63\" class=\"form-control\" id=\"wifi_passAP\" name=\"wifi_passAP\" type=\"password\" value=\"%s\" /></td>\n", config.wifi_ap_pass);
-				strcat(html, temp_pass);
+				html->print(temp_pass);
 				free(temp_pass);
 			}
 		}
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitWiFiAP'  name=\"commitWiFiAP\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitWiFiAP\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form><br />");
+		html->print("</tr>\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitWiFiAP'  name=\"commitWiFiAP\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitWiFiAP\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form><br />");
 		/************************ WiFi Client **************************/
-		strcat(html, "<br />\n");
-		strcat(html, "<form id='formWiFiClient' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		strcat(html, "<table>\n");
-		strcat(html, "<th colspan=\"2\"><span><b>WiFi Multi Station</b></span></th>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>WiFi STA Enable:</b></td>\n");
+		html->print("<br />\n");
+		html->print("<form id='formWiFiClient' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		html->print("<table>\n");
+		html->print("<th colspan=\"2\"><span><b>WiFi Multi Station</b></span></th>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>WiFi STA Enable:</b></td>\n");
 		String wifiClientEnFlag = "";
 		if (config.wifi_mode & WIFI_STA_FIX)
 			wifiClientEnFlag = "checked";
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wificlient\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", wifiClientEnFlag);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>WiFi RF Power:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"wifi_pwr\" id=\"wifi_pwr\">\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>WiFi RF Power:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"wifi_pwr\" id=\"wifi_pwr\">\n");
 		for (int i = 0; i < 12; i++)
 		{
 			if (config.wifi_power == (int8_t)wifiPwr[i][0])
 				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>%.1f dBm</option>\n", (int8_t)wifiPwr[i][0], wifiPwr[i][1]);
 			else
 				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" >%.1f dBm</option>\n", (int8_t)wifiPwr[i][0], wifiPwr[i][1]);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 		}
-		strcat(html, "</select>\n");
-		strcat(html, "</td>\n");
-		strcat(html, "</tr>\n");
+		html->print("</select>\n");
+		html->print("</td>\n");
+		html->print("</tr>\n");
 		for (int n = 0; n < 5; n++)
 		{
-			strcat(html, "<tr>\n");
+			html->print("<tr>\n");
 			snprintf(tempHtml, sizeof(tempHtml), "<td align=\"right\"><b>Station #%d:</b></td>\n", n + 1);
-			strcat(html, tempHtml);
-			strcat(html, "<td align=\"center\">\n");
+			html->print(tempHtml);
+			html->print("<td align=\"center\">\n");
 			snprintf(tempHtml, sizeof(tempHtml), "<fieldset id=\"filterDispGrp%d\">\n", n + 1);
-			strcat(html, tempHtml);
+			html->print(tempHtml);
 			snprintf(tempHtml, sizeof(tempHtml), "<legend>WiFi Station #%d</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">", n + 1);
-			strcat(html, tempHtml);
-			strcat(html, "<tr style=\"background:unset;\">");
-			// strcat(html, "<tr>\n";
-			strcat(html, "<td align=\"right\" width=\"120\"><b>Enable:</b></td>\n");
+			html->print(tempHtml);
+			html->print("<tr style=\"background:unset;\">");
+			// html->print("<tr>\n";
+			html->print("<td align=\"right\" width=\"120\"><b>Enable:</b></td>\n");
 			char wifiClientEnFlag[10];
 			if (config.wifi_sta[n].enable)
 				strcpy(wifiClientEnFlag, "checked");
@@ -11489,39 +11823,39 @@ void handle_wireless(AsyncWebServerRequest *request)
 				strcpy(wifiClientEnFlag, "");
 
 			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wifiStation%d\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", n, wifiClientEnFlag);
-			strcat(html, tempHtml);
-			strcat(html, "</tr>\n");
-			strcat(html, "<tr>\n");
-			strcat(html, "<td align=\"right\"><b>WiFi SSID:</b></td>\n");
+			html->print(tempHtml);
+			html->print("</tr>\n");
+			html->print("<tr>\n");
+			html->print("<td align=\"right\"><b>WiFi SSID:</b></td>\n");
 			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input size=\"32\" maxlength=\"32\" name=\"wifi_ssid%d\" type=\"text\" value=\"%s\" /></td>\n", n, config.wifi_sta[n].wifi_ssid);
-			strcat(html, tempHtml);
-			strcat(html, "</tr>\n");
-			strcat(html, "<tr>\n");
-			strcat(html, "<td align=\"right\"><b>WiFi PASSWORD:</b></td>\n");
+			html->print(tempHtml);
+			html->print("</tr>\n");
+			html->print("<tr>\n");
+			html->print("<td align=\"right\"><b>WiFi PASSWORD:</b></td>\n");
 			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input size=\"63\" maxlength=\"63\" name=\"wifi_pass%d\" type=\"password\" value=\"%s\" /></td>\n", n, config.wifi_sta[n].wifi_pass);
-			strcat(html, tempHtml);
-			strcat(html, "</tr>\n");
-			strcat(html, "</tr></table></fieldset>\n");
-			strcat(html, "</td></tr>\n");
+			html->print(tempHtml);
+			html->print("</tr>\n");
+			html->print("</tr></table></fieldset>\n");
+			html->print("</td></tr>\n");
 		}
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitWiFiClient'  name=\"commitWiFiClient\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitWiFiClient\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form><br />");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitWiFiClient'  name=\"commitWiFiClient\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitWiFiClient\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form><br />");
 		/************************ Bluetooth **************************/
 #ifdef BLUETOOTH
-		strcat(html, "<br />\n");
-		strcat(html, "<form id='formBluetooth' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		// strcat(html, "<h2>Bluetooth Master (BLE)</h2>\n";
-		strcat(html, "<table>\n");
-		// strcat(html, "<tr>\n";
+		html->print("<br />\n");
+		html->print("<form id='formBluetooth' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
+		// html->print("<h2>Bluetooth Master (BLE)</h2>\n";
+		html->print("<table>\n");
+		// html->print("<tr>\n";
 		// strcat(html, "<th width=\"200\"><span><b>Setting</b></span></th>\n";
 		// strcat(html, "<th><span><b>Value</b></span></th>\n";
 		// strcat(html, "</tr>\n";
-		strcat(html, "<th colspan=\"2\"><span><b>Bluetooth Master (BLE)</b></span></th>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>Enable:</b></td>\n");
+		html->print("<th colspan=\"2\"><span><b>Bluetooth Master (BLE)</b></span></th>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>Enable:</b></td>\n");
 
 		char btFlag[10];
 		if (config.bt_master)
@@ -11529,59 +11863,57 @@ void handle_wireless(AsyncWebServerRequest *request)
 		else
 			strcpy(btFlag, "");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"btMaster\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", btFlag);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>NAME:</b></td>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>NAME:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"20\" id=\"bt_name\" name=\"bt_name\" type=\"text\" value=\"%s\" /></td>\n", config.bt_name);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>PIN:</b></td>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>PIN:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input min=\"0\" max=\"999999\" id=\"bt_pin\" name=\"bt_pin\" type=\"number\" value=\"%d\" /></td> <i>*Value 0 is no auth.</i>\n", config.bt_pin);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
 		#if !defined(CONFIG_IDF_TARGET_ESP32)
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>UUID:</b></td>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>UUID:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"37\" size=\"38\" id=\"bt_uuid\" name=\"bt_uuid\" type=\"text\" value=\"%s\" /></td>\n", config.bt_uuid);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>UUID RX:</b></td>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>UUID RX:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"37\" size=\"38\" id=\"bt_uuid_rx\" name=\"bt_uuid_rx\" type=\"text\" value=\"%s\" /></td>\n", config.bt_uuid_rx);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr>\n");
-		strcat(html, "<td align=\"right\"><b>UUID TX:</b></td>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
+		html->print("<tr>\n");
+		html->print("<td align=\"right\"><b>UUID TX:</b></td>\n");
 		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"37\" size=\"38\" id=\"bt_uuid_tx\" name=\"bt_uuid_tx\" type=\"text\" value=\"%s\" /></td>\n", config.bt_uuid_tx);
-		strcat(html, tempHtml);
-		strcat(html, "</tr>\n");
+		html->print(tempHtml);
+		html->print("</tr>\n");
 		#endif
-		strcat(html, "<td align=\"right\"><b>MODE:</b></td>\n");
-		strcat(html, "<td style=\"text-align: left;\">\n");
-		strcat(html, "<select name=\"bt_mode\" id=\"bt_mode\">\n");
+		html->print("<td align=\"right\"><b>MODE:</b></td>\n");
+		html->print("<td style=\"text-align: left;\">\n");
+		html->print("<select name=\"bt_mode\" id=\"bt_mode\">\n");
 		const char *btModeOff = (config.bt_mode == 0) ? "selected" : "";
 		const char *btModeTNC2 = (config.bt_mode == 1) ? "selected" : "";
 		const char *btModeKISS = (config.bt_mode == 2) ? "selected" : "";
 		snprintf(tempHtml, sizeof(tempHtml), "<option value=\"0\" %s>NONE</option>\n<option value=\"1\" %s>TNC2</option>\n<option value=\"2\" %s>KISS</option>\n", btModeOff, btModeTNC2, btModeKISS);
-		strcat(html, tempHtml);
-		strcat(html, "</select>\n");
+		html->print(tempHtml);
+		html->print("</select>\n");
 
-		strcat(html, "<label style=\"font-size: 8pt;text-align: right;\">*See the following for generating UUIDs: <a href=\"https://www.uuidgenerator.net\" target=\"_blank\">https://www.uuidgenerator.net</a></label></td>\n");
-		strcat(html, "</tr>\n");
-		strcat(html, "<tr><td colspan=\"2\" align=\"right\">\n");
-		strcat(html, "<div><button class=\"button\" type='submit' id='submitBluetooth'  name=\"commitBluetooth\"> Apply Change </button></div>\n");
-		strcat(html, "<input type=\"hidden\" name=\"commitBluetooth\"/>\n");
-		strcat(html, "</td></tr></table><br />\n");
-		strcat(html, "</form>");
+		html->print("<label style=\"font-size: 8pt;text-align: right;\">*See the following for generating UUIDs: <a href=\"https://www.uuidgenerator.net\" target=\"_blank\">https://www.uuidgenerator.net</a></label></td>\n");
+		html->print("</tr>\n");
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitBluetooth'  name=\"commitBluetooth\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitBluetooth\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form>");
 #endif
 
-	AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
-	response->addHeader("wifi", "content");
-	response->addHeader("Cache-Control", "no-cache");
-	request->send(response);
-	free(html); // Free the allocated memory
+	html->addHeader("wifi", "content");
+	html->addHeader("Cache-Control", "no-cache");
+	request->send(html);
 
 	}
 }
@@ -11741,74 +12073,72 @@ void handle_test(AsyncWebServerRequest *request)
 	// }
 	// setHTML(6);
 
-	// Allocate memory for HTML content
-	char *webString = allocateStringMemory(8192); // Start with 8KB buffer
+	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+	AsyncResponseStream *webString = request->beginResponseStream("text/html", 9000);
 	if (!webString)
 	{
 		request->send(500, "text/html", "Memory allocation failed");
 		return;
 	}
-	strcpy(webString, "<html>\n<head>\n");
-	strcat(webString, "<script src=\"https://apps.bdimg.com/libs/jquery/2.1.4/jquery.min.js\"></script>\n");
-	strcat(webString, "<script src=\"https://code.highcharts.com/highcharts.js\"></script>\n");
-	strcat(webString, "<script src=\"https://code.highcharts.com/highcharts-more.js\"></script>\n");
-	strcat(webString, "<script language=\"JavaScript\">");
-	strcat(webString, "$(document).ready(function() {\nvar chart = {\ntype: 'gauge',plotBorderWidth: 1,plotBackgroundColor: {linearGradient: { x1: 0, y1: 0, x2: 0, y2: 1 },stops: [[0, '#FFFFC6'],[0.3, '#FFFFFF'],[1, '#FFF4C6']]},plotBackgroundImage: null,height: 200};\n");
-	strcat(webString, "var credits = {enabled: false};\n");
-	strcat(webString, "var title = {text: 'RX/AUDIO VU Meter'};\n");
-	strcat(webString, "var pane = [{startAngle: -45,endAngle: 45,background: null,center: ['50%', '145%'],size: 300}];\n");
-	strcat(webString, "var yAxis = [{min: -40,max: 1,minorTickPosition: 'outside',tickPosition: 'outside',labels: {rotation: 'auto',distance: 20},\n");
-	strcat(webString, "plotBands: [{from: -10,to: 1,color: '#C02316',innerRadius: '100%',outerRadius: '105%'},{from: -20,to: -10,color: '#00C000',innerRadius: '100%',outerRadius: '105%'},{from: -30,to: -20,color: '#AFFF0F',innerRadius: '100%',outerRadius: '105%'},{from: -40,to: -30,color: '#C0A316',innerRadius: '100%',outerRadius: '105%'}],\n");
-	strcat(webString, "pane: 0,title: {text: '<span style=\"font-size:12px\">dBV</span>',y: -40}}];\n");
-	strcat(webString, "var plotOptions = {gauge: {dataLabels: {enabled: false},dial: {radius: '100%'}}};\n");
-	strcat(webString, "var series= [{data: [-40],yAxis: 0}];\n");
-	strcat(webString, "var json = {};\n json.chart = chart;\n json.credits = credits;\n json.title = title;\n json.pane = pane;\n json.yAxis = yAxis;\n json.plotOptions = plotOptions;\n json.series = series;\n");
+	webString->print("<html>\n<head>\n");
+	webString->print("<script src=\"https://apps.bdimg.com/libs/jquery/2.1.4/jquery.min.js\"></script>\n");
+	webString->print("<script src=\"https://code.highcharts.com/highcharts.js\"></script>\n");
+	webString->print("<script src=\"https://code.highcharts.com/highcharts-more.js\"></script>\n");
+	webString->print("<script language=\"JavaScript\">");
+	webString->print("$(document).ready(function() {\nvar chart = {\ntype: 'gauge',plotBorderWidth: 1,plotBackgroundColor: {linearGradient: { x1: 0, y1: 0, x2: 0, y2: 1 },stops: [[0, '#FFFFC6'],[0.3, '#FFFFFF'],[1, '#FFF4C6']]},plotBackgroundImage: null,height: 200};\n");
+	webString->print("var credits = {enabled: false};\n");
+	webString->print("var title = {text: 'RX/AUDIO VU Meter'};\n");
+	webString->print("var pane = [{startAngle: -45,endAngle: 45,background: null,center: ['50%', '145%'],size: 300}];\n");
+	webString->print("var yAxis = [{min: -40,max: 1,minorTickPosition: 'outside',tickPosition: 'outside',labels: {rotation: 'auto',distance: 20},\n");
+	webString->print("plotBands: [{from: -10,to: 1,color: '#C02316',innerRadius: '100%',outerRadius: '105%'},{from: -20,to: -10,color: '#00C000',innerRadius: '100%',outerRadius: '105%'},{from: -30,to: -20,color: '#AFFF0F',innerRadius: '100%',outerRadius: '105%'},{from: -40,to: -30,color: '#C0A316',innerRadius: '100%',outerRadius: '105%'}],\n");
+	webString->print("pane: 0,title: {text: '<span style=\"font-size:12px\">dBV</span>',y: -40}}];\n");
+	webString->print("var plotOptions = {gauge: {dataLabels: {enabled: false},dial: {radius: '100%'}}};\n");
+	webString->print("var series= [{data: [-40],yAxis: 0}];\n");
+	webString->print("var json = {};\n json.chart = chart;\n json.credits = credits;\n json.title = title;\n json.pane = pane;\n json.yAxis = yAxis;\n json.plotOptions = plotOptions;\n json.series = series;\n");
 	// Add some life
-	strcat(webString, "var chartFunction = function (chart) { \n"); // the chart may be destroyed
-	strcat(webString, "var Vrms=0;\nvar dBV=-40;\nvar active=0;var raw=\"\";var timeStamp;\n");
-	strcat(webString, "if (chart.series) {\n");
-	strcat(webString, "var left = chart.series[0].points[0];\n");
-	strcat(webString, "var host='ws://'+location.hostname+':81/ws'\n");
-	strcat(webString, "const ws = new WebSocket(host);\n");
-	strcat(webString, "ws.onopen = function() { console.log('Connection opened');};\n ws.onclose = function() { console.log('Connection closed');};\n");
-	strcat(webString, "ws.onmessage = function(event) {\n  console.log(event.data);\n");
-	strcat(webString, "const jsonR=JSON.parse(event.data);\n");
-	strcat(webString, "active=parseInt(jsonR.Active);\n");
-	strcat(webString, "Vrms=parseFloat(jsonR.mVrms)/1000;\n");
-	strcat(webString, "dBV=20.0*Math.log10(Vrms);\n");
-	strcat(webString, "if(dBV<-40) dBV=-40;\n");
-	strcat(webString, "raw=jsonR.RAW;\n");
-	strcat(webString, "timeStamp=Number(jsonR.timeStamp);\n");
-	strcat(webString, "if(active==1){\nleft.update(dBV,false);\nchart.redraw();\n");
-	strcat(webString, "var date=new Date(timeStamp * 1000);\n");
-	strcat(webString, "var head=date+\"[\"+Vrms.toFixed(3)+\"Vrms,\"+dBV.toFixed(1)+\"dBV]\\n\";\n");
-	// strcat(webString, "document.getElementById(\"raw_txt\").value+=head+atob(raw)+\"\\n\";\n");
-	strcat(webString, "var textArea=document.getElementById(\"raw_txt\");\n");
-	strcat(webString, "textArea.value+=head+atob(raw)+\"\\n\";\n");
-	strcat(webString, "textArea.scrollTop = textArea.scrollHeight;\n");
-	strcat(webString, "}\n");
-	strcat(webString, "}\n");
-	strcat(webString, "}};\n");
-	strcat(webString, "$('#vumeter').highcharts(json, chartFunction);\n");
-	strcat(webString, "});\n</script>\n");
-	strcat(webString, "</head><body>\n<table>\n");
-	// strcat(webString, "<tr><td><form accept-charset=\"UTF-8\" action=\"/test\" class=\"form-horizontal\" id=\"test_form\" method=\"post\">\n");
-	// strcat(webString, "<div style=\"margin-left: 20px;\"><input type='submit' class=\"btn btn-danger\" name=\"sendBeacon\" value='SEND BEACON'></div><br />\n");
-	// strcat(webString, "<div style=\"margin-left: 20px;\">TNC2 RAW: <input id=\"raw\" name=\"raw\" type=\"text\" size=\"60\" value=\"" + String(config.aprs_mycall) + ">APE32I,WIDE1-1:>Test Status\"/></div>\n");
-	// strcat(webString, "<div style=\"margin-left: 20px;\"><input type='submit' class=\"btn btn-primary\" name=\"sendRaw\" value='SEND RAW'></div> <br />\n");
-	// strcat(webString, "</form></td></tr>\n");
-	// strcat(webString, "<tr><td><hr width=\"80%\" /></td></tr>\n");
-	strcat(webString, "<tr><td><div id=\"vumeter\" style=\"width: 300px; height: 200px; margin: 10px;\"></div></td>\n");
-	strcat(webString, "<tr><td><div style=\"margin: 15px;\">Terminal<br /><textarea id=\"raw_txt\" name=\"raw_txt\" rows=\"50\" cols=\"80\" /></textarea></div></td></tr>\n");
-	strcat(webString, "</table>\n");
+	webString->print("var chartFunction = function (chart) { \n"); // the chart may be destroyed
+	webString->print("var Vrms=0;\nvar dBV=-40;\nvar active=0;var raw=\"\";var timeStamp;\n");
+	webString->print("if (chart.series) {\n");
+	webString->print("var left = chart.series[0].points[0];\n");
+	webString->print("var host='ws://'+location.hostname+':81/ws'\n");
+	webString->print("const ws = new WebSocket(host);\n");
+	webString->print("ws.onopen = function() { console.log('Connection opened');};\n ws.onclose = function() { console.log('Connection closed');};\n");
+	webString->print("ws.onmessage = function(event) {\n  console.log(event.data);\n");
+	webString->print("const jsonR=JSON.parse(event.data);\n");
+	webString->print("active=parseInt(jsonR.Active);\n");
+	webString->print("Vrms=parseFloat(jsonR.mVrms)/1000;\n");
+	webString->print("dBV=20.0*Math.log10(Vrms);\n");
+	webString->print("if(dBV<-40) dBV=-40;\n");
+	webString->print("raw=jsonR.RAW;\n");
+	webString->print("timeStamp=Number(jsonR.timeStamp);\n");
+	webString->print("if(active==1){\nleft.update(dBV,false);\nchart.redraw();\n");
+	webString->print("var date=new Date(timeStamp * 1000);\n");
+	webString->print("var head=date+\"[\"+Vrms.toFixed(3)+\"Vrms,\"+dBV.toFixed(1)+\"dBV]\\n\";\n");
+	// webString->print("document.getElementById(\"raw_txt\").value+=head+atob(raw)+\"\\n\";\n");
+	webString->print("var textArea=document.getElementById(\"raw_txt\");\n");
+	webString->print("textArea.value+=head+atob(raw)+\"\\n\";\n");
+	webString->print("textArea.scrollTop = textArea.scrollHeight;\n");
+	webString->print("}\n");
+	webString->print("}\n");
+	webString->print("}};\n");
+	webString->print("$('#vumeter').highcharts(json, chartFunction);\n");
+	webString->print("});\n</script>\n");
+	webString->print("</head><body>\n<table>\n");
+	// webString->print("<tr><td><form accept-charset=\"UTF-8\" action=\"/test\" class=\"form-horizontal\" id=\"test_form\" method=\"post\">\n");
+	// webString->print("<div style=\"margin-left: 20px;\"><input type='submit' class=\"btn btn-danger\" name=\"sendBeacon\" value='SEND BEACON'></div><br />\n");
+	// webString->print("<div style=\"margin-left: 20px;\">TNC2 RAW: <input id=\"raw\" name=\"raw\" type=\"text\" size=\"60\" value=\"" + String(config.aprs_mycall) + ">APE32I,WIDE1-1:>Test Status\"/></div>\n");
+	// webString->print("<div style=\"margin-left: 20px;\"><input type='submit' class=\"btn btn-primary\" name=\"sendRaw\" value='SEND RAW'></div> <br />\n");
+	// webString->print("</form></td></tr>\n");
+	// webString->print("<tr><td><hr width=\"80%\" /></td></tr>\n");
+	webString->print("<tr><td><div id=\"vumeter\" style=\"width: 300px; height: 200px; margin: 10px;\"></div></td>\n");
+	webString->print("<tr><td><div style=\"margin: 15px;\">Terminal<br /><textarea id=\"raw_txt\" name=\"raw_txt\" rows=\"50\" cols=\"80\" /></textarea></div></td></tr>\n");
+	webString->print("</table>\n");
 
-	strcat(webString, "</body></html>\n");
+	webString->print("</body></html>\n");
 
-	AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)webString);
-	response->addHeader("Test", "content");
-	response->addHeader("Cache-Control", "no-cache");
-	request->send(response);
-	free(webString); // Free the allocated memory
+	webString->addHeader("Test", "content");
+	webString->addHeader("Cache-Control", "no-cache");
+	request->send(webString);
 }
 // Remote version file published by copy_firmware.py, checked against the
 // running VERSION/VERSION_BUILD to let the "about" page report new releases.
@@ -11874,19 +12204,19 @@ void handle_about(AsyncWebServerRequest *request)
 	uint64_t chipid = ESP.getEfuseMac();
 	sprintf(strCID, "%04X%08X", (uint16_t)(chipid >> 32), (uint32_t)chipid);
 
-	// Allocate memory for HTML content
-	char *webString = allocateStringMemory(16384); // Start with 16KB buffer
+	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+	AsyncResponseStream *webString = request->beginResponseStream("text/html", 25000);
 	if (!webString)
 	{
 		request->send(500, "text/html", "Memory allocation failed");
 		return;
 	}
-	strcpy(webString, "<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;\"><td width=\"49%\" style=\"border:unset;\">");
+	webString->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;\"><td width=\"49%\" style=\"border:unset;\">");
 
-	strcat(webString, "<table>");
-	strcat(webString, "<th colspan=\"2\"><span><b>System Information</b></span></th>\n");
-	// strcat(webString, "<tr><th width=\"200\"><span><b>Name</b></span></th><th><span><b>Information</b></span></th></tr>";
-	strcat(webString, "<tr><td align=\"right\"><b>Hardware Version: </b></td><td align=\"left\">");
+	webString->print("<table style=\"height:100%;\">");
+	webString->print("<th colspan=\"2\"><span><b>System Information</b></span></th>\n");
+	// webString->print("<tr><th width=\"200\"><span><b>Name</b></span></th><th><span><b>Information</b></span></th></tr>";
+	webString->print("<tr><td align=\"right\"><b>Hardware Version: </b></td><td align=\"left\">");
 	
 	char FirmwareOTA[50];
 	// Build a dot-free version string for use in firmware filenames
@@ -11900,172 +12230,170 @@ void handle_about(AsyncWebServerRequest *request)
 	char ver[20];
 	sprintf(ver, "v%s-%s.bin", VERSION, VERSION_BUILD);
 #if defined(TTGO_TWR)	
-	strcat(webString, "LiLyGo T-TWRPlus");
+	webString->print("LiLyGo T-TWRPlus");
 	sprintf(FirmwareOTA, "ESP32S3_TWR_%s", ver);
 #elif defined(CONFIG_IDF_TARGET_ESP32)	
 	#ifdef SH1106
-		strcat(webString, "ESP32-WROOM+SH1106 OLED");
+		webString->print("ESP32-WROOM+SH1106 OLED");
 		sprintf(FirmwareOTA, "ESP32_SH1106_%s", ver);
 	#elif defined(SSD1306)
-		strcat(webString, "ESP32-WROOM+SSD1306 OLED");
+		webString->print("ESP32-WROOM+SSD1306 OLED");
 		sprintf(FirmwareOTA, "ESP32_SSD1306_%s", ver);
 	#elif defined(NO_OTA)
-		strcat(webString, "ESP32-WROOM NO OTA,ESP32 DoIt DevKit");
+		webString->print("ESP32-WROOM NO OTA,ESP32 DoIt DevKit");
 		sprintf(FirmwareOTA, "ESP32_NOOTA_%s", ver);
 	#else
-		strcat(webString, "ESP32-WROOM,ESP32 DoIt DevKit");
+		webString->print("ESP32-WROOM,ESP32 DoIt DevKit");
 		sprintf(FirmwareOTA, "ESP32_NODISP_%s", ver);	
 	#endif
 #elif defined(CONFIG_IDF_TARGET_ESP32C3)
 	#ifdef SH1106
-		strcat(webString, "ESP32C3+SH1106 OLED");
+		webString->print("ESP32C3+SH1106 OLED");
 		sprintf(FirmwareOTA, "ESP32C3_SH1106_%s", ver);
 	#elif defined(SSD1306)
-		strcat(webString, "ESP32C3+SSD1306 OLED");
+		webString->print("ESP32C3+SSD1306 OLED");
 		sprintf(FirmwareOTA, "ESP32C3_SSD1306_%s", ver);
 	#elif defined(NO_OTA)
-		strcat(webString, "ESP32C3 NO OTA,ESP32-C3 DIY");
+		webString->print("ESP32C3 NO OTA,ESP32-C3 DIY");
 		sprintf(FirmwareOTA, "ESP32C3_NOOTA_%s", ver);
 	#else	
-		strcat(webString, "ESP32C3,ESP32-C3 DIY");
+		webString->print("ESP32C3,ESP32-C3 DIY");
 		sprintf(FirmwareOTA, "ESP32C3_NODISP_%s", ver);
 	#endif
 #elif defined(CONFIG_IDF_TARGET_ESP32C6)
 	#ifdef SH1106
-		strcat(webString, "ESP32C6+SH1106 OLED");
+		webString->print("ESP32C6+SH1106 OLED");
 		sprintf(FirmwareOTA, "ESP32C6_SH1106_%s", ver);
 	#elif defined(SSD1306)	
-		strcat(webString, "ESP32C6+SSD1306 OLED");
+		webString->print("ESP32C6+SSD1306 OLED");
 		sprintf(FirmwareOTA, "ESP32C6_SSD1306_%s", ver);
 	#elif defined(NO_OTA)
-		strcat(webString, "ESP32C6_NOOTA,ESP32-C6 DIY");
+		webString->print("ESP32C6_NOOTA,ESP32-C6 DIY");
 		sprintf(FirmwareOTA, "ESP32C6_NOOTA_%s", ver);
 	#else
-		strcat(webString, "ESP32C6,ESP32-C6 DIY");
+		webString->print("ESP32C6,ESP32-C6 DIY");
 		sprintf(FirmwareOTA, "ESP32C6_%s", ver);
 	#endif
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)
 	#ifdef ESP32S3_N16R8
-		strcat(webString, "ESP32-S3_16MB,ESP32-S3-DevKit");
+		webString->print("ESP32-S3_16MB,ESP32-S3-DevKit");
 		sprintf(FirmwareOTA, "ESP32S3_N16R8_%s", ver);
 	#elif defined(SH1106)
-		strcat(webString, "ESP32-S3_8MB,SH1106 OLED");
+		webString->print("ESP32-S3_8MB,SH1106 OLED");
 		sprintf(FirmwareOTA, "ESP32S3_SH1106_%s", ver);	
 	#elif defined(SSD1306)
-		strcat(webString, "ESP32-S3_8MB,SSD1306 OLED");
+		webString->print("ESP32-S3_8MB,SSD1306 OLED");
 		sprintf(FirmwareOTA, "ESP32S3_SSD1306_%s", ver);
 	#elif defined(NO_OTA)
-		strcat(webString, "ESP32-S3 Super mini,No OTA");
+		webString->print("ESP32-S3 Super mini,No OTA");
 		sprintf(FirmwareOTA, "ESP32S3_NOOTA_%s", ver);
 	#endif
 #else
-	strcat(webString, "UNKNOWN,ESP32 DIY");
+	webString->print("UNKNOWN,ESP32 DIY");
 #endif
-	strcat(webString, "</td></tr>");
+	webString->print("</td></tr>");
 
 	char *temp_str = allocateStringMemory(512);
 	if (temp_str)
 	{
 		snprintf(temp_str, 512, "<tr><td align=\"right\"><b>Firmware Version: </b></td><td align=\"left\"> V%s%s</td></tr>\n", VERSION, VERSION_BUILD);
-		strcat(webString, temp_str);
+		webString->print(temp_str);
 
 		snprintf(temp_str, 512, "<tr><td align=\"right\"><b>RF Module: </b></td><td align=\"left\"> %s</td></tr>\n", RF_TYPE[config.rf_type]);
-		strcat(webString, temp_str);
+		webString->print(temp_str);
 
 		snprintf(temp_str, 512, "<tr><td align=\"right\"><b>ESP32 Model: </b></td><td align=\"left\"> %s</td></tr>", ESP.getChipModel());
-		strcat(webString, temp_str);
+		webString->print(temp_str);
 
 		snprintf(temp_str, 512, "<tr><td align=\"right\"><b>Revision: </b></td><td align=\"left\"> %d</td></tr>", ESP.getChipRevision());
-		strcat(webString, temp_str);
+		webString->print(temp_str);
 
 		snprintf(temp_str, 512, "<tr><td align=\"right\"><b>Chip ID: </b></td><td align=\"left\"> %s</td></tr>", strCID);
-		strcat(webString, temp_str);
+		webString->print(temp_str);
 
 		snprintf(temp_str, 512, "<tr><td align=\"right\"><b>Flash: </b></td><td align=\"left\">%d KByte</td></tr>", ESP.getFlashChipSize() / 1024);
-		strcat(webString, temp_str);
+		webString->print(temp_str);
 
 		snprintf(temp_str, 512, "<tr><td align=\"right\"><b>PSRAM: </b></td><td align=\"left\">%.1f/%.1f KByte</td></tr>",
 				 (float)ESP.getFreePsram() / 1024, (float)ESP.getPsramSize() / 1024);
-		strcat(webString, temp_str);
+		webString->print(temp_str);
 
 		snprintf(temp_str, 512, "<tr><td align=\"right\"><b>FILE SYSTEM: </b></td><td align=\"left\">%.1f/%.1f KByte</td></tr>",
 				 (float)LITTLEFS.usedBytes() / 1024, (float)LITTLEFS.totalBytes() / 1024);
-		strcat(webString, temp_str);
+		webString->print(temp_str);
 
 		free(temp_str);
 	}
 
-	strcat(webString, "</table>");
-	strcat(webString, "</td><td width=\"2%\" style=\"border:unset;\"></td>");
-	strcat(webString, "<td width=\"49%\" style=\"border:unset;\">");
+	webString->print("</table>");
+	webString->print("</td><td width=\"2%\" style=\"border:unset;\"></td>");
+	webString->print("<td width=\"49%\" style=\"border:unset;\">");
 
-	strcat(webString, "<table>");
-	strcat(webString, "<th colspan=\"2\"><span><b>Developer/Support Information</b></span></th>\n");
-	strcat(webString, "<tr><td align=\"right\"><b>Author: </b></td><td align=\"left\">Mr.Somkiat Nakhonthai </td></tr>");
-	strcat(webString, "<tr><td align=\"right\"><b>Callsign: </b></td><td align=\"left\">HS5TQA,Atten,Nakhonthai</td></tr>\n");
-	strcat(webString, "<tr><td align=\"right\"><b>Country: </b></td><td align=\"left\">Bangkok,Thailand</td></tr>\n");
-	strcat(webString, "<tr><td align=\"right\"><b>Github: </b></td><td align=\"left\"><a href=\"https://github.com/nakhonthai\" target=\"_github\">https://github.com/nakhonthai</a></td></tr>");
-	strcat(webString, "<tr><td align=\"right\"><b>Youtube: </b></td><td align=\"left\"><a href=\"https://www.youtube.com/@HS5TQA\" target=\"_youtube\">https://www.youtube.com/@HS5TQA</a></td></tr>");
-	strcat(webString, "<tr><td align=\"right\"><b>Facebook: </b></td><td align=\"left\"><a href=\"https://www.facebook.com/atten\" target=\"_facebook\">https://www.facebook.com/atten</a></td></tr>");
-	strcat(webString, "<tr><td align=\"right\"><b>Chat: </b></td><td align=\"left\">Telegram:<a href=\"https://t.me/HS5TQA\" target=\"_line\">@HS5TQA</a> , WeChat:HS5TQA</td></tr>");
-	strcat(webString, "<tr><td align=\"right\"><b>Sponsors: </b></td><td align=\"left\"><a href=\"https://github.com/sponsors/nakhonthai\" target=\"_sponsor\">https://github.com/sponsors/nakhonthai</a></td></tr>");
-	strcat(webString, "<tr><td align=\"right\"><b>Donate: </b></td><td align=\"left\"><a href=\"https://www.paypal.me/0hs5tqa0\" target=\"_sponsor\">https://www.paypal.me/0hs5tqa0</a></td></tr>");
+	webString->print("<table style=\"height:100%;\">");
+    webString->print("<th colspan=\"2\"><span><b>Developer/Support Information</b></span></th>\n");
+    webString->print("<tr><td align=\"right\"><b>Author: </b></td><td align=\"left\">Marcelo Ferreira (fork/mods)</td></tr>");
+    webString->print("<tr><td align=\"right\"><b>Callsign: </b></td><td align=\"left\">LU6JMF-10</td></tr>");
+    webString->print("<tr><td align=\"right\"><b>Country: </b></td><td align=\"left\">Concepcion del Uruguay, Entre Rios, Argentina</td></tr>\n");
+    webString->print("<tr><td align=\"right\"><b>Github: </b></td><td align=\"left\"><a href=\"https://github.com/marceloferreirachile/ESP32APRS_Audio\" target=\"_blank\">github.com/marceloferreirachile/ESP32APRS_Audio</a></td></tr>");
+    webString->print("<tr><td align=\"right\"><b>Original: </b></td><td align=\"left\">Mr.Somkiat Nakhonthai (HS5TQA) - <a href=\"https://github.com/nakhonthai\" target=\"_blank\">github.com/nakhonthai</a></td></tr>\n");
+    webString->print("<tr><td align=\"right\"><b>WhatsApp: </b></td><td align=\"left\"><a href=\"https://wa.me/5493442311119\" target=\"_blank\">wa.me/5493442311119</a></td></tr>");
+    webString->print("<tr><td align=\"right\"><b>Donate: </b></td><td align=\"left\"><a href=\"https://www.paypal.me/MarceloFerreira673\" target=\"_blank\">paypal.me/MarceloFerreira673</a></td></tr>");
 
-	strcat(webString, "</table>");
-	strcat(webString, "</td></tr></table><br />");
+	webString->print("</table>");
+	webString->print("</td></tr></table><br />");
 
-	strcat(webString, "<table>\n");
-	strcat(webString, "<tr><td align=\"right\"><b>Contributor: </b></td><td align=\"left\">LU6JMF Marcelo</td></tr>\n");
-	strcat(webString, "<tr><td align=\"right\"><b>Version: </b></td><td align=\"left\">v1.9-lu6jmf (custom mods on top of V1.8a)</td></tr>\n");
-	strcat(webString, "<tr><td align=\"right\" style=\"vertical-align:top;\"><b>Changes: </b></td><td align=\"left\" style=\"white-space:normal;\">\n");
-	strcat(webString, "- Fixed CPU temperature display in web interface (sensor was reinitialized on every dashboard refresh)<br />\n");
-	strcat(webString, "- Added recurring Bulletins BLN1-BLN9 (MSG tab): auto-repeat with per-bulletin Interval and optional send-count Limit (0=unlimited)<br />\n");
-	strcat(webString, "- Bulletins never retry (nobody ACKs a BLN), unlike normal messages<br />\n");
-	strcat(webString, "- Dashboard LAST HEARD: Callsign links to QRZ.com, plus a small map icon linking to aprs.fi (both open in a new tab)<br />\n");
-	strcat(webString, "- Dashboard LAST HEARD icons now work without internet: loads from the internet first, falls back to a local copy already included on the device, then to a simple drawn icon (never blank)<br />\n");
-	strcat(webString, "- Dashboard icons now match the aprs.fi style (previously used a different icon set)<br />\n");
-	strcat(webString, "- New: TCP KISS Server (MOD tab) lets PC software (Xastir, APRSIS32, etc) use this device as a network TNC over WiFi, 2 ports, no cable needed. Off by default<br />\n");
-strcat(webString, "- Fixed a buffer overflow risk in the IGATE/DIGI PHG Text field (unbounded strcpy on an 8-byte buffer)<br />\n");
-strcat(webString, "- Simplified OTA Online Firmware Update: now only checks and links to the new version, no more auto-download/auto-flash. Use Manual Firmware Update to install<br />\n");
-strcat(webString, "- Manual Filesystem Update now auto-restores your WiFi/APRS config after writing icons, so it survives even without USB access<br />\n");
-strcat(webString, "- Fixed a bug where submitting Manual Filesystem Update also fired a stray request from Manual Firmware Update, breaking the icons write<br />\n");
-	strcat(webString, "</td></tr>\n");
-	strcat(webString, "</table><br />\n");
+	webString->print("<table>\n");
+	webString->print("<tr><td align=\"right\"><b>Contributor: </b></td><td align=\"left\">LU6JMF Marcelo</td></tr>\n");
+	webString->print("<tr><td align=\"right\"><b>Version: </b></td><td align=\"left\">v2.0-lu6jmf (custom mods on top of V1.8a)</td></tr>\n");
+	webString->print("<tr><td align=\"right\" style=\"vertical-align:top;\"><b>Changes: </b></td><td align=\"left\" style=\"white-space:normal;\">\n");
+	webString->print("- Fixed CPU temperature display in web interface (sensor was reinitialized on every dashboard refresh)<br />\n");
+	webString->print("- Added recurring Bulletins BLN1-BLN9 (MSG tab): auto-repeat with per-bulletin Interval and optional send-count Limit (0=unlimited)<br />\n");
+	webString->print("- Bulletins never retry (nobody ACKs a BLN), unlike normal messages<br />\n");
+	webString->print("- Dashboard LAST HEARD: Callsign links to QRZ.com, plus a small map icon linking to aprs.fi (both open in a new tab)<br />\n");
+	webString->print("- Dashboard LAST HEARD icons now work without internet: loads from the internet first, falls back to a local copy already included on the device, then to a simple drawn icon (never blank)<br />\n");
+	webString->print("- Dashboard icons now match the aprs.fi style (previously used a different icon set)<br />\n");
+	webString->print("- New: TCP KISS Server (MOD tab) lets PC software (Xastir, APRSIS32, etc) use this device as a network TNC over WiFi, 2 ports, no cable needed. Off by default<br />\n");
+webString->print("- Fixed a buffer overflow risk in the IGATE/DIGI PHG Text field (unbounded strcpy on an 8-byte buffer)<br />\n");
+webString->print("- Simplified OTA Online Firmware Update: now only checks and links to the new version, no more auto-download/auto-flash. Use Manual Firmware Update to install<br />\n");
+webString->print("- Manual Filesystem Update now auto-restores your WiFi/APRS config after writing icons, so it survives even without USB access<br />\n");
+webString->print("- Fixed a bug where submitting Manual Filesystem Update also fired a stray request from Manual Firmware Update, breaking the icons write<br />\n");
+	webString->print("</td></tr>\n");
+	webString->print("</table><br />\n");
 
-	strcat(webString, "<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;\"><td width=\"49%\" style=\"border:unset;\">");
+	webString->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;\"><td width=\"49%\" style=\"border:unset;\">");
 
-	strcat(webString, "<table>\n");
-	strcat(webString, "<th colspan=\"2\"><span><b>WiFi Status</b></span></th>\n");
-	strcat(webString, "<tr><td align=\"right\"><b>Mode:</b></td>\n");
-	strcat(webString, "<td align=\"left\">");
+	webString->print("<table>\n");
+	webString->print("<th colspan=\"2\"><span><b>WiFi Status</b></span></th>\n");
+	webString->print("<tr><td align=\"right\"><b>Mode:</b></td>\n");
+	webString->print("<td align=\"left\">");
 	if (config.wifi_mode == WIFI_AP_FIX)
 	{
-		strcat(webString, "AP");
+		webString->print("AP");
 	}
 	else if (config.wifi_mode == WIFI_STA_FIX)
 	{
-		strcat(webString, "STA");
+		webString->print("STA");
 	}
 	else if (config.wifi_mode == WIFI_AP_STA_FIX)
 	{
-		strcat(webString, "AP+STA");
+		webString->print("AP+STA");
 	}
 	else
 	{
-		strcat(webString, "OFF");
+		webString->print("OFF");
 	}
 	uint8_t proto = 0;
 	esp_wifi_get_protocol(WIFI_IF_STA, &proto);
-	strcat(webString, " (802.11");
+	webString->print(" (802.11");
 	if (proto & WIFI_PROTOCOL_11B)
-		strcat(webString, "b");
+		webString->print("b");
 	if (proto & WIFI_PROTOCOL_11G)
-		strcat(webString, "g");
+		webString->print("g");
 	if (proto & WIFI_PROTOCOL_11N)
-		strcat(webString, "n");
+		webString->print("n");
 	if (proto & WIFI_PROTOCOL_LR)
-		strcat(webString, "lr");
-	strcat(webString, ")");
+		webString->print("lr");
+	webString->print(")");
 
 	wifi_power_t wpr = WiFi.getTxPower();
 	char wifipower[20] = "";
@@ -12118,90 +12446,90 @@ strcat(webString, "- Fixed a bug where submitting Manual Filesystem Update also 
 		strcpy(wifipower, "20 dBm");
 	}
 
-	strcat(webString, "</td></tr>\n");
+	webString->print("</td></tr>\n");
 
 	char *temp_str1 = allocateStringMemory(512);
 	if (temp_str1)
 	{
 		snprintf(temp_str1, 512, "<tr><td align=\"right\" width=\"30%%\"><b>MAC:</b></td>\n<td align=\"left\">%s</td></tr>\n", WiFi.macAddress().c_str());
-		strcat(webString, temp_str1);
+		webString->print(temp_str1);
 		snprintf(temp_str1, 512, "<tr><td align=\"right\"><b>Channel:</b></td>\n<td align=\"left\">%d</td></tr>\n", WiFi.channel());
-		strcat(webString, temp_str1);
+		webString->print(temp_str1);
 
 		snprintf(temp_str1, 512, "<tr><td align=\"right\"><b>TX Power:</b></td>\n<td align=\"left\">%s</td></tr>\n", wifipower);
-		strcat(webString, temp_str1);
+		webString->print(temp_str1);
 
 		snprintf(temp_str1, 512, "<tr><td align=\"right\"><b>SSID:</b></td>\n<td align=\"left\">%s</td></tr>\n", WiFi.SSID().c_str());
-		strcat(webString, temp_str1);
+		webString->print(temp_str1);
 
 		snprintf(temp_str1, 512, "<tr><td align=\"right\"><b>Local IP:</b></td>\n<td align=\"left\">%s</td></tr>\n", WiFi.localIP().toString().c_str());
-		strcat(webString, temp_str1);
+		webString->print(temp_str1);
 
 		snprintf(temp_str1, 512, "<tr><td align=\"right\"><b>Gateway IP:</b></td>\n<td align=\"left\">%s</td></tr>\n", WiFi.gatewayIP().toString().c_str());
-		strcat(webString, temp_str1);
+		webString->print(temp_str1);
 		snprintf(temp_str1, 512, "<tr><td align=\"right\"><b>DNS:</b></td>\n<td align=\"left\">%s</td></tr>\n", WiFi.dnsIP().toString().c_str());
-		strcat(webString, temp_str1);
+		webString->print(temp_str1);
 
 		free(temp_str1);
 	}
 
-	strcat(webString, "</table>\n");
+	webString->print("</table>\n");
 
-	strcat(webString, "</td><td width=\"2%\" style=\"border:unset;\"></td>");
-	strcat(webString, "<td width=\"49%\" style=\"border:unset;\">");
-	strcat(webString, "<table>\n");
+	webString->print("</td><td width=\"2%\" style=\"border:unset;\"></td>");
+	webString->print("<td width=\"49%\" style=\"border:unset;\">");
+	webString->print("<table>\n");
 #ifdef PPPOS
-	strcat(webString, "<th colspan=\"2\"><span><b>PPPoS Status</b></span></th>\n");
+	webString->print("<th colspan=\"2\"><span><b>PPPoS Status</b></span></th>\n");
 
 	char *temp_str2 = allocateStringMemory(512);
 	if (temp_str2)
 	{
 		snprintf(temp_str2, 512, "<tr><td align=\"right\" width=\"30%%\"><b>Manufacturer:</b></td>\n<td align=\"left\">%s</td></tr>\n", pppStatus.manufacturer);
-		strcat(webString, temp_str2);
+		webString->print(temp_str2);
 
 		snprintf(temp_str2, 512, "<tr><td align=\"right\"><b>Model:</b></td>\n<td align=\"left\">%s</td></tr>\n", pppStatus.model);
-		strcat(webString, temp_str2);
+		webString->print(temp_str2);
 
 		snprintf(temp_str2, 512, "<tr><td align=\"right\"><b>IMEI:</b></td>\n<td align=\"left\">%s</td></tr>\n", pppStatus.imei);
-		strcat(webString, temp_str2);
+		webString->print(temp_str2);
 		snprintf(temp_str2, 512, "<tr><td align=\"right\"><b>IMSI:</b></td>\n<td align=\"left\">%s</td></tr>\n", pppStatus.imsi);
-		strcat(webString, temp_str2);
+		webString->print(temp_str2);
 
 		snprintf(temp_str2, 512, "<tr><td align=\"right\"><b>Operator:</b></td>\n<td align=\"left\">%s</td></tr>\n", pppStatus.oper);
-		strcat(webString, temp_str2);
+		webString->print(temp_str2);
 
 		snprintf(temp_str2, 512, "<tr><td align=\"right\"><b>RSSI:</b></td>\n<td align=\"left\">%d dBm</td></tr>\n", pppStatus.rssi);
-		strcat(webString, temp_str2);
+		webString->print(temp_str2);
 
 		snprintf(temp_str2, 512, "<tr><td align=\"right\"><b>IP:</b></td>\n<td align=\"left\">%s</td></tr>\n", IPAddress(pppStatus.ip).toString().c_str());
-		strcat(webString, temp_str2);
+		webString->print(temp_str2);
 
 		snprintf(temp_str2, 512, "<tr><td align=\"right\"><b>Gateway:</b></td>\n<td align=\"left\">%s</td></tr>\n", IPAddress(pppStatus.gateway).toString().c_str());
-		strcat(webString, temp_str2);
+		webString->print(temp_str2);
 		free(temp_str2);
 	}
 
-// strcat(webString, "<tr><td align=\"right\"><b>DNS:</b></td>\n");
-// strcat(webString, "<td align=\"left\">%s</td></tr>\n", IPAddress(pppStatus.dns).toString().c_str());
+// webString->print("<tr><td align=\"right\"><b>DNS:</b></td>\n");
+// webString->print("<td align=\"left\">%s</td></tr>\n", IPAddress(pppStatus.dns).toString().c_str());
 #endif
-	strcat(webString, "</table>\n");
-	strcat(webString, "</td></tr></table><br />");
+	webString->print("</table>\n");
+	webString->print("</td></tr></table><br />");
 
-	// strcat(webString, "<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;\"><td width=\"96%\" style=\"border:unset;\">");
+	// webString->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;\"><td width=\"96%\" style=\"border:unset;\">");
 #ifndef NO_OTA
-	strcat(webString, "<form method='POST' action='#' enctype='multipart/form-data' id='upload_form' class=\"form-horizontal\">\n");
-	strcat(webString, "<table>");
-	strcat(webString, "<th colspan=\"2\"><span><b>Manual Firmware Update</b></span></th>\n");
-	strcat(webString, "<tr><td align=\"right\"><b>File:</b></td><td align=\"left\"><input id=\"file\" name=\"update\" type=\"file\" onchange='sub(this)' /></td></tr>\n");
-	strcat(webString, "<tr><td align=\"right\"><b>Progress:</b></td><td><div id='prgbar'><div id='bar' style=\"width: 0px;\"><label id='prg'></label></div></div></td></tr>\n");
-	strcat(webString, "<tr><td align=\"right\"><b>Support Firmware:</b></td><td align=\"left\"><a target=\"_download\" href=\"https://github.com/nakhonthai/ESP32APRS_LoRa/releases\">https://github.com/nakhonthai/ESP32APRS_LoRa/releases</a></td></tr>\n");
+	webString->print("<form method='POST' action='#' enctype='multipart/form-data' id='upload_form' class=\"form-horizontal\">\n");
+	webString->print("<table>");
+	webString->print("<th colspan=\"2\"><span><b>Manual Firmware Update</b></span></th>\n");
+	webString->print("<tr><td align=\"right\"><b>File:</b></td><td align=\"left\"><input id=\"file\" name=\"update\" type=\"file\" onchange='sub(this)' /></td></tr>\n");
+	webString->print("<tr><td align=\"right\"><b>Progress:</b></td><td><div id='prgbar'><div id='bar' style=\"width: 0px;\"><label id='prg'></label></div></div></td></tr>\n");
+	webString->print("<tr><td align=\"right\"><b>Support Firmware:</b></td><td align=\"left\"><a target=\"_download\" href=\"https://github.com/marceloferreirachile/ESP32APRS_Audio/releases\">https://github.com/marceloferreirachile/ESP32APRS_Audio/releases</a></td></tr>\n");
 	
-	strcat(webString, "<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\"><input type='submit' class=\"btn btn-danger\" id=\"update_sumbit\" value='Firmware UpLoad'></div></td></tr>\n");
-	strcat(webString, "</table><br />\n");
-	strcat(webString, "</form>\n");
-	// strcat(webString, "</td></tr></table><br />");
+	webString->print("<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\"><input type='submit' class=\"btn btn-danger\" id=\"update_sumbit\" value='Firmware UpLoad'></div></td></tr>\n");
+	webString->print("</table><br />\n");
+	webString->print("</form>\n");
+	// webString->print("</td></tr></table><br />");
 
-	strcat(webString, "<script>"
+	webString->print("<script>"
 					  "function sub(obj){"
 					  "var fileName = obj.value.split('\\\\');"
 					  "document.getElementById('file-input').innerHTML = '   '+ fileName[fileName.length-1];"
@@ -12237,16 +12565,16 @@ strcat(webString, "- Fixed a bug where submitting Manual Filesystem Update also 
 					  "});"
 					  "</script>");
 
-	strcat(webString, "<form method='POST' action='#' enctype='multipart/form-data' id='updatefs_form' class=\"form-horizontal\">\n");
-	strcat(webString, "<table>");
-	strcat(webString, "<th colspan=\"2\"><span><b>Manual Filesystem Update (icons/data)</b></span></th>\n");
-	strcat(webString, "<tr><td align=\"right\"><b>File:</b></td><td align=\"left\"><input id=\"filefs\" name=\"updatefs\" type=\"file\" /></td></tr>\n");
-	strcat(webString, "<tr><td align=\"right\"><b>Progress:</b></td><td><div id='prgbarfs'><div id='barfs' style=\"width: 0px;\"><label id='prgfs'></label></div></div></td></tr>\n");
-	strcat(webString, "<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\"><input type='submit' class=\"btn btn-danger\" id=\"updatefs_sumbit\" value='Filesystem UpLoad'></div></td></tr>\n");
-	strcat(webString, "</table><br />\n");
-	strcat(webString, "</form>\n");
+	webString->print("<form method='POST' action='#' enctype='multipart/form-data' id='updatefs_form' class=\"form-horizontal\">\n");
+	webString->print("<table>");
+	webString->print("<th colspan=\"2\"><span><b>Manual Filesystem Update (icons/data)</b></span></th>\n");
+	webString->print("<tr><td align=\"right\"><b>File:</b></td><td align=\"left\"><input id=\"filefs\" name=\"updatefs\" type=\"file\" /></td></tr>\n");
+	webString->print("<tr><td align=\"right\"><b>Progress:</b></td><td><div id='prgbarfs'><div id='barfs' style=\"width: 0px;\"><label id='prgfs'></label></div></div></td></tr>\n");
+	webString->print("<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\"><input type='submit' class=\"btn btn-danger\" id=\"updatefs_sumbit\" value='Filesystem UpLoad'></div></td></tr>\n");
+	webString->print("</table><br />\n");
+	webString->print("</form>\n");
 
-	strcat(webString, "<script>"
+	webString->print("<script>"
 					  "$('#updatefs_form').submit(function(e){"
 					  "e.preventDefault();"
 					  "var form = $('#updatefs_form')[0];"
@@ -12283,23 +12611,23 @@ strcat(webString, "- Fixed a bug where submitting Manual Filesystem Update also 
 		char ota_url_buf[200];
 		snprintf(ota_url_buf, sizeof(ota_url_buf), "https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/download/v%s-%s/%s", VERSION, VERSION_BUILD, FirmwareOTA);
 
-		strcat(webString, "<table>");
-		strcat(webString, "<th colspan=\"2\"><span><b>OTA Online Firmware Update</b></span></th>\n");
+		webString->print("<table>");
+		webString->print("<th colspan=\"2\"><span><b>OTA Online Firmware Update</b></span></th>\n");
 		char ota_row[512];
 		snprintf(ota_row, sizeof(ota_row),
 			"<tr><td align=\"right\"><b>Firmware File:</b></td><td align=\"left\"><a id=\"fw_file_link\" href=\"%s\" target=\"_blank\">%s</a></td></tr>\n",
 			ota_url_buf, FirmwareOTA);
-		strcat(webString, ota_row);
+		webString->print(ota_row);
 		snprintf(ota_row, sizeof(ota_row),
 			"<tr><td align=\"right\"><b>Current Version:</b></td><td align=\"left\">V%s%s</td></tr>\n",
 			VERSION, VERSION_BUILD);
-		strcat(webString, ota_row);
-		strcat(webString, "<tr><td align=\"right\"><b>Status:</b></td><td><span id='ota_prg'>Ready</span></td></tr>\n");
-		strcat(webString, "<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\"><input type='button' class=\"btn btn-danger\" id=\"check_ver_btn\" value='Check New Version'></div></td></tr>\n");
-		strcat(webString, "</table><br />\n");
+		webString->print(ota_row);
+		webString->print("<tr><td align=\"right\"><b>Status:</b></td><td><span id='ota_prg'>Ready</span></td></tr>\n");
+		webString->print("<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\"><input type='button' class=\"btn btn-danger\" id=\"check_ver_btn\" value='Check New Version'></div></td></tr>\n");
+		webString->print("</table><br />\n");
 	}
 
-	strcat(webString, "<script>"
+	webString->print("<script>"
 					  "document.getElementById('check_ver_btn').addEventListener('click', function(){"
 					  "document.getElementById('check_ver_btn').disabled = true;"
 					  "document.getElementById('ota_prg').innerHTML = 'Checking...';"
@@ -12327,66 +12655,64 @@ strcat(webString, "- Fixed a bug where submitting Manual Filesystem Update also 
 					  "});"
 					  "</script>");
 #endif
-	strcat(webString, "</body></html>\n");
+	webString->print("</body></html>\n");
 
-	AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)webString);
-	response->addHeader("About", "content");
-	response->addHeader("Cache-Control", "no-cache");
-	request->send(response);
-	free(webString);
+	webString->addHeader("About", "content");
+	webString->addHeader("Cache-Control", "no-cache");
+	request->send(webString);
 }
 
 void handle_gnss(AsyncWebServerRequest *request)
 {
-	// Allocate initial memory for HTML content
-	char *webString = allocateStringMemory(8192); // Start with 8KB buffer
+	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+	AsyncResponseStream *webString = request->beginResponseStream("text/html", 20000);
 	if (!webString)
 	{
 		request->send(500, "text/html", "Memory allocation failed");
 		return;
 	}
-	strcpy(webString, "<html>\n<head>\n");
-	strcat(webString, "<script src=\"https://apps.bdimg.com/libs/jquery/2.1.4/jquery.min.js\"></script>\n");
-	strcat(webString, "<script src=\"https://code.highcharts.com/highcharts.js\"></script>\n");
-	strcat(webString, "<script src=\"https://code.highcharts.com/highcharts-more.js\"></script>\n");
-	strcat(webString, "<script language=\"JavaScript\">");
+	webString->print("<html>\n<head>\n");
+	webString->print("<script src=\"https://apps.bdimg.com/libs/jquery/2.1.4/jquery.min.js\"></script>\n");
+	webString->print("<script src=\"https://code.highcharts.com/highcharts.js\"></script>\n");
+	webString->print("<script src=\"https://code.highcharts.com/highcharts-more.js\"></script>\n");
+	webString->print("<script language=\"JavaScript\">");
 
 	// Add some life
-	strcat(webString, "function gnss() { \n"); // the chart may be destroyed
-	strcat(webString, "var raw=\"\";var timeStamp;\n");
-	strcat(webString, "var host='ws://'+location.hostname+':81/ws_gnss'\n");
-	strcat(webString, "const ws = new WebSocket(host);\n");
-	strcat(webString, "ws.onopen = function() { console.log('Connection opened');};\n ws.onclose = function() { console.log('Connection closed');};\n");
-	strcat(webString, "ws.onmessage = function(event) {\n  console.log(event.data);\n");
-	strcat(webString, "const jsonR=JSON.parse(event.data);\n");
-	strcat(webString, "document.getElementById(\"en\").innerHTML=parseInt(jsonR.en);\n");
-	strcat(webString, "document.getElementById(\"lat\").innerHTML=parseFloat(jsonR.lat);\n");
-	strcat(webString, "document.getElementById(\"lng\").innerHTML=parseFloat(jsonR.lng);\n");
-	strcat(webString, "document.getElementById(\"alt\").innerHTML=parseFloat(jsonR.alt);\n");
-	strcat(webString, "document.getElementById(\"spd\").innerHTML=parseFloat(jsonR.spd);\n");
-	strcat(webString, "document.getElementById(\"csd\").innerHTML=parseFloat(jsonR.csd);\n");
-	strcat(webString, "document.getElementById(\"hdop\").innerHTML=parseFloat(jsonR.hdop);\n");
-	strcat(webString, "document.getElementById(\"sat\").innerHTML=parseInt(jsonR.sat);\n");
-	strcat(webString, "document.getElementById(\"time\").innerHTML=parseInt(jsonR.time);\n");
-	strcat(webString, "raw=jsonR.RAW;\n");
-	strcat(webString, "timeStamp=Number(jsonR.timeStamp);\n");
-	strcat(webString, "var textArea=document.getElementById(\"raw_txt\");\n");
-	strcat(webString, "textArea.value+=atob(raw)+\"\\n\";\n");
-	strcat(webString, "textArea.scrollTop = textArea.scrollHeight;\n");
-	strcat(webString, "}\n");
-	strcat(webString, "};\n</script>\n");
-	strcat(webString, "</head><body onload=\"gnss()\">\n");
+	webString->print("function gnss() { \n"); // the chart may be destroyed
+	webString->print("var raw=\"\";var timeStamp;\n");
+	webString->print("var host='ws://'+location.hostname+':81/ws_gnss'\n");
+	webString->print("const ws = new WebSocket(host);\n");
+	webString->print("ws.onopen = function() { console.log('Connection opened');};\n ws.onclose = function() { console.log('Connection closed');};\n");
+	webString->print("ws.onmessage = function(event) {\n  console.log(event.data);\n");
+	webString->print("const jsonR=JSON.parse(event.data);\n");
+	webString->print("document.getElementById(\"en\").innerHTML=parseInt(jsonR.en);\n");
+	webString->print("document.getElementById(\"lat\").innerHTML=parseFloat(jsonR.lat);\n");
+	webString->print("document.getElementById(\"lng\").innerHTML=parseFloat(jsonR.lng);\n");
+	webString->print("document.getElementById(\"alt\").innerHTML=parseFloat(jsonR.alt);\n");
+	webString->print("document.getElementById(\"spd\").innerHTML=parseFloat(jsonR.spd);\n");
+	webString->print("document.getElementById(\"csd\").innerHTML=parseFloat(jsonR.csd);\n");
+	webString->print("document.getElementById(\"hdop\").innerHTML=parseFloat(jsonR.hdop);\n");
+	webString->print("document.getElementById(\"sat\").innerHTML=parseInt(jsonR.sat);\n");
+	webString->print("document.getElementById(\"time\").innerHTML=parseInt(jsonR.time);\n");
+	webString->print("raw=jsonR.RAW;\n");
+	webString->print("timeStamp=Number(jsonR.timeStamp);\n");
+	webString->print("var textArea=document.getElementById(\"raw_txt\");\n");
+	webString->print("textArea.value+=atob(raw)+\"\\n\";\n");
+	webString->print("textArea.scrollTop = textArea.scrollHeight;\n");
+	webString->print("}\n");
+	webString->print("};\n</script>\n");
+	webString->print("</head><body onload=\"gnss()\">\n");
 
-	strcat(webString, "<table width=\"200\" border=\"1\">");
-	strcat(webString, "<th colspan=\"2\" style=\"background-color: #00BCD4;\"><span><b>GNSS Information</b></span></th>\n");
-	// strcat(webString, "<tr><th width=\"200\"><span><b>Name</b></span></th><th><span><b>Information</b></span></th></tr>");
+	webString->print("<table width=\"200\" border=\"1\">");
+	webString->print("<th colspan=\"2\" style=\"background-color: #00BCD4;\"><span><b>GNSS Information</b></span></th>\n");
+	// webString->print("<tr><th width=\"200\"><span><b>Name</b></span></th><th><span><b>Information</b></span></th></tr>");
 
 	{
 		char *temp_en = allocateStringMemory(512);
 		if (temp_en)
 		{
 			snprintf(temp_en, 512, "<tr><td align=\"right\"><b>Enable: </b></td><td align=\"left\"> <label id=\"en\">%d</label></td></tr>", config.gnss_enable);
-			strcat(webString, temp_en);
+			webString->print(temp_en);
 			free(temp_en);
 		}
 	}
@@ -12396,7 +12722,7 @@ void handle_gnss(AsyncWebServerRequest *request)
 		if (temp_lat)
 		{
 			snprintf(temp_lat, 512, "<tr><td align=\"right\"><b>Latitude: </b></td><td align=\"left\"> <label id=\"lat\">%.5f</label></td></tr>", gps.location.lat());
-			strcat(webString, temp_lat);
+			webString->print(temp_lat);
 			free(temp_lat);
 		}
 	}
@@ -12406,7 +12732,7 @@ void handle_gnss(AsyncWebServerRequest *request)
 		if (temp_lng)
 		{
 			snprintf(temp_lng, 512, "<tr><td align=\"right\"><b>Longitude: </b></td><td align=\"left\"> <label id=\"lng\">%.5f</label></td></tr>", gps.location.lng());
-			strcat(webString, temp_lng);
+			webString->print(temp_lng);
 			free(temp_lng);
 		}
 	}
@@ -12416,7 +12742,7 @@ void handle_gnss(AsyncWebServerRequest *request)
 		if (temp_alt)
 		{
 			snprintf(temp_alt, 512, "<tr><td align=\"right\"><b>Altitude: </b></td><td align=\"left\"> <label id=\"alt\">%.2f</label> m.</td></tr>", gps.altitude.meters());
-			strcat(webString, temp_alt);
+			webString->print(temp_alt);
 			free(temp_alt);
 		}
 	}
@@ -12426,7 +12752,7 @@ void handle_gnss(AsyncWebServerRequest *request)
 		if (temp_spd)
 		{
 			snprintf(temp_spd, 512, "<tr><td align=\"right\"><b>Speed: </b></td><td align=\"left\"> <label id=\"spd\">%.2f</label> km/h</td></tr>", gps.speed.kmph());
-			strcat(webString, temp_spd);
+			webString->print(temp_spd);
 			free(temp_spd);
 		}
 	}
@@ -12436,7 +12762,7 @@ void handle_gnss(AsyncWebServerRequest *request)
 		if (temp_csd)
 		{
 			snprintf(temp_csd, 512, "<tr><td align=\"right\"><b>Course: </b></td><td align=\"left\"> <label id=\"csd\">%.1f</label></td></tr>", gps.course.deg());
-			strcat(webString, temp_csd);
+			webString->print(temp_csd);
 			free(temp_csd);
 		}
 	}
@@ -12446,7 +12772,7 @@ void handle_gnss(AsyncWebServerRequest *request)
 		if (temp_hdop)
 		{
 			snprintf(temp_hdop, 512, "<tr><td align=\"right\"><b>HDOP: </b></td><td align=\"left\"> <label id=\"hdop\">%.2f</label> </td></tr>", gps.hdop.hdop());
-			strcat(webString, temp_hdop);
+			webString->print(temp_hdop);
 			free(temp_hdop);
 		}
 	}
@@ -12456,7 +12782,7 @@ void handle_gnss(AsyncWebServerRequest *request)
 		if (temp_sat)
 		{
 			snprintf(temp_sat, 512, "<tr><td align=\"right\"><b>SAT: </b></td><td align=\"left\"> <label id=\"sat\">%d</label> </td></tr>", gps.satellites.value());
-			strcat(webString, temp_sat);
+			webString->print(temp_sat);
 			free(temp_sat);
 		}
 	}
@@ -12466,22 +12792,20 @@ void handle_gnss(AsyncWebServerRequest *request)
 		if (temp_time)
 		{
 			snprintf(temp_time, 512, "<tr><td align=\"right\"><b>Time: </b></td><td align=\"left\"> <label id=\"time\">%d</label> </td></tr>", gps.time.value());
-			strcat(webString, temp_time);
+			webString->print(temp_time);
 			free(temp_time);
 		}
 	}
 
-	strcat(webString, "</table><table>");
-	strcat(webString, "<tr><td><b>Terminal:</b><br /><textarea id=\"raw_txt\" name=\"raw_txt\" rows=\"30\" cols=\"80\" /></textarea></td></tr>\n");
-	strcat(webString, "</table>\n");
+	webString->print("</table><table>");
+	webString->print("<tr><td><b>Terminal:</b><br /><textarea id=\"raw_txt\" name=\"raw_txt\" rows=\"30\" cols=\"80\" /></textarea></td></tr>\n");
+	webString->print("</table>\n");
 
-	strcat(webString, "</body></html>\n");
+	webString->print("</body></html>\n");
 
-	AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)webString);
-	response->addHeader("GNSS", "content");
-	response->addHeader("Cache-Control", "no-cache");
-	request->send(response);
-	free(webString);
+	webString->addHeader("GNSS", "content");
+	webString->addHeader("Cache-Control", "no-cache");
+	request->send(webString);
 }
 
 void handle_default()
@@ -12587,6 +12911,8 @@ void webService()
 					{ handle_msg(request); });
 	async_server.on("/mod", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_mod(request); });
+	async_server.on("/mod2", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
+					{ handle_mod2(request); });
 	async_server.on("/default", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_default(); });
 	async_server.on("/igate", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)

@@ -1,15 +1,27 @@
 {
-  "name": "ESP32APRS_CDU (LU6JMF) v1.9-lu6jmf",
-  "version": "1.9-lu6jmf",
+  "name": "ESP32APRS_CDU (LU6JMF) v2.0-lu6jmf",
+  "version": "2.0-lu6jmf",
   "new_install_prompt_erase": true,
   "builds": [
     {
       "chipFamily": "ESP32",
       "parts": [
-        { "path": "./bin/bootloader.bin", "offset": 4096 },
-        { "path": "./bin/partitions.bin", "offset": 32768 },
-        { "path": "./bin/firmware.bin", "offset": 65536 },
-        { "path": "./bin/littlefs.bin", "offset": 3997696 }
+        {
+          "path": "./bin/bootloader.bin",
+          "offset": 4096
+        },
+        {
+          "path": "./bin/partitions.bin",
+          "offset": 32768
+        },
+        {
+          "path": "./bin/firmware.bin",
+          "offset": 65536
+        },
+        {
+          "path": "./bin/littlefs.bin",
+          "offset": 3997696
+        }
       ]
     }
   ]
