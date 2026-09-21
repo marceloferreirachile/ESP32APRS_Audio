@@ -15,7 +15,7 @@
 #include "sensor.h"
 
 #define COMMENT_SIZE 25
-#define STATUS_SIZE 50
+#define STATUS_SIZE 68 // increased from 50 to allow the widely-used 67-char safe limit for APRS status/bulletin text (avoids silent truncation) - Sep/2026
 
 #define WX_SENSOR_NUM 26
 

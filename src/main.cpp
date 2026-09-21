@@ -10,6 +10,7 @@
 #include <Arduino.h>
 #include <AsyncTCP.h>
 #include <esp_task_wdt.h>
+#include <esp_heap_caps.h>
 #include "main.h"
 #include <LibAPRSesp.h>
 #include <limits.h>
@@ -2803,6 +2804,16 @@ int pkgListUpdate(char *call, char *raw, uint16_t type, bool channel, uint16_t a
                 pkgList[i].raw = (char *)calloc(pkgList[i].length, sizeof(char));
                 #endif
             }
+        // BUGFIX (heap corruption): this branch reuses a slot evicted from a
+        // DIFFERENT station (via pkgListOld()). It reallocs/callocs pkgList[i].raw
+        // to the exact new size, but was never updating currentLength - so it kept
+        // the evicted station's stale value. Next update to this same (now-tracked)
+        // station would then compare against that stale currentLength in the
+        // "found in old pkg" branch above and, if it looked big enough, SKIP the
+        // realloc and memcpy past the real (smaller) allocated buffer -> heap
+        // overflow / corrupted allocator metadata ("Bad tail" / TLSF asserts),
+        // reproducible under heavy real APRS-IS traffic as the list churns.
+        pkgList[i].currentLength = pkgList[i].length;
         if (pkgList[i].raw)
         {
             memset(pkgList[i].raw, 0, pkgList[i].length);
@@ -3469,12 +3480,17 @@ int timeHalfSec = 0;
 
 void preTransmission()
 {
-    digitalWrite(config.modbus_de_gpio, 1);
+    // modbus_de_gpio == -1 means "no DE pin configured" (RS485 not using
+    // direction control); guard it, otherwise this fires digitalWrite(255,...)
+    // on every single Modbus transaction (spams log_e + wastes cycles).
+    if (config.modbus_de_gpio >= 0)
+        digitalWrite(config.modbus_de_gpio, 1);
 }
 
 void postTransmission()
 {
-    digitalWrite(config.modbus_de_gpio, 0);
+    if (config.modbus_de_gpio >= 0)
+        digitalWrite(config.modbus_de_gpio, 0);
 }
 
 #ifdef BLUETOOTH
@@ -4048,6 +4064,12 @@ void setup()
 
     upTimeStamp = millis() / 1000;
     autoResetTimeout = millis() + ((long)config.reset_timeout * 60000);
+
+    // Diagnostic: verify heap allocator integrity right at the end of setup(),
+    // before any web request is ever served. If this already fails, the
+    // corruption happened during boot (WiFi/TCP-KISS/gptimer/etc init), not
+    // from any web page handler.
+    log_e("[HEAPCHK] end-of-setup integrity check: %s", heap_caps_check_integrity_all(true) ? "OK" : "CORRUPTED");
 }
 
 String getTimeStamp()
@@ -5246,6 +5268,18 @@ void msgBox(String msg)
 uint8_t heapCount = 0;
 void loop()
 {
+    // Diagnostic: periodic heap integrity check (every 3s) to bisect exactly
+    // when corruption first appears relative to boot events / web requests.
+    static uint32_t lastHeapChk = 0;
+    static uint32_t heapChkCounter = 0;
+    if (millis() - lastHeapChk > 3000)
+    {
+        lastHeapChk = millis();
+        heapChkCounter++;
+        bool ok = heap_caps_check_integrity_all(true);
+        log_e("[HEAPCHK] #%u t=%lu ms: %s", heapChkCounter, millis(), ok ? "OK" : "CORRUPTED");
+    }
+
 
     if (millis() > timeTask)
     {
@@ -8885,55 +8919,64 @@ void taskNetwork(void *pvParameters)
                     if (aprsClient.available())
                     {
                         pingTimeout = millis() + 300000;                // Reset ping timout
-                        String line = aprsClient.readStringUntil('\n'); // อ่านค่าที่ Server ตอบหลับมาทีละบรรทัด
+                        // Fixed-size buffer instead of Arduino String: avoids a heap
+                        // allocation on every single packet received from APRS-IS.
+                        // 512 bytes = documented max TNC2 line length for APRS-IS
+                        // (javAPRSSrvr spec), +1 null terminator, +7 safety margin.
+                        static char line_buf[520];
+                        size_t lineLen = aprsClient.readBytesUntil('\n', line_buf, sizeof(line_buf) - 1);
+                        line_buf[lineLen] = '\0';
                         status.isCount++;
-                        int start_val = line.indexOf(">", 0); // หาตำแหน่งแรกของ >
+                        char *gtPtr = (char *)memchr(line_buf, '>', lineLen);
+                        int start_val = gtPtr ? (int)(gtPtr - line_buf) : -1;
                         if (start_val > 3)
                         {
-                            String src_call = line.substring(0, start_val);
-                            String msg_call = "::" + src_call;
+                            static char src_call[16];
+                            size_t scLen = (size_t)start_val;
+                            if (scLen > 15)
+                                scLen = 15;
+                            memcpy(src_call, line_buf, scLen);
+                            src_call[scLen] = 0;
 
                             status.allCount++;
                             igateTLM.RX++;
 
-                            log_d("INET: %s\n", line.c_str());
-                            start_val = line.indexOf(":", 10); // Search of info in ax25
+                            log_d("INET: %s\n", line_buf);
+                            char *colonPtr = (lineLen > 10) ? (char *)memchr(line_buf + 10, ':', lineLen - 10) : NULL;
+                            start_val = colonPtr ? (int)(colonPtr - line_buf) : -1;
                             if (start_val > 5)
                             {
-                                String info = line.substring(start_val + 1);
-                                size_t rawSize = line.length();
+                                char *info_ptr = line_buf + start_val + 1;
+                                size_t infoLen = lineLen - (size_t)(start_val + 1);
+                                size_t rawSize = lineLen;
                                 char *raw = (char *)calloc(rawSize + 1, sizeof(char));
                                 if (raw)
                                 {
-                                    memset(raw, 0, rawSize + 1);
-                                    memcpy(raw, info.c_str(), info.length());
+                                    memcpy(raw, info_ptr, infoLen);
 
                                     uint16_t type = pkgType(&raw[0]);
                                     if (type & FILTER_MESSAGE)
                                     {
-                                        handleIncomingAPRS(line);
+                                        handleIncomingAPRS(String(line_buf));
                                     }
-                                    int start_dstssid = line.indexOf("-", 1); // get SSID -
+                                    char *dashPtr = (lineLen > 1) ? (char *)memchr(line_buf + 1, '-', lineLen - 1) : NULL;
+                                    int start_dstssid = dashPtr ? (int)(dashPtr - line_buf) : -1;
                                     if (start_dstssid < 0)
-                                        start_dstssid = line.indexOf(" ", 1); // get ssid space
+                                    {
+                                        char *spacePtr = (lineLen > 1) ? (char *)memchr(line_buf + 1, ' ', lineLen - 1) : NULL;
+                                        start_dstssid = spacePtr ? (int)(spacePtr - line_buf) : -1;
+                                    }
                                     char ssid = 0;
-                                    if (start_dstssid > 0)
-                                        ssid = line.charAt(start_dstssid + 1);
+                                    if (start_dstssid > 0 && (size_t)(start_dstssid + 1) < lineLen)
+                                        ssid = line_buf[start_dstssid + 1];
 
                                     if (ssid > 47 && ssid < 58)
                                     {
-                                        size_t len = src_call.length();
-                                        char call[15];
-                                        memset(call, 0, sizeof(call));
-                                        if (len > 15)
-                                            len = 15;
-                                        memcpy(call, src_call.c_str(), len);
-                                        call[14] = 0;
-                                        memset(raw, 0, rawSize + 1);
-                                        memcpy(raw, line.c_str(), line.length());
+                                        memcpy(raw, line_buf, lineLen);
+                                        raw[rawSize] = 0;
                                         if (type & config.dispFilter)
                                         {
-                                            int idx = pkgListUpdate(call, raw, type, 1, 0);
+                                            int idx = pkgListUpdate(src_call, raw, type, 1, 0);
                                             // int cnt = 0;
                                             // if (idx > -1)
                                             // {
@@ -8953,10 +8996,10 @@ void taskNetwork(void *pvParameters)
                                                 {
                                                     #ifdef GUI_LCD
                                                     int cnt = pushTNC2Raw(idx);
-                                                    log_d("INET_putQueueDisp:[pkgList_idx=%d/queue=%d,Type=%d] %s\n", idx, cnt, type, call);
+                                                    log_d("INET_putQueueDisp:[pkgList_idx=%d/queue=%d,Type=%d] %s\n", idx, cnt, type, src_call);
                                                     #else
-                                                    dispBuffer.push(line.c_str());
-                                                    log_d("INET_putQueueDisp:[pkgList_idx=%d/queue=%d,Type=%d] %s\n", idx, dispBuffer.getCount(), type, call);
+                                                    dispBuffer.push(line_buf);
+                                                    log_d("INET_putQueueDisp:[pkgList_idx=%d/queue=%d,Type=%d] %s\n", idx, dispBuffer.getCount(), type, src_call);
                                                     #endif
                                                 }
                                             }
@@ -8967,42 +9010,38 @@ void taskNetwork(void *pvParameters)
                                         {
                                             if (type & config.inet2rfFilter)
                                             {
-                                                String tnc2Raw = "";
-                                                char *strtmp = (char *)calloc(350, sizeof(char));
-                                                if (strtmp)
-                                                {
-                                                    if (config.aprs_ssid == 0)
-                                                        sprintf(strtmp, "%s>APE32A", config.aprs_mycall);
-                                                    else
-                                                        sprintf(strtmp, "%s-%d>APE32A", config.aprs_mycall, config.aprs_ssid);
-                                                    tnc2Raw = String(strtmp);
-                                                    tnc2Raw += ",RFONLY"; // fix path to rf only not send loop to inet
-                                                    tnc2Raw += ":}";      // 3rd-party frame
-                                                    tnc2Raw += line;
-                                                    pkgTxPush(tnc2Raw.c_str(), tnc2Raw.length(), 0, RF_CHANNEL);
-                                                    char sts[50];
-                                                    sprintf(sts, "--SRC CALL--\n%s\n", src_call.c_str());
+                                                static char tnc2_buf[900];
+                                                int prefixLen;
+                                                if (config.aprs_ssid == 0)
+                                                    prefixLen = snprintf(tnc2_buf, sizeof(tnc2_buf), "%s>APE32A,RFONLY:}", config.aprs_mycall);
+                                                else
+                                                    prefixLen = snprintf(tnc2_buf, sizeof(tnc2_buf), "%s-%d>APE32A,RFONLY:}", config.aprs_mycall, config.aprs_ssid);
+                                                if (prefixLen < 0)
+                                                    prefixLen = 0;
+                                                if ((size_t)prefixLen >= sizeof(tnc2_buf))
+                                                    prefixLen = sizeof(tnc2_buf) - 1;
+                                                size_t remain = sizeof(tnc2_buf) - (size_t)prefixLen - 1;
+                                                size_t copyLen = (lineLen < remain) ? lineLen : remain;
+                                                memcpy(tnc2_buf + prefixLen, line_buf, copyLen);
+                                                size_t totalLen = (size_t)prefixLen + copyLen;
+                                                tnc2_buf[totalLen] = 0;
+                                                pkgTxPush(tnc2_buf, totalLen, 0, RF_CHANNEL);
+                                                char sts[50];
+                                                sprintf(sts, "--SRC CALL--\n%s\n", src_call);
 #if defined OLED || defined ST7735_160x80 || defined GUI_LCD
-                                                    if (config.oled_enable)
-                                                        pushTxDisp(TXCH_3PTY, "TX INET->RF", sts);
+                                                if (config.oled_enable)
+                                                    pushTxDisp(TXCH_3PTY, "TX INET->RF", sts);
 #endif
-                                                    status.inet2rf++;
-                                                    igateTLM.INET2RF++;
-                                                    log_d("INET2RF: %s\n", line);
-                                                    free(strtmp);
-                                                }
-                                                tnc2Raw.clear();
+                                                status.inet2rf++;
+                                                igateTLM.INET2RF++;
+                                                log_d("INET2RF: %s\n", line_buf);
                                             }
                                         }
                                     }
                                     free(raw);
                                 }
-                                info.clear();
                             }
-                            src_call.clear();
-                            msg_call.clear();
                         }
-                        line.clear();
                     }
                 }
             }
