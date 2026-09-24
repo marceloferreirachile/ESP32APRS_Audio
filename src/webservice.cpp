@@ -3772,8 +3772,12 @@ void handle_msg(AsyncWebServerRequest *request)
 	}
 	else
 	{
-		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", 28000);
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks).
+		// v2.1.3-lu6jmf: bumped 28000->36000 - BLN Active-for/schedule-preview rows and the
+		// Objects section pushed real content past 28000, forcing a mid-stream realloc that
+		// could fail under heap fragmentation and truncate the page (seen live: cut off
+		// partway through Object4, Apply button + <script> with setValue() never sent).
+		AsyncResponseStream *html = request->beginResponseStream("text/html", 36000);
 		if (!html)
 		{
 			return; // Memory allocation failed
@@ -3821,6 +3825,9 @@ void handle_msg(AsyncWebServerRequest *request)
 		html->print("</script>\n");
 
 		// html->print("<h2>System Setting</h2>\n");
+		// v2.1.2-lu6jmf: TEMP debug marker so it is unmistakable in the browser whether a
+		// given reflash actually took (remove once News1-5/minutes/schedule are confirmed working)
+		html->print("<div style=\"background:#ffeb3b;color:#000;text-align:center;padding:6px;font-weight:bold;border:3px solid red;font-size:14pt;\">FIRMWARE BUILD: " __DATE__ " " __TIME__ "</div>\n");
 		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formMSG\" method=\"post\">\n");
 		html->print("<table width=\"90%\">\n");
 		html->print("<th colspan=\"2\"><span><b>Message Configuration</b></span></th>\n");
@@ -3962,6 +3969,8 @@ void handle_msg(AsyncWebServerRequest *request)
 		html->print("</tr>\n");
 		for (uint8_t bi = 0; bi < 9; bi++)
 		{
+			char schedPreview[220];
+			schedPreview[0] = 0; // v2.1.3-lu6jmf: filled for News rows, printed as its own full-width row below
 			html->print("<tr>\n");
 			if (bi < 4)
 				snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><b>BLN%d</b></td>\n", bi + 1);
@@ -4014,9 +4023,8 @@ void handle_msg(AsyncWebServerRequest *request)
 				uint16_t baseTMin = config.bln_interval[bi] / 60;
 				if (baseTMin < 5)
 					baseTMin = 5; // floor: 5 min minimum, client- and server-side
-				char schedPreview[220];
 				buildNewsSchedulePreview(schedPreview, sizeof(schedPreview), baseTMin);
-				snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:90%%;box-sizing:border-box;\" min=\"5\" max=\"1440\" name=\"blnInv%d\" type=\"number\" value=\"%d\" title=\"Base T (min), min 5\" /><br /><span style=\"font-size:7pt;color:#555;\">sends: %s</span></td>\n", bi + 1, baseTMin, schedPreview);
+				snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:90%%;box-sizing:border-box;\" min=\"5\" max=\"1440\" name=\"blnInv%d\" type=\"number\" value=\"%d\" title=\"Base T (min), min 5\" /></td>\n", bi + 1, baseTMin);
 				html->print(temp_buffer);
 			}
 
@@ -4046,6 +4054,16 @@ void handle_msg(AsyncWebServerRequest *request)
 			html->print(temp_buffer);
 
 			html->print("</tr>\n");
+
+			if (bi >= 4)
+			{
+				// v2.1.3-lu6jmf: schedule preview gets its own full-width row - the Interval
+				// column is too narrow (14%) to show it inline without getting cut off
+				snprintf(temp_buffer, sizeof(temp_buffer),
+					"<tr><td colspan=\"2\"></td><td colspan=\"5\" style=\"text-align:left;font-size:7pt;color:#555;padding-top:0;padding-bottom:4px;\">sends: %s</td></tr>\n",
+					schedPreview);
+				html->print(temp_buffer);
+			}
 		}
 		html->print("<tr><td colspan=\"7\" align=\"right\">\n");
 		html->print("<div><button class=\"button\" type='submit' id='submitBLN' name=\"commitBLN\"> Apply Change </button></div>\n");
@@ -4069,16 +4087,15 @@ void handle_msg(AsyncWebServerRequest *request)
 			html->print(temp_buffer);
 
 			snprintf(temp_buffer, sizeof(temp_buffer),
-				"<tr><td align=\"right\"><b>Item/Obj Name:</b></td><td align=\"left\"><input maxlength=\"9\" name=\"objName%d\" type=\"text\" value=\"%s\" /> <i>3-9 character</i></td></tr>\n",
-				oi + 1, config.obj_name[oi]);
+				"<tr><td align=\"right\"><b>Item/Obj Name:</b></td><td align=\"left\"><input maxlength=\"9\" name=\"objName%d\" type=\"text\" value=\"%s\" />%s</td></tr>\n",
+				oi + 1, config.obj_name[oi], (oi == 0) ? " <i>3-9 character</i>" : "");
 			html->print(temp_buffer);
 
 			snprintf(temp_buffer, sizeof(temp_buffer),
 				"<tr><td align=\"right\"><b>Latitude / Longitude:</b></td><td align=\"left\">"
 				"<input style=\"width:120px;\" step=\"0.00001\" name=\"objLat%d\" type=\"number\" value=\"%.5f\" /> "
-				"<input style=\"width:120px;\" step=\"0.00001\" name=\"objLon%d\" type=\"number\" value=\"%.5f\" /> "
-				"<i>independent of the digi's own position</i></td></tr>\n",
-				oi + 1, config.obj_lat[oi], oi + 1, config.obj_lon[oi]);
+				"<input style=\"width:120px;\" step=\"0.00001\" name=\"objLon%d\" type=\"number\" value=\"%.5f\" />%s</td></tr>\n",
+				oi + 1, config.obj_lat[oi], oi + 1, config.obj_lon[oi], (oi == 0) ? " <i>independent of the digi's own position</i>" : "");
 			html->print(temp_buffer);
 
 			{
@@ -4089,10 +4106,11 @@ void handle_msg(AsyncWebServerRequest *request)
 				int objTableNum = (objTableCh == '\\') ? 2 : 1;
 				snprintf(temp_buffer, sizeof(temp_buffer),
 					"<tr><td align=\"right\"><b>Symbol:</b></td><td align=\"left\">Table:"
-					"<input maxlength=\"1\" size=\"1\" id=\"obj%dTable\" name=\"obj%dTable\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:"
-					"<input maxlength=\"1\" size=\"1\" id=\"obj%dSymbol\" name=\"obj%dSymbol\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> "
-					"<img border=\"1\" style=\"vertical-align: middle;\" id=\"obj%dImgSymbol\" onclick=\"openWindowSymbolObj(%d);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-%d.png\"> <i>*Click icon for select symbol</i></td></tr>\n",
-					oi + 1, oi + 1, objTableCh, oi + 1, oi + 1, objSymCh, oi + 1, oi, (int)objSymCh, objTableNum);
+					"<input maxlength=\"1\" size=\"1\" id=\"obj%dTable\" name=\"obj%dTable\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" oninput=\"objSymRefresh(%d);\" /> Symbol:"
+					"<input maxlength=\"1\" size=\"1\" id=\"obj%dSymbol\" name=\"obj%dSymbol\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" oninput=\"objSymRefresh(%d);\" /> "
+					"<img border=\"1\" style=\"vertical-align: middle;\" id=\"obj%dImgSymbol\" onclick=\"openWindowSymbolObj(%d);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-%d.png\">%s</td></tr>\n",
+					oi + 1, oi + 1, objTableCh, oi, oi + 1, oi + 1, objSymCh, oi, oi + 1, oi, (int)objSymCh, objTableNum,
+					(oi == 0) ? " <i>*Click icon or type Table/Symbol directly</i>" : "");
 				html->print(temp_buffer);
 			}
 
@@ -4101,8 +4119,9 @@ void handle_msg(AsyncWebServerRequest *request)
 				snprintf(temp_buffer, sizeof(temp_buffer),
 					"<tr><td align=\"right\"><b>Text/Comment:</b></td><td align=\"left\"><input style=\"width:96%%;box-sizing:border-box;\" maxlength=\"%d\" name=\"objText%d\" type=\"text\" value=\"%s\" "
 					"oninput=\"var n=this.maxLength-this.value.length;var c=document.getElementById('objCnt%d');c.textContent=n+' left';c.style.color=(n<0)?'red':'#2e7d32';\" /><br />"
-					"<span id=\"objCnt%d\" style=\"font-size:8pt;color:%s;\">%d left (own buffer, not shared)</span></td></tr>\n",
-					STATUS_SIZE - 1, oi + 1, config.obj_text[oi], oi + 1, oi + 1, (objCharsLeft < 0) ? "red" : "#2e7d32", objCharsLeft);
+					"<span id=\"objCnt%d\" style=\"font-size:8pt;color:%s;\">%d left</span>%s</td></tr>\n",
+					STATUS_SIZE - 1, oi + 1, config.obj_text[oi], oi + 1, oi + 1, (objCharsLeft < 0) ? "red" : "#2e7d32", objCharsLeft,
+					(oi == 0) ? " <i style=\"font-size:8pt;\">(own buffer, not shared)</i>" : "");
 				html->print(temp_buffer);
 			}
 
@@ -4133,16 +4152,20 @@ void handle_msg(AsyncWebServerRequest *request)
 						objAfOpts[k], (config.obj_activefor[oi] == objAfOpts[k]) ? " selected" : "", objAfOpts[k]);
 					html->print(temp_buffer);
 				}
-				html->print("</select><br /><i>either mode (Permanent off): never exceeds 72h total send time</i></td></tr>\n");
+				if (oi == 0)
+					html->print("</select><br /><i>either mode (Permanent off): never exceeds 72h total send time</i></td></tr>\n");
+				else
+					html->print("</select></td></tr>\n");
 			}
 
 			snprintf(temp_buffer, sizeof(temp_buffer),
-				"<tr><td align=\"right\"><b>Permanent / Never disable:</b></td><td align=\"left\"><label class=\"switch\"><input type=\"checkbox\" name=\"objPerm%d\" value=\"OK\"%s><span class=\"slider round\"></span></label> "
-				"<i>if checked, ignores Interval and the 72h cap entirely</i></td></tr>\n",
-				oi + 1, config.obj_permanent[oi] ? " checked" : "");
+				"<tr><td align=\"right\"><b>Permanent / Never disable:</b></td><td align=\"left\"><label class=\"switch\"><input type=\"checkbox\" name=\"objPerm%d\" value=\"OK\"%s><span class=\"slider round\"></span></label>%s</td></tr>\n",
+				oi + 1, config.obj_permanent[oi] ? " checked" : "", (oi == 0) ? " <i>if checked, ignores Interval and the 72h cap entirely</i>" : "");
 			html->print(temp_buffer);
 
-			html->print("<tr><td align=\"right\"><b>Timestamp:</b></td><td align=\"left\"><i>always UTC (zulu), automatic - not user configurable</i></td></tr>\n");
+			html->print((oi == 0)
+				? "<tr><td align=\"right\"><b>Timestamp:</b></td><td align=\"left\"><i>always UTC (zulu), automatic - not user configurable</i></td></tr>\n"
+				: "<tr><td align=\"right\"><b>Timestamp:</b></td><td align=\"left\"><i>always UTC, automatic</i></td></tr>\n");
 		}
 		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
 		html->print("<div><button class=\"button\" type='submit' id='submitObj' name=\"commitObj\"> Apply Change </button></div>\n");
@@ -4162,6 +4185,14 @@ void handle_msg(AsyncWebServerRequest *request)
 		html->print("if(table==1){\n txttable.value='/';\n");
 		html->print("}else if(table==2){\n txttable.value='\\\\';\n}\n");
 		html->print("imgicon.src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n");
+		html->print("}\n");
+		html->print("function objSymRefresh(sel) {\n");
+		html->print("var txtsymbol=document.getElementById('obj'+(sel+1)+'Symbol');\n");
+		html->print("var txttable=document.getElementById('obj'+(sel+1)+'Table');\n");
+		html->print("var imgicon=document.getElementById('obj'+(sel+1)+'ImgSymbol');\n");
+		html->print("var sym=txtsymbol.value.charCodeAt(0);\n");
+		html->print("var tbl=(txttable.value=='\\\\')?2:1;\n");
+		html->print("if(!isNaN(sym)&&sym>0){\n imgicon.src = \"http://aprs.nakhonthai.net/symbols/icons/\"+sym.toString()+'-'+tbl.toString()+'.png';\n}\n");
 		html->print("}\n");
 		html->print("</script>\n");
 
