@@ -1,0 +1,9 @@
+New in this release, on the MSG tab:
+
+- BLN Alerts (BLN1-BLN4): fixed interval dropdown (5/10/15/30/60 min), plus an "Active for" deadline (24/36/48/72h, default 24h).
+- BLN News (renamed NEWS1-NEWS5): same interval dropdown as Alerts (used as the base T), growing-gap progression (immediate, then +2T, +3T, +4T...), with a live "sends: ..." schedule preview and its own "Active for" (24/36/48/72h, default 24h).
+- Objects (Object1-Object4): new section below BLN. Each slot sends a real APRS Object Report (own name, position, symbol, comment) independent of the digi's own location. Interval is Fixed (15/30/60 min) or "Active for" (24/36/48/72h), capped at 72h total unless Permanent is checked (Objects-only).
+- Live character-remaining counter on every BLN/NEWS/Object text field.
+- Uses the same Path/TX Channel as Message Configuration, same as BLN always did.
+
+BLN slots are now BLN1-BLN4 (Alerts) + NEWS1-NEWS5 (News) - existing BLN1-BLN4 setups keep working as before.

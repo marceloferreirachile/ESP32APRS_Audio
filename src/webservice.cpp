@@ -3608,13 +3608,10 @@ void handle_msg(AsyncWebServerRequest *request)
 				}
 				if (argName == fieldInt)
 				{
+					// v2.1.4-lu6jmf: Alerts and News share the same preset dropdown now (seconds),
+					// so both branches read the same way - no more *60 for News.
 					if (isValidNumber(request->arg(i)))
-					{
-						if (bi < 4)
-							blnInterval[bi] = request->arg(i).toInt(); // Alerts: seconds (preset dropdown values)
-						else
-							blnInterval[bi] = request->arg(i).toInt() * 60; // v2.1.2-lu6jmf: News field is minutes now, stored internally as seconds
-					}
+						blnInterval[bi] = request->arg(i).toInt();
 				}
 				if (argName == fieldLimit)
 				{
@@ -3827,7 +3824,7 @@ void handle_msg(AsyncWebServerRequest *request)
 		// html->print("<h2>System Setting</h2>\n");
 		// v2.1.2-lu6jmf: TEMP debug marker so it is unmistakable in the browser whether a
 		// given reflash actually took (remove once News1-5/minutes/schedule are confirmed working)
-		html->print("<div style=\"background:#ffeb3b;color:#000;text-align:center;padding:6px;font-weight:bold;border:3px solid red;font-size:14pt;\">FIRMWARE BUILD: " __DATE__ " " __TIME__ "</div>\n");
+		html->print("<div style=\"text-align:right;color:#999;font-size:7pt;padding:2px 4px;\">build " __DATE__ " " __TIME__ "</div>\n");
 		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formMSG\" method=\"post\">\n");
 		html->print("<table width=\"90%\">\n");
 		html->print("<th colspan=\"2\"><span><b>Message Configuration</b></span></th>\n");
@@ -4000,32 +3997,31 @@ void handle_msg(AsyncWebServerRequest *request)
 				html->print(temp_buffer);
 			}
 
-			if (bi < 4)
 			{
-				// BLN Alerts: closed dropdown - 5/10/15/30/60 min (300/600/900/1800/3600s)
-				static const uint16_t alertOpts[5] = {300, 600, 900, 1800, 3600};
-				static const char *alertLabels[5] = {"5 min", "10 min", "15 min", "30 min", "60 min"};
+				// v2.1.4-lu6jmf: Alerts and News now share the exact same closed dropdown -
+				// 5/10/15/30/60 min (300/600/900/1800/3600s). For News this is just the base T;
+				// the growing-gap math (below) still makes the real gaps grow from there.
+				static const uint16_t intervalOpts[5] = {300, 600, 900, 1800, 3600};
+				static const char *intervalLabels[5] = {"5 min", "10 min", "15 min", "30 min", "60 min"};
 				char sel[600];
 				snprintf(sel, sizeof(sel), "<td style=\"text-align: left;\"><select style=\"width:96%%;box-sizing:border-box;\" name=\"blnInv%d\">", bi + 1);
 				html->print(sel);
 				for (uint8_t k = 0; k < 5; k++)
 				{
 					snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\"%s>%s</option>",
-						alertOpts[k], (config.bln_interval[bi] == alertOpts[k]) ? " selected" : "", alertLabels[k]);
+						intervalOpts[k], (config.bln_interval[bi] == intervalOpts[k]) ? " selected" : "", intervalLabels[k]);
 					html->print(temp_buffer);
 				}
 				html->print("</select></td>\n");
-			}
-			else
-			{
-				// NEWS1-NEWS5: base T shown/entered in MINUTES (v2.1.2-lu6jmf: was raw seconds, now
-				// standardized with Alerts). Still stored internally in config.bln_interval[] as seconds.
-				uint16_t baseTMin = config.bln_interval[bi] / 60;
-				if (baseTMin < 5)
-					baseTMin = 5; // floor: 5 min minimum, client- and server-side
-				buildNewsSchedulePreview(schedPreview, sizeof(schedPreview), baseTMin);
-				snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:90%%;box-sizing:border-box;\" min=\"5\" max=\"1440\" name=\"blnInv%d\" type=\"number\" value=\"%d\" title=\"Base T (min), min 5\" /></td>\n", bi + 1, baseTMin);
-				html->print(temp_buffer);
+
+				if (bi >= 4)
+				{
+					// NEWS1-NEWS5: base T is now always one of the same 5 preset values, in seconds
+					uint16_t baseTMin = config.bln_interval[bi] / 60;
+					if (baseTMin < 5)
+						baseTMin = 5; // floor: 5 min minimum, in case of an old saved value below that
+					buildNewsSchedulePreview(schedPreview, sizeof(schedPreview), baseTMin);
+				}
 			}
 
 			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:90%%;box-sizing:border-box;\" min=\"0\" max=\"65535\" name=\"blnLim%d\" type=\"number\" value=\"%d\" /></td>\n", bi + 1, config.bln_limit[bi]);
