@@ -3378,6 +3378,55 @@ void handle_mqtt(AsyncWebServerRequest *request)
 }
 #endif
 
+// v2.1.2-lu6jmf: format a minute count as a short human string (min / h / days)
+static void formatMinutesShort(char *buf, size_t bufSize, unsigned long totalMinutes)
+{
+	if (totalMinutes < 60)
+	{
+		snprintf(buf, bufSize, "%lumin", totalMinutes);
+	}
+	else if (totalMinutes < 1440)
+	{
+		unsigned long h = totalMinutes / 60;
+		unsigned long m = totalMinutes % 60;
+		if (m == 0)
+			snprintf(buf, bufSize, "%luh", h);
+		else
+			snprintf(buf, bufSize, "%luh%02lumin", h, m);
+	}
+	else
+	{
+		unsigned long d = totalMinutes / 1440;
+		unsigned long h = (totalMinutes % 1440) / 60;
+		if (h == 0)
+			snprintf(buf, bufSize, "%lud", d);
+		else
+			snprintf(buf, bufSize, "%lud%luh", d, h);
+	}
+}
+
+// v2.1.2-lu6jmf: preview of the resulting NEWS send schedule (growing-gap: msg1 immediate,
+// then gaps 2T,3T,4T,5T,... -> cumulative offsets 0, 2T, 5T, 9T, 14T, 20T, ...)
+static void buildNewsSchedulePreview(char *buf, size_t bufSize, uint16_t baseTMinutes)
+{
+	if (baseTMinutes < 5)
+		baseTMinutes = 5;
+	buf[0] = 0;
+	char part[16];
+	for (uint8_t k = 0; k <= 5; k++)
+	{
+		unsigned long offsetMin = (k == 0) ? 0UL : (unsigned long)baseTMinutes * k * (k + 3) / 2UL;
+		if (k == 0)
+			strlcpy(part, "0", sizeof(part));
+		else
+			formatMinutesShort(part, sizeof(part), offsetMin);
+		if (k > 0)
+			strlcat(buf, " -> ", bufSize);
+		strlcat(buf, part, bufSize);
+	}
+	strlcat(buf, " -> ...", bufSize);
+}
+
 void handle_msg(AsyncWebServerRequest *request)
 {
 	if (!request->authenticate(config.http_username, config.http_password))
@@ -3560,7 +3609,12 @@ void handle_msg(AsyncWebServerRequest *request)
 				if (argName == fieldInt)
 				{
 					if (isValidNumber(request->arg(i)))
-						blnInterval[bi] = request->arg(i).toInt();
+					{
+						if (bi < 4)
+							blnInterval[bi] = request->arg(i).toInt(); // Alerts: seconds (preset dropdown values)
+						else
+							blnInterval[bi] = request->arg(i).toInt() * 60; // v2.1.2-lu6jmf: News field is minutes now, stored internally as seconds
+					}
 				}
 				if (argName == fieldLimit)
 				{
@@ -3787,7 +3841,7 @@ void handle_msg(AsyncWebServerRequest *request)
 
 		html->print("<tr>\n");
 		html->print("<td align=\"right\"><b>My Callsign:</b></td>\n");
-		char temp_buffer[512];
+		char temp_buffer[1200]; // v2.1.1-lu6jmf: bumped from 512 - the Objects Interval/Symbol rows are longer than that
 		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input  size=\"20\" maxlength=\"9\" name=\"mycall\" type=\"text\" value=\"%s\" /> *<i>Callsign with SSID (Ex. HS5TQA-12)</i></td>\n", config.msg_mycall);
 		html->print(temp_buffer);
 		html->print("</tr>\n");
@@ -3894,7 +3948,8 @@ void handle_msg(AsyncWebServerRequest *request)
 		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formBLN\" method=\"post\">\n");
 		html->print("<table width=\"90%\" style=\"table-layout:fixed;border-collapse:collapse;\">\n");
 		// Bulletins BLN1-BLN9 UI - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
-	html->print("<th colspan=\"7\" style=\"background-color: #070ac2;\"><span><b>Bulletins: BLN1-BLN4 Alerts, NEWS5-NEWS9</b></span></th>\n");
+		// v2.1-lu6jmf: BLN1-BLN4 = Alerts, NEWS1-NEWS5 = News (renamed for a clear visual pattern)
+	html->print("<th colspan=\"7\" style=\"background-color: #070ac2;\"><span><b>Bulletins: BLN1-BLN4 Alerts, NEWS1-NEWS5</b></span></th>\n");
 		html->print("<tr><td colspan=\"7\"><i>Uses the same TX Channel/PATH as Message Configuration above.</i></td></tr>\n");
 		html->print("<tr>");
 		html->print("<td align=\"center\" style=\"width:6%;\"><b>#</b></td>");
@@ -3908,8 +3963,10 @@ void handle_msg(AsyncWebServerRequest *request)
 		for (uint8_t bi = 0; bi < 9; bi++)
 		{
 			html->print("<tr>\n");
-			// v2.1-lu6jmf: BLN1-BLN4 = Alerts, NEWS5-NEWS9 = News (renamed for a clear visual pattern)
-			snprintf(temp_buffer, sizeof(temp_buffer), (bi < 4) ? "<td align=\"center\"><b>BLN%d</b></td>\n" : "<td align=\"center\"><b>NEWS%d</b></td>\n", bi + 1);
+			if (bi < 4)
+				snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><b>BLN%d</b></td>\n", bi + 1);
+			else
+				snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><b>NEWS%d</b></td>\n", bi - 3); // v2.1.2-lu6jmf: News slots renumbered to start at 1
 			html->print(temp_buffer);
 
 			if (config.bln_en[bi])
@@ -3952,8 +4009,14 @@ void handle_msg(AsyncWebServerRequest *request)
 			}
 			else
 			{
-				// NEWS5-NEWS9: base T in seconds, free entry but floored at 300s (5 min) client- and server-side
-				snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:90%%;box-sizing:border-box;\" min=\"300\" max=\"86400\" name=\"blnInv%d\" type=\"number\" value=\"%d\" title=\"Base T (sec.), min 300 = 5 min\" /></td>\n", bi + 1, config.bln_interval[bi]);
+				// NEWS1-NEWS5: base T shown/entered in MINUTES (v2.1.2-lu6jmf: was raw seconds, now
+				// standardized with Alerts). Still stored internally in config.bln_interval[] as seconds.
+				uint16_t baseTMin = config.bln_interval[bi] / 60;
+				if (baseTMin < 5)
+					baseTMin = 5; // floor: 5 min minimum, client- and server-side
+				char schedPreview[220];
+				buildNewsSchedulePreview(schedPreview, sizeof(schedPreview), baseTMin);
+				snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:90%%;box-sizing:border-box;\" min=\"5\" max=\"1440\" name=\"blnInv%d\" type=\"number\" value=\"%d\" title=\"Base T (min), min 5\" /><br /><span style=\"font-size:7pt;color:#555;\">sends: %s</span></td>\n", bi + 1, baseTMin, schedPreview);
 				html->print(temp_buffer);
 			}
 
@@ -3970,7 +4033,7 @@ void handle_msg(AsyncWebServerRequest *request)
 				{
 					if (afOpts[k] == 0)
 						snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"0\"%s>Default (%dh)</option>",
-							(config.bln_activefor[bi] == 0) ? " selected" : "", (bi < 4) ? 72 : 24);
+							(config.bln_activefor[bi] == 0) ? " selected" : "", 24);
 					else
 						snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\"%s>%dh</option>",
 							afOpts[k], (config.bln_activefor[bi] == afOpts[k]) ? " selected" : "", afOpts[k]);
@@ -3992,7 +4055,7 @@ void handle_msg(AsyncWebServerRequest *request)
 
 		// --- v2.1-lu6jmf: Objects (Object1-Object4) ---
 		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formObj\" method=\"post\">\n");
-		html->print("<table width=\"90%\" style=\"table-layout:fixed;border-collapse:collapse;\">\n");
+		html->print("<table width=\"90%\" style=\"border-collapse:collapse;\">\n");
 		html->print("<th colspan=\"2\" style=\"background-color: #070ac2;\"><span><b>Objects: Object1-Object4</b></span></th>\n");
 		html->print("<tr><td colspan=\"2\"><i>Uses the same TX Channel/PATH as Message Configuration above.</i></td></tr>\n");
 		for (uint8_t oi = 0; oi < 4; oi++)

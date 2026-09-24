@@ -6757,8 +6757,8 @@ int igateTlmInvCount = 0;
 uint16_t blnSentCount[9] = {0}; // RAM-only counter, resets on reboot or when a bulletin is (re)enabled
 // --- v2.1-lu6jmf: BLN Active-for tracking + NEWS5-NEWS9 growing-gap state (RAM-only) ---
 unsigned long blnActivatedAt[9] = {0};   // millis() when each slot was (re)enabled, for the Active-for deadline
-unsigned long blnNewsGap[9] = {0};       // NEWS5-NEWS9 only: current gap in ms, grows by +T after every send
-bool blnNewsFirstSent[9] = {false};      // NEWS5-NEWS9 only: whether the immediate msg1 already went out
+unsigned long blnNewsGap[9] = {0};       // NEWS1-NEWS5 only: current gap in ms, grows by +T after every send
+bool blnNewsFirstSent[9] = {false};      // NEWS1-NEWS5 only: whether the immediate msg1 already went out
 // --- v2.1-lu6jmf: Objects (Object1-Object4) runtime state (RAM-only) ---
 unsigned long objActivatedAt[4] = {0};
 unsigned long objSTSInterval[4] = {0};
@@ -7492,7 +7492,7 @@ void taskAPRS(void *pvParameters)
 
                 uint8_t activeForHours = config.bln_activefor[bi];
                 if (activeForHours == 0)
-                    activeForHours = (bi < 4) ? 72 : 24; // default if not chosen: Alerts 72h, News 24h
+                    activeForHours = 24; // default if not chosen: 24h for both Alerts and News (user can raise it)
                 if (activeForHours > 72)
                     activeForHours = 72; // hard ceiling - BLN/NEWS never have the Objects' Permanent escape hatch
                 unsigned long activeForMs = (unsigned long)activeForHours * 3600000UL;
@@ -7500,7 +7500,10 @@ void taskAPRS(void *pvParameters)
                 if (millis() - blnActivatedAt[bi] >= activeForMs)
                 {
                     char slotCall[8];
-                    snprintf(slotCall, sizeof(slotCall), (bi < 4) ? "BLN%d" : "NEWS%d", bi + 1);
+                    if (bi < 4)
+                        snprintf(slotCall, sizeof(slotCall), "BLN%d", bi + 1);
+                    else
+                        snprintf(slotCall, sizeof(slotCall), "NEWS%d", bi - 3); // v2.1.2-lu6jmf: News slots renumbered to start at 1
                     config.bln_en[bi] = false;
                     blnActivatedAt[bi] = 0;
                     blnNewsFirstSent[bi] = false;
@@ -7531,13 +7534,13 @@ void taskAPRS(void *pvParameters)
                 }
                 else
                 {
-                    // --- NEWS5-NEWS9: growing-gap progression. msg1 immediate, then gaps 2T,3T,4T,5T... ---
+                    // --- NEWS1-NEWS5: growing-gap progression. msg1 immediate, then gaps 2T,3T,4T,5T... ---
                     uint16_t baseT = config.bln_interval[bi]; // seconds
                     if (baseT < 300)
                         baseT = 300; // firmware floor: 5 min minimum, never lower
 
                     char newsCall[8];
-                    snprintf(newsCall, sizeof(newsCall), "NEWS%d", bi + 1);
+                    snprintf(newsCall, sizeof(newsCall), "NEWS%d", bi - 3); // v2.1.2-lu6jmf: News slots renumbered to start at 1
 
                     if (!blnNewsFirstSent[bi])
                     {
