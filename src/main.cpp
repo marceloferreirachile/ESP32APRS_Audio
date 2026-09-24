@@ -2900,6 +2900,10 @@ bool pkgTxPush(const char *info, size_t len, int dly, uint8_t Ch)
     // }
 
     // Add
+    // v2.1.4-lu6jmf: report whether a free slot was actually found. Was previously
+    // always "return true" even when the queue was full and nothing got queued -
+    // callers had no way to know a packet had been silently dropped.
+    bool queued = false;
     for (int i = 0; i < PKGTXSIZE; i++)
     {
         if (txQueue[i].Active == false)
@@ -2913,11 +2917,14 @@ bool pkgTxPush(const char *info, size_t len, int dly, uint8_t Ch)
             txQueue[i].Active = true;
             txQueue[i].timeStamp = millis();
             txQueue[i].Channel = Ch;
+            queued = true;
             break;
         }
     }
     psramUnlock();
-    return true;
+    if (!queued)
+        log_d("pkgTxPush: TX queue full (%d slots), packet dropped: %s", PKGTXSIZE, info);
+    return queued;
 }
 
 bool pkgTxSend()
@@ -4088,10 +4095,10 @@ String getTimeStamp()
 // (mandatory identification - never the object's own name), and the same
 // Path/TX Channel as the Message Configuration section (config.msg_path/msg_rf/msg_inet),
 // shared with BLN, per spec.
-void sendAPRSObject(uint8_t idx, const char *name, double lat, double lon, const char *symbol, const String &comment)
+bool sendAPRSObject(uint8_t idx, const char *name, double lat, double lon, const char *symbol, const String &comment)
 {
     if (strlen(name) < 3)
-        return;
+        return false;
 
     char objName[10];
     memset(objName, 0x20, 9);
@@ -4137,8 +4144,10 @@ void sendAPRSObject(uint8_t idx, const char *name, double lat, double lon, const
         SendMode |= RF_CHANNEL;
     if (config.msg_inet)
         SendMode |= INET_CHANNEL;
-    pkgTxPush(packet.c_str(), packet.length(), 0, SendMode);
-    log_d("Object%d sent TNC2: %s", idx + 1, packet.c_str());
+    bool ok = pkgTxPush(packet.c_str(), packet.length(), 0, SendMode);
+    if (ok)
+        log_d("Object%d sent TNC2: %s", idx + 1, packet.c_str());
+    return ok;
 }
 
 int pkgCount = 0;
@@ -7499,11 +7508,15 @@ void taskAPRS(void *pvParameters)
 
                 if (millis() - blnActivatedAt[bi] >= activeForMs)
                 {
-                    char slotCall[8];
+                    char slotCall[16];
                     if (bi < 4)
                         snprintf(slotCall, sizeof(slotCall), "BLN%d", bi + 1);
                     else
-                        snprintf(slotCall, sizeof(slotCall), "NEWS%d", bi - 3); // v2.1.2-lu6jmf: News slots renumbered to start at 1
+                        // v2.1.4-lu6jmf: Group Bulletin format (BLN + digit + up to-5-char group
+                        // name, per APRS101.pdf ch.14) - recognized as a bulletin everywhere, while
+                        // still showing "NEWS" in the raw address so it's visually distinct from Alerts.
+                        // sendAPRSMessage() pads/truncates the addressee to the required 9 bytes.
+                        snprintf(slotCall, sizeof(slotCall), "BLN%dNEWS", bi + 1);
                     config.bln_en[bi] = false;
                     blnActivatedAt[bi] = 0;
                     blnNewsFirstSent[bi] = false;
@@ -7539,8 +7552,11 @@ void taskAPRS(void *pvParameters)
                     if (baseT < 300)
                         baseT = 300; // firmware floor: 5 min minimum, never lower
 
-                    char newsCall[8];
-                    snprintf(newsCall, sizeof(newsCall), "NEWS%d", bi - 3); // v2.1.2-lu6jmf: News slots renumbered to start at 1
+                    // v2.1.4-lu6jmf: the on-air addressee MUST start with "BLN" to be recognized as an
+                    // APRS bulletin by receiving stations/radios (APRS spec: bulletin ID = BLN + one digit).
+                    // "NEWS1-NEWS5" is only the label shown in our own web UI - real radios never see it.
+                    char newsCall[16];
+                    snprintf(newsCall, sizeof(newsCall), "BLN%dNEWS", bi + 1); // v2.1.4-lu6jmf: Group Bulletin (see slotCall comment above)
 
                     if (!blnNewsFirstSent[bi])
                     {
@@ -7612,33 +7628,37 @@ void taskAPRS(void *pvParameters)
                         }
                         else
                         {
+                            // v2.1.4-lu6jmf: only advance objSTSInterval (the "next send" clock)
+                            // AFTER a confirmed successful queue push. If the shared TX queue was
+                            // full, sendAPRSObject() now returns false, the clock is left alone, and
+                            // dueToSend stays true - so this retries again on the very next tick
+                            // (milliseconds later) instead of silently skipping the whole interval.
+                            // taskAPRS is the only task that drains the queue, so we deliberately do
+                            // NOT block/wait here - that would deadlock this same task.
                             bool dueToSend = false;
+                            uint16_t ivl = 900; // Active-for-duration mode: fixed 15-min floor
                             if (config.obj_mode[oi] == 0)
                             {
                                 // Fixed interval mode: dropdown 900/1800/3600s (15/30/60min)
-                                uint16_t ivl = config.obj_interval[oi];
+                                ivl = config.obj_interval[oi];
                                 if (ivl < 900)
                                     ivl = 900;
-                                if (objSTSInterval[oi] == 0 || millis() > objSTSInterval[oi])
-                                {
-                                    dueToSend = true;
-                                    objSTSInterval[oi] = millis() + ((unsigned long)ivl * 1000UL);
-                                }
                             }
-                            else
-                            {
-                                // Active-for-duration mode: send at a fixed 15-min floor, capped by the deadline above
-                                if (objSTSInterval[oi] == 0 || millis() > objSTSInterval[oi])
-                                {
-                                    dueToSend = true;
-                                    objSTSInterval[oi] = millis() + 900000UL;
-                                }
-                            }
+                            if (objSTSInterval[oi] == 0 || millis() > objSTSInterval[oi])
+                                dueToSend = true;
 
                             if (dueToSend)
                             {
-                                sendAPRSObject(oi, config.obj_name[oi], config.obj_lat[oi], config.obj_lon[oi],
+                                bool sent = sendAPRSObject(oi, config.obj_name[oi], config.obj_lat[oi], config.obj_lon[oi],
                                                config.obj_symbol[oi], String(config.obj_text[oi]));
+                                if (!sent)
+                                {
+                                    objSTSInterval[oi] = millis() + 2000UL; // TX queue was full - retry in 2s, don't count as sent
+                                    log_d("Object%d: TX queue full, will retry", oi + 1);
+                                }
+                                else
+                                {
+                                objSTSInterval[oi] = millis() + ((unsigned long)ivl * 1000UL);
                                 objSentCount[oi]++;
                                 log_d("Object%d (%s) sent (#%u)", oi + 1, config.obj_name[oi], objSentCount[oi]);
 
@@ -7650,6 +7670,7 @@ void taskAPRS(void *pvParameters)
                                     saveConfiguration("/default.cfg", config);
                                     log_d("Object%d reached send limit (%u), disabled", oi + 1, config.obj_limit[oi]);
                                 }
+                                } // close: sent==true branch (v2.1.4-lu6jmf)
                             }
                         }
                     }

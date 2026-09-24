@@ -3786,6 +3786,9 @@ void handle_msg(AsyncWebServerRequest *request)
 		html->print("var data = new FormData(e.currentTarget);\n");
 		html->print("if(e.currentTarget.id===\"formMSG\") document.getElementById(\"submitMSG\").disabled=true;\n");
 		html->print("if(e.currentTarget.id===\"formBLN\") document.getElementById(\"submitBLN\").disabled=true;\n");
+		// v2.1.4-lu6jmf: formObj was missing from every branch below, so its Apply Change
+		// button never showed the confirmation popup even though the save worked fine.
+		html->print("if(e.currentTarget.id===\"formObj\") document.getElementById(\"submitObj\").disabled=true;\n");
 		// html->print("if(e.currentTarget.id===\"formChat\") document.getElementById(\"submitI2C0\").disabled=true;\n");
 		html->print("$.ajax({\n");
 		html->print("url: '/msg',\n");
@@ -3796,10 +3799,12 @@ void handle_msg(AsyncWebServerRequest *request)
 		html->print("success: function (data) {\n");
 		html->print("if(e.currentTarget.id===\"formMSG\") alert(\"Submited Successfully\");\n");
 		html->print("if(e.currentTarget.id===\"formBLN\") alert(\"Submited Successfully\");\n");
+		html->print("if(e.currentTarget.id===\"formObj\") { alert(\"Submited Successfully\"); document.getElementById(\"submitObj\").disabled=false; }\n");
 		html->print("},\n");
 		html->print("error: function (data) {\n");
 		html->print("if(e.currentTarget.id===\"formMSG\") alert(\"An error occurred.\");\n");
 		html->print("if(e.currentTarget.id===\"formBLN\") alert(\"An error occurred.\");\n");
+		html->print("if(e.currentTarget.id===\"formObj\") { alert(\"An error occurred.\"); document.getElementById(\"submitObj\").disabled=false; }\n");
 		html->print("}\n");
 		html->print("});\n");
 		html->print("});\n");
@@ -3952,8 +3957,9 @@ void handle_msg(AsyncWebServerRequest *request)
 		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formBLN\" method=\"post\">\n");
 		html->print("<table width=\"90%\" style=\"table-layout:fixed;border-collapse:collapse;\">\n");
 		// Bulletins BLN1-BLN9 UI - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
-		// v2.1-lu6jmf: BLN1-BLN4 = Alerts, NEWS1-NEWS5 = News (renamed for a clear visual pattern)
-	html->print("<th colspan=\"7\" style=\"background-color: #070ac2;\"><span><b>Bulletins: BLN1-BLN4 Alerts, NEWS1-NEWS5</b></span></th>\n");
+		// v2.1.4-lu6jmf: BLN1-BLN4 = Alerts, NEWS5-NEWS9 = News. Numbers now match the real
+		// on-air BLN digit (BLN5NEWS..BLN9NEWS) so the UI label and the raw packet correlate 1:1.
+	html->print("<th colspan=\"7\" style=\"background-color: #070ac2;\"><span><b>Bulletins: BLN1-BLN4 Alerts, NEWS5-NEWS9</b></span></th>\n");
 		html->print("<tr><td colspan=\"7\"><i>Uses the same TX Channel/PATH as Message Configuration above.</i></td></tr>\n");
 		html->print("<tr>");
 		html->print("<td align=\"center\" style=\"width:6%;\"><b>#</b></td>");
@@ -3972,7 +3978,7 @@ void handle_msg(AsyncWebServerRequest *request)
 			if (bi < 4)
 				snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><b>BLN%d</b></td>\n", bi + 1);
 			else
-				snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><b>NEWS%d</b></td>\n", bi - 3); // v2.1.2-lu6jmf: News slots renumbered to start at 1
+				snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><b>NEWS%d</b></td>\n", bi + 1); // v2.1.4-lu6jmf: matches the on-air BLN digit (BLN5NEWS..BLN9NEWS)
 			html->print(temp_buffer);
 
 			if (config.bln_en[bi])
