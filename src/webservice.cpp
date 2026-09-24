@@ -3422,17 +3422,118 @@ void handle_msg(AsyncWebServerRequest *request)
 			free(html);							   // Free the allocated memory
 		}
 	}
+	else if (request->hasArg("commitObj"))
+	{
+		// v2.1-lu6jmf: Object1-Object4
+		bool objEn[4] = {false};
+		char objName[4][10];
+		double objLat[4] = {0}, objLon[4] = {0};
+		char objSymbol[4][3];
+		char objText[4][STATUS_SIZE];
+		uint8_t objMode[4] = {0};
+		uint16_t objInterval[4], objLimit[4] = {0};
+		uint8_t objActiveFor[4] = {0};
+		bool objPermanent[4] = {false};
+		for (uint8_t oi = 0; oi < 4; oi++)
+		{
+			objName[oi][0] = 0;
+			objText[oi][0] = 0;
+			objSymbol[oi][0] = config.obj_symbol[oi][0] ? config.obj_symbol[oi][0] : '/';
+			objSymbol[oi][1] = config.obj_symbol[oi][1] ? config.obj_symbol[oi][1] : 'r';
+			objSymbol[oi][2] = 0;
+			objLat[oi] = config.obj_lat[oi];
+			objLon[oi] = config.obj_lon[oi];
+			objInterval[oi] = config.obj_interval[oi] ? config.obj_interval[oi] : 900;
+		}
+		for (uint8_t i = 0; i < request->args(); i++)
+		{
+			String argName = request->argName(i);
+			for (uint8_t oi = 0; oi < 4; oi++)
+			{
+				char f[16];
+				snprintf(f, sizeof(f), "objEn%d", oi + 1);
+				if (argName == f && request->arg(i) == "OK")
+					objEn[oi] = true;
+				snprintf(f, sizeof(f), "objName%d", oi + 1);
+				if (argName == f)
+					strlcpy(objName[oi], request->arg(i).c_str(), sizeof(objName[oi]));
+				snprintf(f, sizeof(f), "objLat%d", oi + 1);
+				if (argName == f)
+					objLat[oi] = request->arg(i).toFloat(); // Arduino String has no toDouble()
+				snprintf(f, sizeof(f), "objLon%d", oi + 1);
+				if (argName == f)
+					objLon[oi] = request->arg(i).toFloat();
+				snprintf(f, sizeof(f), "obj%dTable", oi + 1);
+				if (argName == f && request->arg(i).length() > 0)
+					objSymbol[oi][0] = request->arg(i)[0];
+				snprintf(f, sizeof(f), "obj%dSymbol", oi + 1);
+				if (argName == f && request->arg(i).length() > 0)
+					objSymbol[oi][1] = request->arg(i)[0];
+				snprintf(f, sizeof(f), "objText%d", oi + 1);
+				if (argName == f)
+					strlcpy(objText[oi], request->arg(i).c_str(), sizeof(objText[oi]));
+				snprintf(f, sizeof(f), "objMode%d", oi + 1);
+				if (argName == f)
+					objMode[oi] = request->arg(i).toInt();
+				snprintf(f, sizeof(f), "objInv%d", oi + 1);
+				if (argName == f && isValidNumber(request->arg(i)))
+					objInterval[oi] = request->arg(i).toInt();
+				snprintf(f, sizeof(f), "objLim%d", oi + 1);
+				if (argName == f && isValidNumber(request->arg(i)))
+					objLimit[oi] = request->arg(i).toInt();
+				snprintf(f, sizeof(f), "objActFor%d", oi + 1);
+				if (argName == f && isValidNumber(request->arg(i)))
+					objActiveFor[oi] = request->arg(i).toInt();
+				snprintf(f, sizeof(f), "objPerm%d", oi + 1);
+				if (argName == f && request->arg(i) == "OK")
+					objPermanent[oi] = true;
+			}
+		}
+		for (uint8_t oi = 0; oi < 4; oi++)
+		{
+			config.obj_en[oi] = objEn[oi];
+			strlcpy(config.obj_name[oi], objName[oi], sizeof(config.obj_name[oi]));
+			config.obj_lat[oi] = objLat[oi];
+			config.obj_lon[oi] = objLon[oi];
+			config.obj_symbol[oi][0] = objSymbol[oi][0];
+			config.obj_symbol[oi][1] = objSymbol[oi][1];
+			config.obj_symbol[oi][2] = 0;
+			strlcpy(config.obj_text[oi], objText[oi], sizeof(config.obj_text[oi]));
+			config.obj_mode[oi] = objMode[oi];
+			config.obj_interval[oi] = objInterval[oi];
+			config.obj_limit[oi] = objLimit[oi];
+			config.obj_activefor[oi] = objActiveFor[oi];
+			config.obj_permanent[oi] = objPermanent[oi];
+		}
+		char *html = allocateStringMemory(256);
+		if (html)
+		{
+			if (saveConfiguration("/default.cfg", config))
+			{
+				strcpy(html, "Objects updated");
+				request->send(200, "text/html", html);
+			}
+			else
+			{
+				strcpy(html, "Save config failed.");
+				request->send(501, "text/html", html);
+			}
+			free(html);
+		}
+	}
 	else if (request->hasArg("commitBLN"))
 	{
 		bool blnEn[9] = {false};
 		char blnText[9][STATUS_SIZE];
 		uint16_t blnInterval[9];
 		uint16_t blnLimit[9];
+		uint8_t blnActiveFor[9]; // v2.1-lu6jmf: 0=default (72/24h), else 24/36/48/72
 		for (uint8_t bi = 0; bi < 9; bi++)
 		{
 			blnText[bi][0] = 0;
 			blnInterval[bi] = config.bln_interval[bi];
 			blnLimit[bi] = 0; // Empty field = unlimited
+			blnActiveFor[bi] = config.bln_activefor[bi];
 		}
 
 		for (uint8_t i = 0; i < request->args(); i++)
@@ -3440,11 +3541,12 @@ void handle_msg(AsyncWebServerRequest *request)
 			String argName = request->argName(i);
 			for (uint8_t bi = 0; bi < 9; bi++)
 			{
-				char fieldEn[10], fieldText[10], fieldInt[12], fieldLimit[12];
+				char fieldEn[10], fieldText[10], fieldInt[12], fieldLimit[12], fieldActFor[14];
 				snprintf(fieldEn, sizeof(fieldEn), "blnEn%d", bi + 1);
 				snprintf(fieldText, sizeof(fieldText), "blnText%d", bi + 1);
 				snprintf(fieldInt, sizeof(fieldInt), "blnInv%d", bi + 1);
 				snprintf(fieldLimit, sizeof(fieldLimit), "blnLim%d", bi + 1);
+				snprintf(fieldActFor, sizeof(fieldActFor), "blnActFor%d", bi + 1);
 
 				if (argName == fieldEn)
 				{
@@ -3468,6 +3570,14 @@ void handle_msg(AsyncWebServerRequest *request)
 					else
 						blnLimit[bi] = 0;
 				}
+				if (argName == fieldActFor)
+				{
+					// Blank/0 = default (72h Alerts / 24h News); else 24/36/48/72
+					if (isValidNumber(request->arg(i)))
+						blnActiveFor[bi] = request->arg(i).toInt();
+					else
+						blnActiveFor[bi] = 0;
+				}
 			}
 		}
 
@@ -3482,6 +3592,7 @@ void handle_msg(AsyncWebServerRequest *request)
 			strlcpy(config.bln_text[bi], blnText[bi], sizeof(config.bln_text[bi]));
 			config.bln_interval[bi] = blnInterval[bi];
 			config.bln_limit[bi] = blnLimit[bi];
+			config.bln_activefor[bi] = blnActiveFor[bi];
 		}
 
 		char *html = allocateStringMemory(256);
@@ -3783,20 +3894,22 @@ void handle_msg(AsyncWebServerRequest *request)
 		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formBLN\" method=\"post\">\n");
 		html->print("<table width=\"90%\" style=\"table-layout:fixed;border-collapse:collapse;\">\n");
 		// Bulletins BLN1-BLN9 UI - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
-	html->print("<th colspan=\"6\" style=\"background-color: #070ac2;\"><span><b>Bulletins BLN1-BLN9</b></span></th>\n");
-		html->print("<tr><td colspan=\"6\"><i>Uses the same TX Channel/PATH as Message Configuration above.</i></td></tr>\n");
+	html->print("<th colspan=\"7\" style=\"background-color: #070ac2;\"><span><b>Bulletins: BLN1-BLN4 Alerts, NEWS5-NEWS9</b></span></th>\n");
+		html->print("<tr><td colspan=\"7\"><i>Uses the same TX Channel/PATH as Message Configuration above.</i></td></tr>\n");
 		html->print("<tr>");
 		html->print("<td align=\"center\" style=\"width:6%;\"><b>#</b></td>");
 		html->print("<td align=\"center\" style=\"width:8%;\"><b>Enable</b></td>");
-		html->print("<td align=\"center\" style=\"width:50%;\"><b>Text</b></td>");
-		html->print("<td align=\"center\" style=\"width:12%;\"><b>Interval (Sec.)</b></td>");
-		html->print("<td align=\"center\" style=\"width:16%;\"><b>Limit</b><br /><i style=\"font-weight:normal;font-size:8pt;\">0 = unlimited</i></td>");
+		html->print("<td align=\"center\" style=\"width:38%;\"><b>Text</b></td>");
+		html->print("<td align=\"center\" style=\"width:14%;\"><b>Interval</b></td>");
+		html->print("<td align=\"center\" style=\"width:12%;\"><b>Limit</b><br /><i style=\"font-weight:normal;font-size:8pt;\">0 = unlimited</i></td>");
+		html->print("<td align=\"center\" style=\"width:14%;\"><b>Active for</b></td>");
 		html->print("<td align=\"center\" style=\"width:8%;\"><b>Sent</b></td>");
 		html->print("</tr>\n");
 		for (uint8_t bi = 0; bi < 9; bi++)
 		{
 			html->print("<tr>\n");
-			snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><b>BLN%d</b></td>\n", bi + 1);
+			// v2.1-lu6jmf: BLN1-BLN4 = Alerts, NEWS5-NEWS9 = News (renamed for a clear visual pattern)
+			snprintf(temp_buffer, sizeof(temp_buffer), (bi < 4) ? "<td align=\"center\"><b>BLN%d</b></td>\n" : "<td align=\"center\"><b>NEWS%d</b></td>\n", bi + 1);
 			html->print(temp_buffer);
 
 			if (config.bln_en[bi])
@@ -3809,25 +3922,185 @@ void handle_msg(AsyncWebServerRequest *request)
 			}
 			html->print(temp_buffer);
 
-			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:96%%;box-sizing:border-box;\" maxlength=\"%d\" name=\"blnText%d\" type=\"text\" value=\"%s\" /></td>\n", STATUS_SIZE - 1, bi + 1, config.bln_text[bi]);
-			html->print(temp_buffer);
+			{
+				// v2.1-lu6jmf: live 'characters left' counter (maxlength already enforced server-side too)
+				int blnCharsLeft = (int)(STATUS_SIZE - 1) - (int)strlen(config.bln_text[bi]);
+				snprintf(temp_buffer, sizeof(temp_buffer),
+					"<td style=\"text-align: left;\"><input id=\"blnTxt%d\" style=\"width:96%%;box-sizing:border-box;\" maxlength=\"%d\" name=\"blnText%d\" type=\"text\" value=\"%s\" "
+					"oninput=\"var n=this.maxLength-this.value.length;var c=document.getElementById('blnCnt%d');c.textContent=n+' left';c.style.color=(n<0)?'red':'#2e7d32';\" /><br />"
+					"<span id=\"blnCnt%d\" style=\"font-size:8pt;color:%s;\">%d left</span></td>\n",
+					bi + 1, STATUS_SIZE - 1, bi + 1, config.bln_text[bi], bi + 1, bi + 1,
+					(blnCharsLeft < 0) ? "red" : "#2e7d32", blnCharsLeft);
+				html->print(temp_buffer);
+			}
 
-			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:90%%;box-sizing:border-box;\" min=\"30\" max=\"86400\" name=\"blnInv%d\" type=\"number\" value=\"%d\" /></td>\n", bi + 1, config.bln_interval[bi]);
-			html->print(temp_buffer);
+			if (bi < 4)
+			{
+				// BLN Alerts: closed dropdown - 5/10/15/30/60 min (300/600/900/1800/3600s)
+				static const uint16_t alertOpts[5] = {300, 600, 900, 1800, 3600};
+				static const char *alertLabels[5] = {"5 min", "10 min", "15 min", "30 min", "60 min"};
+				char sel[600];
+				snprintf(sel, sizeof(sel), "<td style=\"text-align: left;\"><select style=\"width:96%%;box-sizing:border-box;\" name=\"blnInv%d\">", bi + 1);
+				html->print(sel);
+				for (uint8_t k = 0; k < 5; k++)
+				{
+					snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\"%s>%s</option>",
+						alertOpts[k], (config.bln_interval[bi] == alertOpts[k]) ? " selected" : "", alertLabels[k]);
+					html->print(temp_buffer);
+				}
+				html->print("</select></td>\n");
+			}
+			else
+			{
+				// NEWS5-NEWS9: base T in seconds, free entry but floored at 300s (5 min) client- and server-side
+				snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:90%%;box-sizing:border-box;\" min=\"300\" max=\"86400\" name=\"blnInv%d\" type=\"number\" value=\"%d\" title=\"Base T (sec.), min 300 = 5 min\" /></td>\n", bi + 1, config.bln_interval[bi]);
+				html->print(temp_buffer);
+			}
 
 			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:90%%;box-sizing:border-box;\" min=\"0\" max=\"65535\" name=\"blnLim%d\" type=\"number\" value=\"%d\" /></td>\n", bi + 1, config.bln_limit[bi]);
 			html->print(temp_buffer);
+
+			{
+				// v2.1-lu6jmf: Active for - 0 = default (72h Alerts / 24h News), else 24/36/48/72
+				static const uint8_t afOpts[5] = {0, 24, 36, 48, 72};
+				char afSel[500];
+				snprintf(afSel, sizeof(afSel), "<td style=\"text-align: left;\"><select style=\"width:96%%;box-sizing:border-box;\" name=\"blnActFor%d\">", bi + 1);
+				html->print(afSel);
+				for (uint8_t k = 0; k < 5; k++)
+				{
+					if (afOpts[k] == 0)
+						snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"0\"%s>Default (%dh)</option>",
+							(config.bln_activefor[bi] == 0) ? " selected" : "", (bi < 4) ? 72 : 24);
+					else
+						snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\"%s>%dh</option>",
+							afOpts[k], (config.bln_activefor[bi] == afOpts[k]) ? " selected" : "", afOpts[k]);
+					html->print(temp_buffer);
+				}
+				html->print("</select></td>\n");
+			}
 
 			snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\">%u</td>\n", blnSentCount[bi]);
 			html->print(temp_buffer);
 
 			html->print("</tr>\n");
 		}
-		html->print("<tr><td colspan=\"6\" align=\"right\">\n");
+		html->print("<tr><td colspan=\"7\" align=\"right\">\n");
 		html->print("<div><button class=\"button\" type='submit' id='submitBLN' name=\"commitBLN\"> Apply Change </button></div>\n");
 		html->print("<input type=\"hidden\" name=\"commitBLN\"/>\n");
 		html->print("</td></tr></table><br />\n");
 		html->print("</form><br />\n");
+
+		// --- v2.1-lu6jmf: Objects (Object1-Object4) ---
+		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formObj\" method=\"post\">\n");
+		html->print("<table width=\"90%\" style=\"table-layout:fixed;border-collapse:collapse;\">\n");
+		html->print("<th colspan=\"2\" style=\"background-color: #070ac2;\"><span><b>Objects: Object1-Object4</b></span></th>\n");
+		html->print("<tr><td colspan=\"2\"><i>Uses the same TX Channel/PATH as Message Configuration above.</i></td></tr>\n");
+		for (uint8_t oi = 0; oi < 4; oi++)
+		{
+			snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td colspan=\"2\" style=\"background-color:#eef0f4;\"><b>Object%d</b></td></tr>\n", oi + 1);
+			html->print(temp_buffer);
+
+			snprintf(temp_buffer, sizeof(temp_buffer),
+				"<tr><td align=\"right\"><b>Enable:</b></td><td align=\"left\"><label class=\"switch\"><input type=\"checkbox\" name=\"objEn%d\" value=\"OK\"%s><span class=\"slider round\"></span></label></td></tr>\n",
+				oi + 1, config.obj_en[oi] ? " checked" : "");
+			html->print(temp_buffer);
+
+			snprintf(temp_buffer, sizeof(temp_buffer),
+				"<tr><td align=\"right\"><b>Item/Obj Name:</b></td><td align=\"left\"><input maxlength=\"9\" name=\"objName%d\" type=\"text\" value=\"%s\" /> <i>3-9 character</i></td></tr>\n",
+				oi + 1, config.obj_name[oi]);
+			html->print(temp_buffer);
+
+			snprintf(temp_buffer, sizeof(temp_buffer),
+				"<tr><td align=\"right\"><b>Latitude / Longitude:</b></td><td align=\"left\">"
+				"<input style=\"width:120px;\" step=\"0.00001\" name=\"objLat%d\" type=\"number\" value=\"%.5f\" /> "
+				"<input style=\"width:120px;\" step=\"0.00001\" name=\"objLon%d\" type=\"number\" value=\"%.5f\" /> "
+				"<i>independent of the digi's own position</i></td></tr>\n",
+				oi + 1, config.obj_lat[oi], oi + 1, config.obj_lon[oi]);
+			html->print(temp_buffer);
+
+			{
+				// Symbol picker: same widget/pattern as Station Symbol (IGATE/DIGI/Tracker), generalized
+				// via /symbol?sel=N + setValue(sel,symbol,table) - Object1-4 use sel 0-3 in this page's own script.
+				char objTableCh = config.obj_symbol[oi][0] ? config.obj_symbol[oi][0] : '/';
+				char objSymCh = config.obj_symbol[oi][1] ? config.obj_symbol[oi][1] : 'r';
+				int objTableNum = (objTableCh == '\\') ? 2 : 1;
+				snprintf(temp_buffer, sizeof(temp_buffer),
+					"<tr><td align=\"right\"><b>Symbol:</b></td><td align=\"left\">Table:"
+					"<input maxlength=\"1\" size=\"1\" id=\"obj%dTable\" name=\"obj%dTable\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:"
+					"<input maxlength=\"1\" size=\"1\" id=\"obj%dSymbol\" name=\"obj%dSymbol\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> "
+					"<img border=\"1\" style=\"vertical-align: middle;\" id=\"obj%dImgSymbol\" onclick=\"openWindowSymbolObj(%d);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-%d.png\"> <i>*Click icon for select symbol</i></td></tr>\n",
+					oi + 1, oi + 1, objTableCh, oi + 1, oi + 1, objSymCh, oi + 1, oi, (int)objSymCh, objTableNum);
+				html->print(temp_buffer);
+			}
+
+			{
+				int objCharsLeft = (int)(STATUS_SIZE - 1) - (int)strlen(config.obj_text[oi]);
+				snprintf(temp_buffer, sizeof(temp_buffer),
+					"<tr><td align=\"right\"><b>Text/Comment:</b></td><td align=\"left\"><input style=\"width:96%%;box-sizing:border-box;\" maxlength=\"%d\" name=\"objText%d\" type=\"text\" value=\"%s\" "
+					"oninput=\"var n=this.maxLength-this.value.length;var c=document.getElementById('objCnt%d');c.textContent=n+' left';c.style.color=(n<0)?'red':'#2e7d32';\" /><br />"
+					"<span id=\"objCnt%d\" style=\"font-size:8pt;color:%s;\">%d left (own buffer, not shared)</span></td></tr>\n",
+					STATUS_SIZE - 1, oi + 1, config.obj_text[oi], oi + 1, oi + 1, (objCharsLeft < 0) ? "red" : "#2e7d32", objCharsLeft);
+				html->print(temp_buffer);
+			}
+
+			{
+				bool fixedMode = (config.obj_mode[oi] == 0);
+				static const uint16_t objIvlOpts[3] = {900, 1800, 3600};
+				static const char *objIvlLabels[3] = {"15 min", "30 min", "60 min"};
+				static const uint8_t objAfOpts[4] = {24, 36, 48, 72};
+				snprintf(temp_buffer, sizeof(temp_buffer),
+					"<tr><td align=\"right\"><b>Interval:</b></td><td align=\"left\">"
+					"<input type=\"radio\" name=\"objMode%d\" value=\"0\"%s> Fixed: <select name=\"objInv%d\">",
+					oi + 1, fixedMode ? " checked" : "", oi + 1);
+				html->print(temp_buffer);
+				for (uint8_t k = 0; k < 3; k++)
+				{
+					snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\"%s>%s</option>",
+						objIvlOpts[k], (config.obj_interval[oi] == objIvlOpts[k]) ? " selected" : "", objIvlLabels[k]);
+					html->print(temp_buffer);
+				}
+				snprintf(temp_buffer, sizeof(temp_buffer),
+					"</select> + max sends <input style=\"width:60px;\" min=\"0\" max=\"65535\" name=\"objLim%d\" type=\"number\" value=\"%d\" /><br />"
+					"<input type=\"radio\" name=\"objMode%d\" value=\"1\"%s> Active for: <select name=\"objActFor%d\">",
+					oi + 1, config.obj_limit[oi], oi + 1, fixedMode ? "" : " checked", oi + 1);
+				html->print(temp_buffer);
+				for (uint8_t k = 0; k < 4; k++)
+				{
+					snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\"%s>%dh</option>",
+						objAfOpts[k], (config.obj_activefor[oi] == objAfOpts[k]) ? " selected" : "", objAfOpts[k]);
+					html->print(temp_buffer);
+				}
+				html->print("</select><br /><i>either mode (Permanent off): never exceeds 72h total send time</i></td></tr>\n");
+			}
+
+			snprintf(temp_buffer, sizeof(temp_buffer),
+				"<tr><td align=\"right\"><b>Permanent / Never disable:</b></td><td align=\"left\"><label class=\"switch\"><input type=\"checkbox\" name=\"objPerm%d\" value=\"OK\"%s><span class=\"slider round\"></span></label> "
+				"<i>if checked, ignores Interval and the 72h cap entirely</i></td></tr>\n",
+				oi + 1, config.obj_permanent[oi] ? " checked" : "");
+			html->print(temp_buffer);
+
+			html->print("<tr><td align=\"right\"><b>Timestamp:</b></td><td align=\"left\"><i>always UTC (zulu), automatic - not user configurable</i></td></tr>\n");
+		}
+		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
+		html->print("<div><button class=\"button\" type='submit' id='submitObj' name=\"commitObj\"> Apply Change </button></div>\n");
+		html->print("<input type=\"hidden\" name=\"commitObj\"/>\n");
+		html->print("</td></tr></table><br />\n");
+		html->print("</form><br />\n");
+
+		html->print("<script type=\"text/javascript\">\n");
+		html->print("function openWindowSymbolObj(sel) {\n");
+		html->print("window.open(\"/symbol?sel=\"+sel.toString(), null, \"height=400,width=400,status=no,toolbar=no,menubar=no,location=no\");\n");
+		html->print("}\n");
+		html->print("function setValue(sel,symbol,table) {\n");
+		html->print("var txtsymbol=document.getElementById('obj'+(sel+1)+'Symbol');\n");
+		html->print("var txttable=document.getElementById('obj'+(sel+1)+'Table');\n");
+		html->print("var imgicon=document.getElementById('obj'+(sel+1)+'ImgSymbol');\n");
+		html->print("txtsymbol.value = String.fromCharCode(symbol);\n");
+		html->print("if(table==1){\n txttable.value='/';\n");
+		html->print("}else if(table==2){\n txttable.value='\\\\';\n}\n");
+		html->print("imgicon.src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n");
+		html->print("}\n");
+		html->print("</script>\n");
 
 		html->addHeader("MSG", "content");
 		html->addHeader("Cache-Control", "no-cache");
