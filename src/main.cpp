@@ -4082,6 +4082,65 @@ String getTimeStamp()
     return String(strtmp);
 }
 
+// v2.1-lu6jmf: builds and transmits an APRS Object Report (Data Type ID ';') for
+// Object1-Object4 (MSG tab). Timestamp is always UTC/zulu via getTimeStamp() - no
+// user configuration. Uses the station's real callsign+SSID as the AX.25 FROM
+// (mandatory identification - never the object's own name), and the same
+// Path/TX Channel as the Message Configuration section (config.msg_path/msg_rf/msg_inet),
+// shared with BLN, per spec.
+void sendAPRSObject(uint8_t idx, const char *name, double lat, double lon, const char *symbol, const String &comment)
+{
+    if (strlen(name) < 3)
+        return;
+
+    char objName[10];
+    memset(objName, 0x20, 9);
+    objName[9] = 0;
+    memcpy(objName, name, min((size_t)9, strlen(name)));
+
+    int lat_dd, lat_mm, lat_ss, lon_dd, lon_mm, lon_ss;
+    char lat_ns = (lat < 0) ? 'S' : 'N';
+    char lon_ew = (lon < 0) ? 'W' : 'E';
+    DD_DDDDDtoDDMMSS(lat, &lat_dd, &lat_mm, &lat_ss);
+    DD_DDDDDtoDDMMSS(lon, &lon_dd, &lon_mm, &lon_ss);
+
+    String timeStamp = getTimeStamp();
+
+    char loc[160];
+    memset(loc, 0, sizeof(loc));
+    snprintf(loc, sizeof(loc), ";%s*%s%02d%02d.%02d%c%c%03d%02d.%02d%c%c%s",
+             objName, timeStamp.c_str(), lat_dd, lat_mm, lat_ss, lat_ns, symbol[0],
+             lon_dd, lon_mm, lon_ss, lon_ew, symbol[1], comment.c_str());
+
+    String myCallUP = String(config.aprs_mycall);
+    myCallUP.trim();
+    myCallUP.toUpperCase();
+    if (config.aprs_ssid > 0)
+        myCallUP += "-" + String(config.aprs_ssid);
+
+    String path = "";
+    if (config.msg_path < 5)
+    {
+        if (config.msg_path > 0)
+            path += "-" + String(config.msg_path);
+    }
+    else
+    {
+        path += ",";
+        path += getPath(config.msg_path);
+    }
+
+    String packet = myCallUP + ">APE32A" + path + ":" + String(loc);
+
+    uint8_t SendMode = 0;
+    if (config.msg_rf)
+        SendMode |= RF_CHANNEL;
+    if (config.msg_inet)
+        SendMode |= INET_CHANNEL;
+    pkgTxPush(packet.c_str(), packet.length(), 0, SendMode);
+    log_d("Object%d sent TNC2: %s", idx + 1, packet.c_str());
+}
+
 int pkgCount = 0;
 
 float conv_coords(float in_coords)
@@ -6696,6 +6755,15 @@ bool initInterval = true;
 int trkTlmInvCount = 0;
 int igateTlmInvCount = 0;
 uint16_t blnSentCount[9] = {0}; // RAM-only counter, resets on reboot or when a bulletin is (re)enabled
+// --- v2.1-lu6jmf: BLN Active-for tracking + NEWS5-NEWS9 growing-gap state (RAM-only) ---
+unsigned long blnActivatedAt[9] = {0};   // millis() when each slot was (re)enabled, for the Active-for deadline
+unsigned long blnNewsGap[9] = {0};       // NEWS5-NEWS9 only: current gap in ms, grows by +T after every send
+bool blnNewsFirstSent[9] = {false};      // NEWS5-NEWS9 only: whether the immediate msg1 already went out
+// --- v2.1-lu6jmf: Objects (Object1-Object4) runtime state (RAM-only) ---
+unsigned long objActivatedAt[4] = {0};
+unsigned long objSTSInterval[4] = {0};
+uint16_t objSentCount[4] = {0};
+
 // Bulletin (BLN1-BLN9) feature + CPU-temp dashboard fix: custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
 int digiTlmInvCount = 0;
 unsigned long msgInterval = 0;
@@ -7416,22 +7484,177 @@ void taskAPRS(void *pvParameters)
         // retries (nobody ACKs a BLN) and honors an optional send-count limit (0 = unlimited).
         for (uint8_t bi = 0; bi < 9; bi++)
         {
-            if (config.bln_en[bi] && config.bln_interval[bi] > 10 && strlen(config.bln_text[bi]) > 0)
+            if (config.bln_en[bi] && strlen(config.bln_text[bi]) > 0)
             {
-                if (millis() > blnSTSInterval[bi])
-                {
-                    blnSTSInterval[bi] = millis() + ((unsigned long)config.bln_interval[bi] * 1000);
-                    char blnCall[6];
-                    snprintf(blnCall, sizeof(blnCall), "BLN%d", bi + 1);
-                    sendAPRSMessage(String(blnCall), String(config.bln_text[bi]), false, true);
-                    blnSentCount[bi]++;
-                    log_d("Bulletin %s sent (%u/%u): %s", blnCall, blnSentCount[bi], config.bln_limit[bi], config.bln_text[bi]);
+                // v2.1-lu6jmf: Active-for deadline, shared by BLN Alerts (bi<4) and NEWS5-NEWS9 (bi>=4)
+                if (blnActivatedAt[bi] == 0)
+                    blnActivatedAt[bi] = millis();
 
-                    if (config.bln_limit[bi] > 0 && blnSentCount[bi] >= config.bln_limit[bi])
+                uint8_t activeForHours = config.bln_activefor[bi];
+                if (activeForHours == 0)
+                    activeForHours = (bi < 4) ? 72 : 24; // default if not chosen: Alerts 72h, News 24h
+                if (activeForHours > 72)
+                    activeForHours = 72; // hard ceiling - BLN/NEWS never have the Objects' Permanent escape hatch
+                unsigned long activeForMs = (unsigned long)activeForHours * 3600000UL;
+
+                if (millis() - blnActivatedAt[bi] >= activeForMs)
+                {
+                    char slotCall[8];
+                    snprintf(slotCall, sizeof(slotCall), (bi < 4) ? "BLN%d" : "NEWS%d", bi + 1);
+                    config.bln_en[bi] = false;
+                    blnActivatedAt[bi] = 0;
+                    blnNewsFirstSent[bi] = false;
+                    blnNewsGap[bi] = 0;
+                    saveConfiguration("/default.cfg", config);
+                    log_d("%s reached Active-for deadline (%uh), disabled", slotCall, activeForHours);
+                }
+                else if (bi < 4)
+                {
+                    // --- BLN Alerts: fixed interval (dropdown: 300/600/900/1800/3600s) ---
+                    if (config.bln_interval[bi] > 10 && millis() > blnSTSInterval[bi])
                     {
-                        config.bln_en[bi] = false; // Reached the send-count limit: auto-disable, keep text/interval/limit saved
-                        saveConfiguration("/default.cfg", config);
-                        log_d("Bulletin %s reached send limit (%u), disabled", blnCall, config.bln_limit[bi]);
+                        blnSTSInterval[bi] = millis() + ((unsigned long)config.bln_interval[bi] * 1000);
+                        char blnCall[6];
+                        snprintf(blnCall, sizeof(blnCall), "BLN%d", bi + 1);
+                        sendAPRSMessage(String(blnCall), String(config.bln_text[bi]), false, true);
+                        blnSentCount[bi]++;
+                        log_d("Bulletin %s sent (%u/%u): %s", blnCall, blnSentCount[bi], config.bln_limit[bi], config.bln_text[bi]);
+
+                        if (config.bln_limit[bi] > 0 && blnSentCount[bi] >= config.bln_limit[bi])
+                        {
+                            config.bln_en[bi] = false; // Reached the send-count limit: auto-disable, keep text/interval/limit saved
+                            blnActivatedAt[bi] = 0;
+                            saveConfiguration("/default.cfg", config);
+                            log_d("Bulletin %s reached send limit (%u), disabled", blnCall, config.bln_limit[bi]);
+                        }
+                    }
+                }
+                else
+                {
+                    // --- NEWS5-NEWS9: growing-gap progression. msg1 immediate, then gaps 2T,3T,4T,5T... ---
+                    uint16_t baseT = config.bln_interval[bi]; // seconds
+                    if (baseT < 300)
+                        baseT = 300; // firmware floor: 5 min minimum, never lower
+
+                    char newsCall[8];
+                    snprintf(newsCall, sizeof(newsCall), "NEWS%d", bi + 1);
+
+                    if (!blnNewsFirstSent[bi])
+                    {
+                        sendAPRSMessage(String(newsCall), String(config.bln_text[bi]), false, true);
+                        blnSentCount[bi]++;
+                        blnNewsFirstSent[bi] = true;
+                        blnNewsGap[bi] = (unsigned long)baseT * 1000UL * 2UL; // gap for msg1->msg2 = 2T
+                        blnSTSInterval[bi] = millis() + blnNewsGap[bi];
+                        log_d("%s sent immediately (%u/%u): %s", newsCall, blnSentCount[bi], config.bln_limit[bi], config.bln_text[bi]);
+                    }
+                    else if (millis() > blnSTSInterval[bi])
+                    {
+                        sendAPRSMessage(String(newsCall), String(config.bln_text[bi]), false, true);
+                        blnSentCount[bi]++;
+                        blnNewsGap[bi] += (unsigned long)baseT * 1000UL; // next gap = previous gap + T
+                        blnSTSInterval[bi] = millis() + blnNewsGap[bi];
+                        log_d("%s sent (%u/%u), next gap %lus: %s", newsCall, blnSentCount[bi], config.bln_limit[bi], blnNewsGap[bi] / 1000, config.bln_text[bi]);
+
+                        if (config.bln_limit[bi] > 0 && blnSentCount[bi] >= config.bln_limit[bi])
+                        {
+                            config.bln_en[bi] = false;
+                            blnActivatedAt[bi] = 0;
+                            blnNewsFirstSent[bi] = false;
+                            blnNewsGap[bi] = 0;
+                            saveConfiguration("/default.cfg", config);
+                            log_d("%s reached send limit (%u), disabled", newsCall, config.bln_limit[bi]);
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // Disabled: clear runtime state so a future re-enable starts clean from msg1
+                blnActivatedAt[bi] = 0;
+                if (bi >= 4)
+                {
+                    blnNewsFirstSent[bi] = false;
+                    blnNewsGap[bi] = 0;
+                }
+            }
+
+            // --- v2.1-lu6jmf: Objects (Object1-Object4) - only run once, when bi==0, alongside the BLN loop ---
+            if (bi == 0)
+            {
+                for (uint8_t oi = 0; oi < 4; oi++)
+                {
+                    if (config.obj_en[oi] && strlen(config.obj_name[oi]) >= 3)
+                    {
+                        if (objActivatedAt[oi] == 0)
+                            objActivatedAt[oi] = millis();
+
+                        bool expired = false;
+                        if (!config.obj_permanent[oi])
+                        {
+                            uint8_t hours = config.obj_activefor[oi];
+                            if (hours == 0 || hours > 72)
+                                hours = 72; // hard ceiling: never more than 72h unless Permanent is on
+                            unsigned long activeForMs = (unsigned long)hours * 3600000UL;
+                            if (millis() - objActivatedAt[oi] >= activeForMs)
+                                expired = true;
+                        }
+
+                        if (expired)
+                        {
+                            config.obj_en[oi] = false;
+                            objActivatedAt[oi] = 0;
+                            saveConfiguration("/default.cfg", config);
+                            log_d("Object%d reached Active-for deadline, disabled", oi + 1);
+                        }
+                        else
+                        {
+                            bool dueToSend = false;
+                            if (config.obj_mode[oi] == 0)
+                            {
+                                // Fixed interval mode: dropdown 900/1800/3600s (15/30/60min)
+                                uint16_t ivl = config.obj_interval[oi];
+                                if (ivl < 900)
+                                    ivl = 900;
+                                if (objSTSInterval[oi] == 0 || millis() > objSTSInterval[oi])
+                                {
+                                    dueToSend = true;
+                                    objSTSInterval[oi] = millis() + ((unsigned long)ivl * 1000UL);
+                                }
+                            }
+                            else
+                            {
+                                // Active-for-duration mode: send at a fixed 15-min floor, capped by the deadline above
+                                if (objSTSInterval[oi] == 0 || millis() > objSTSInterval[oi])
+                                {
+                                    dueToSend = true;
+                                    objSTSInterval[oi] = millis() + 900000UL;
+                                }
+                            }
+
+                            if (dueToSend)
+                            {
+                                sendAPRSObject(oi, config.obj_name[oi], config.obj_lat[oi], config.obj_lon[oi],
+                                               config.obj_symbol[oi], String(config.obj_text[oi]));
+                                objSentCount[oi]++;
+                                log_d("Object%d (%s) sent (#%u)", oi + 1, config.obj_name[oi], objSentCount[oi]);
+
+                                if (!config.obj_permanent[oi] && config.obj_mode[oi] == 0 &&
+                                    config.obj_limit[oi] > 0 && objSentCount[oi] >= config.obj_limit[oi])
+                                {
+                                    config.obj_en[oi] = false;
+                                    objActivatedAt[oi] = 0;
+                                    saveConfiguration("/default.cfg", config);
+                                    log_d("Object%d reached send limit (%u), disabled", oi + 1, config.obj_limit[oi]);
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        objActivatedAt[oi] = 0;
+                        objSTSInterval[oi] = 0;
+                        objSentCount[oi] = 0;
                     }
                 }
             }

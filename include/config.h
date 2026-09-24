@@ -498,8 +498,22 @@ typedef struct Config_Struct
 	// Bulletins BLN1-BLN9 - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
 	bool bln_en[9];
 	char bln_text[9][STATUS_SIZE];
-	uint16_t bln_interval[9];
+	uint16_t bln_interval[9]; // seconds. BLN1-BLN4 (Alerts): 300/600/900/1800/3600. NEWS5-NEWS9: base T, min 300.
 	uint16_t bln_limit[9]; // 0 = unlimited, send forever until disabled
+	// --- v2.1-lu6jmf: BLN Active-for deadline (Alerts + News, both slots 0-8) ---
+	uint8_t bln_activefor[9]; // hours: 0=default (72 for Alerts idx<4, 24 for News idx>=4), else 24/36/48/72
+	// --- v2.1-lu6jmf: Objects (Object1-Object4), MSG tab, below BLN ---
+	bool obj_en[4];
+	char obj_name[4][10]; // Item/Obj Name, 3-9 chars (same field/validation as igate_object)
+	double obj_lat[4];
+	double obj_lon[4];
+	char obj_symbol[4][3]; // table+symbol, same layout as igate_symbol
+	char obj_text[4][STATUS_SIZE];
+	uint8_t obj_mode[4]; // 0 = Fixed interval, 1 = Active-for duration
+	uint16_t obj_interval[4]; // seconds, Fixed mode: 900/1800/3600
+	uint16_t obj_limit[4]; // max sends, Fixed mode. 0 = unlimited
+	uint8_t obj_activefor[4]; // hours, Active-for-duration mode: 24/36/48/72
+	bool obj_permanent[4]; // Permanent/Never disable - ignores Interval AND the 72h cap entirely
 
 } Configuration;
 
