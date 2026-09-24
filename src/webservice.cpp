@@ -4089,8 +4089,10 @@ void handle_msg(AsyncWebServerRequest *request)
 
 			snprintf(temp_buffer, sizeof(temp_buffer),
 				"<tr><td align=\"right\"><b>Latitude / Longitude:</b></td><td align=\"left\">"
-				"<input style=\"width:120px;\" step=\"0.00001\" name=\"objLat%d\" type=\"number\" value=\"%.5f\" /> "
-				"<input style=\"width:120px;\" step=\"0.00001\" name=\"objLon%d\" type=\"number\" value=\"%.5f\" />%s</td></tr>\n",
+				// v2.1.4-lu6jmf: step="any" - "0.00001" rejected 6-decimal GPS coords pasted straight
+				// from a phone/map (e.g. -32.474722), since that isn't an exact multiple of 0.00001
+				"<input style=\"width:120px;\" step=\"any\" name=\"objLat%d\" type=\"number\" value=\"%.6f\" /> "
+				"<input style=\"width:120px;\" step=\"any\" name=\"objLon%d\" type=\"number\" value=\"%.6f\" />%s</td></tr>\n",
 				oi + 1, config.obj_lat[oi], oi + 1, config.obj_lon[oi], (oi == 0) ? " <i>independent of the digi's own position</i>" : "");
 			html->print(temp_buffer);
 
