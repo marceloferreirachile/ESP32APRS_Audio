@@ -11,6 +11,7 @@
 #include <AsyncTCP.h>
 #include <esp_task_wdt.h>
 #include <esp_heap_caps.h>
+#include <esp_system.h>
 #include "main.h"
 #include <LibAPRSesp.h>
 #include <limits.h>
@@ -240,6 +241,12 @@ time_t wifiUptime = 0;
 
 uint8_t Sleep_Activate = 0;
 unsigned long StandByTick = 0;
+
+// LU6JMF diagnostic (Set/2026): motivo do ultimo reset/reboot, capturado no
+// boot via esp_reset_reason() e exposto no DashBoard - antes disso nao tinha
+// como saber de longe se um reinicio foi por pane (panic), watchdog, queda
+// de energia, etc, sem cabo serial conectado na hora exata que aconteceu.
+char lastResetReasonStr[24] = "?";
 
 bool lastHeard_Flag = 0;
 
@@ -2151,14 +2158,6 @@ config.oled_enable = true;
     config.onewire_enable = false;
     config.onewire_gpio = -1;
 
-    config.pwr_en = false;
-    config.pwr_mode = MODE_A;        // A=Continue,B=Wait for receive,C=Send and sleep
-    config.pwr_sleep_interval = 600; // sec
-    config.pwr_stanby_delay = 30;   // sec
-    config.pwr_sleep_activate = ACTIVATE_TRACKER | ACTIVATE_WIFI;
-    config.pwr_gpio = -1;
-    config.pwr_active = 1;
-
     for (int i = 0; i < 5; i++)
     {
         config.trk_tlm_avg[i] = false;
@@ -3564,6 +3563,23 @@ void setup()
 #else
     Serial.begin(9600); // monitor
 #endif
+
+    // LU6JMF diagnostic (Set/2026): registra o motivo do reset atual assim
+    // que possivel, pra dar pra ver no DashBoard mesmo sem cabo serial.
+    switch (esp_reset_reason())
+    {
+        case ESP_RST_POWERON:   strlcpy(lastResetReasonStr, "Power-on", sizeof(lastResetReasonStr)); break;
+        case ESP_RST_SW:        strlcpy(lastResetReasonStr, "SW/esp_restart", sizeof(lastResetReasonStr)); break;
+        case ESP_RST_PANIC:     strlcpy(lastResetReasonStr, "PANIC/crash", sizeof(lastResetReasonStr)); break;
+        case ESP_RST_INT_WDT:   strlcpy(lastResetReasonStr, "Interrupt WDT", sizeof(lastResetReasonStr)); break;
+        case ESP_RST_TASK_WDT:  strlcpy(lastResetReasonStr, "Task WDT", sizeof(lastResetReasonStr)); break;
+        case ESP_RST_WDT:       strlcpy(lastResetReasonStr, "Other WDT", sizeof(lastResetReasonStr)); break;
+        case ESP_RST_DEEPSLEEP: strlcpy(lastResetReasonStr, "Deep sleep wake", sizeof(lastResetReasonStr)); break;
+        case ESP_RST_BROWNOUT:  strlcpy(lastResetReasonStr, "BROWNOUT (voltage)", sizeof(lastResetReasonStr)); break;
+        case ESP_RST_SDIO:      strlcpy(lastResetReasonStr, "SDIO", sizeof(lastResetReasonStr)); break;
+        default:                strlcpy(lastResetReasonStr, "Unknown", sizeof(lastResetReasonStr)); break;
+    }
+    log_d("Last reset reason: %s", lastResetReasonStr);
 
     if (!LITTLEFS.begin(FORMAT_LITTLEFS_IF_FAILED))
     {

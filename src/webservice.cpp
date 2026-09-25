@@ -139,6 +139,7 @@ extern volatile int8_t dacEn;
 extern unsigned long upTimeStamp;
 extern double VBat;
 extern bool VBat_Flag;
+extern char lastResetReasonStr[24];
 extern uint16_t blnSentCount[9];
 
 #ifdef OLED
@@ -3848,9 +3849,13 @@ void handle_msg(AsyncWebServerRequest *request)
 		html->print("</script>\n");
 
 		// html->print("<h2>System Setting</h2>\n");
-		// v2.1.2-lu6jmf: TEMP debug marker so it is unmistakable in the browser whether a
-		// given reflash actually took (remove once News1-5/minutes/schedule are confirmed working)
-		html->print("<div style=\"text-align:right;color:#999;font-size:7pt;padding:2px 4px;\">build " __DATE__ " " __TIME__ "</div>\n");
+		// v2.1.2-lu6jmf: discreet build marker so it is unmistakable in the browser whether a
+		// given reflash actually took. Also carries the last reset reason here (not on the
+		// main DashBoard) so it doesn't alarm non-technical users with terms like PANIC/WDT/
+		// BROWNOUT - stays available for troubleshooting without being front-and-center.
+		char buildInfo[160];
+		snprintf(buildInfo, sizeof(buildInfo), "<div style=\"text-align:right;color:#999;font-size:7pt;padding:2px 4px;\">build " __DATE__ " " __TIME__ " | reset: %s</div>\n", lastResetReasonStr);
+		html->print(buildInfo);
 		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formMSG\" method=\"post\">\n");
 		html->print("<table width=\"90%\">\n");
 		html->print("<th colspan=\"2\"><span><b>Message Configuration</b></span></th>\n");
@@ -6983,42 +6988,12 @@ void handle_system(AsyncWebServerRequest *request)
 	}
 	else if (request->hasArg("commitPWR"))
 	{
-		bool PwrEn = false;
-		config.pwr_sleep_activate = 0;
-
+		// LU6JMF cleanup (Set/2026): this form used to have a whole dead
+		// "Power Save Mode" (Enable/GPIO/Sleep Interval/Mode/Events) that
+		// never actually did anything in the firmware. Only StandBy Delay
+		// (OLED timeout) was real - kept, rest removed to save space.
 		for (uint8_t i = 0; i < request->args(); i++)
 		{
-			if (request->argName(i) == "pwr_active")
-			{
-				if (request->arg(i) != "")
-				{
-					config.pwr_active = (bool)request->arg(i).toInt();
-				}
-			}
-			if (request->argName(i) == "Enable")
-			{
-				if (request->arg(i) != "")
-				{
-					if (strcmp(request->arg(i).c_str(), "OK") == 0)
-					{
-						PwrEn = true;
-					}
-				}
-			}
-			if (request->argName(i) == "pwr")
-			{
-				if (request->arg(i) != "")
-				{
-					config.pwr_gpio = request->arg(i).toInt();
-				}
-			}
-			if (request->argName(i) == "sleep")
-			{
-				if (request->arg(i) != "")
-				{
-					config.pwr_sleep_interval = request->arg(i).toInt();
-				}
-			}
 			if (request->argName(i) == "stb")
 			{
 				if (request->arg(i) != "")
@@ -7026,86 +7001,7 @@ void handle_system(AsyncWebServerRequest *request)
 					config.pwr_stanby_delay = request->arg(i).toInt();
 				}
 			}
-			if (request->argName(i) == "mode")
-			{
-				if (request->arg(i) != "")
-				{
-					config.pwr_mode = request->arg(i).toInt();
-				}
-			}
-			if (request->argName(i) == "FilterTelemetry")
-			{
-				if (request->arg(i) != "")
-				{
-					if (strcmp(request->arg(i).c_str(), "OK") == 0)
-						config.pwr_sleep_activate |= ACTIVATE_TELEMETRY;
-				}
-			}
-
-			if (request->argName(i) == "FilterStatus")
-			{
-				if (request->arg(i) != "")
-				{
-					if (strcmp(request->arg(i).c_str(), "OK") == 0)
-						config.pwr_sleep_activate |= ACTIVATE_STATUS;
-				}
-			}
-
-			if (request->argName(i) == "FilterWeather")
-			{
-				if (request->arg(i) != "")
-				{
-					if (strcmp(request->arg(i).c_str(), "OK") == 0)
-						config.pwr_sleep_activate |= ACTIVATE_WX;
-				}
-			}
-
-			if (request->argName(i) == "FilterTracker")
-			{
-				if (request->arg(i) != "")
-				{
-					if (strcmp(request->arg(i).c_str(), "OK") == 0)
-						config.pwr_sleep_activate |= ACTIVATE_TRACKER;
-				}
-			}
-
-			if (request->argName(i) == "FilterIGate")
-			{
-				if (request->arg(i) != "")
-				{
-					if (strcmp(request->arg(i).c_str(), "OK") == 0)
-						config.pwr_sleep_activate |= ACTIVATE_IGATE;
-				}
-			}
-
-			if (request->argName(i) == "FilterDigi")
-			{
-				if (request->arg(i) != "")
-				{
-					if (strcmp(request->arg(i).c_str(), "OK") == 0)
-						config.pwr_sleep_activate |= ACTIVATE_DIGI;
-				}
-			}
-
-			if (request->argName(i) == "FilterQuery")
-			{
-				if (request->arg(i) != "")
-				{
-					if (strcmp(request->arg(i).c_str(), "OK") == 0)
-						config.pwr_sleep_activate |= ACTIVATE_QUERY;
-				}
-			}
-
-			if (request->argName(i) == "FilterWifi")
-			{
-				if (request->arg(i) != "")
-				{
-					if (strcmp(request->arg(i).c_str(), "OK") == 0)
-						config.pwr_sleep_activate |= ACTIVATE_WIFI;
-				}
-			}
 		}
-		config.pwr_en = PwrEn;
 		saveConfig(request);
 	}
 	else if (request->hasArg("commitLOG"))
@@ -7531,40 +7427,13 @@ void handle_system(AsyncWebServerRequest *request)
 		html->print("</form><br /><br />");
 
 		/**************Power Mode******************/
+		// LU6JMF cleanup (Set/2026): "Power Save Mode" card stripped down to
+		// just StandBy Delay (OLED timeout), the only field that was ever
+		// really implemented. Enable/PWR GPIO/Sleep Interval/Power Mode/
+		// Events were a dead UI stub - removed to save space.
 		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formPWR\" method=\"post\">\n");
 		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>Power Save Mode</b></span></th>\n");
-		html->print("<tr>");
-
-		char enFlage[10] = "";
-		if (config.pwr_en)
-			strcpy(enFlage, "checked");
-		html->print("<td align=\"right\"><b>Enable</b></td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", enFlage);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		char LowFlag[20] = "", HighFlag[20] = "";
-		strcpy(LowFlag, "");
-		strcpy(HighFlag, "");
-		if (config.pwr_active)
-			strcpy(HighFlag, "checked=\"checked\"");
-		else
-			strcpy(LowFlag, "checked=\"checked\"");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PWR GPIO:</b></td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input min=\"-1\" max=\"50\"  name=\"pwr\" type=\"number\" value=\"%d\" /> Output Active:<input type=\"radio\" name=\"pwr_active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"pwr_active\" value=\"1\" %s/>HIGH </td>\n", config.pwr_gpio, LowFlag, HighFlag);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Sleep Interval:</b></td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input min=\"0\" max=\"9999\" name=\"sleep\" type=\"number\" value=\"%d\" /></td>\n", config.pwr_sleep_interval);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
+		html->print("<th colspan=\"2\"><span><b>Display StandBy</b></span></th>\n");
 
 		html->print("<tr>\n");
 		html->print("<td align=\"right\"><b>StandBy Delay:</b></td>\n");
@@ -7573,102 +7442,6 @@ void handle_system(AsyncWebServerRequest *request)
 		html->print(temp_buffer);
 		html->print("</tr>\n");
 
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Power Mode:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"mode\" id=\"mode\">\n");
-		for (int i = 0; i < 3; i++)
-		{
-			if (config.pwr_mode == i)
-			{
-				snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" selected>%s </option>\n", i, PWR_MODE[i]);
-			}
-			else
-			{
-				snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" >%s </option>\n", i, PWR_MODE[i]);
-			}
-			html->print(temp_buffer);
-		}
-		html->print("</select> A=Reduce Speed(PWR Off),B=Light Sleep(WiFi/PWR Off),C=Deep Sleep(All Off)\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Event Activate:</b><br/>(For Mode C)</td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<fieldset id=\"FilterGrp\">\n");
-		html->print("<legend>Events</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">\n");
-		html->print("<tr style=\"background:unset;\">");
-
-		char filterFlageEn[10] = "";
-		if (config.pwr_sleep_activate & ACTIVATE_TRACKER)
-			strcpy(filterFlageEn, "checked");
-		else
-			strcpy(filterFlageEn, "");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterTracker\" type=\"checkbox\" value=\"OK\" %s/>Tracker</td>\n", filterFlageEn);
-		html->print(temp_buffer);
-
-		if (config.pwr_sleep_activate & ACTIVATE_STATUS)
-			strcpy(filterFlageEn, "checked");
-		else
-			strcpy(filterFlageEn, "");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterStatus\" type=\"checkbox\" value=\"OK\" %s/>Status</td>\n", filterFlageEn);
-		html->print(temp_buffer);
-
-		if (config.pwr_sleep_activate & ACTIVATE_TELEMETRY)
-			strcpy(filterFlageEn, "checked");
-		else
-			strcpy(filterFlageEn, "");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterTelemetry\" type=\"checkbox\" value=\"OK\" %s/>Telemetry</td>\n", filterFlageEn);
-		html->print(temp_buffer);
-
-		if (config.pwr_sleep_activate & ACTIVATE_WX)
-			strcpy(filterFlageEn, "checked");
-		else
-			strcpy(filterFlageEn, "");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterWeather\" type=\"checkbox\" value=\"OK\" %s/>Weather</td>\n", filterFlageEn);
-		html->print(temp_buffer);
-
-		if (config.pwr_sleep_activate & ACTIVATE_IGATE)
-			strcpy(filterFlageEn, "checked");
-		else
-			strcpy(filterFlageEn, "");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterIGate\" type=\"checkbox\" value=\"OK\" %s/>IGate</td>\n", filterFlageEn);
-		html->print(temp_buffer);
-
-		if (config.pwr_sleep_activate & ACTIVATE_DIGI)
-			strcpy(filterFlageEn, "checked");
-		else
-			strcpy(filterFlageEn, "");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterDigi\" type=\"checkbox\" value=\"OK\" %s/>Digi</td>\n", filterFlageEn);
-		html->print(temp_buffer);
-
-		if (config.pwr_sleep_activate & ACTIVATE_QUERY)
-			strcpy(filterFlageEn, "checked");
-		else
-			strcpy(filterFlageEn, "");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterQuery\" type=\"checkbox\" value=\"OK\" %s/>Query</td>\n", filterFlageEn);
-		html->print(temp_buffer);
-
-		if (config.pwr_sleep_activate & ACTIVATE_WIFI)
-			strcpy(filterFlageEn, "checked");
-		else
-			strcpy(filterFlageEn, "");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterWifi\" type=\"checkbox\" value=\"OK\" %s/>WiFi</td>\n", filterFlageEn);
-		html->print(temp_buffer);
-
-		html->print("<td style=\"border:unset;\"></td>\n");
-		html->print("</tr></table></fieldset>\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
 		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
 		html->print("<div><button class=\"button\" type='submit' id='submitPWR'  name=\"commitPWR\"> Apply Change </button></div>\n");
 		html->print("<input type=\"hidden\" name=\"commitPWR\"/>\n");
@@ -7678,6 +7451,10 @@ void handle_system(AsyncWebServerRequest *request)
 
 		#ifdef LOG_FILE
 		/**************Log File******************/
+		// LU6JMF fix (Set/2026): filterFlageEn used to be declared by the
+		// (now removed) Power Save Mode "Events" section above. Re-declared
+		// here since this LOG_FILE block still needs it.
+		char filterFlageEn[10] = "";
 		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formLOG\" method=\"post\">\n");
 		html->print("<table>\n");
 		html->print("<th colspan=\"2\"><span><b>Log File</b></span></th>\n");

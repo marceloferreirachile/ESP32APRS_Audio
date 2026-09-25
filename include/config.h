@@ -64,10 +64,6 @@
 #define RF_MODE_GFSK	4
 #define RF_MODE_DPRS	5
 
-#define MODE_A	0
-#define MODE_B	1
-#define MODE_C	2
-
 
 typedef struct wifi_struct
 {
@@ -395,14 +391,13 @@ typedef struct Config_Struct
 	uint16_t tcp_kiss_port1 = 8001;
 	uint16_t tcp_kiss_port2 = 8002;
 
-	// Sleep mode
-	bool pwr_en;
-	uint8_t pwr_mode;
-	uint16_t pwr_sleep_interval; //sec
-	uint16_t pwr_stanby_delay; //sec
-	uint8_t pwr_sleep_activate;
-	int8_t pwr_gpio=-1;
-	bool pwr_active = 1;
+	// Sleep mode - most fields removed (Set/2026, LU6JMF): the "Power Save
+	// Mode" UI toggle never actually did anything - nothing in the firmware
+	// read pwr_en/pwr_mode/pwr_sleep_interval/pwr_sleep_activate/pwr_gpio/
+	// pwr_active to put the device to sleep, so those were cut to save space.
+	// pwr_stanby_delay is kept - it's genuinely used everywhere (StandByTick,
+	// OLED display timeout), unrelated to the dead sleep feature.
+	uint16_t pwr_stanby_delay = 30; //sec
 	bool disp_flip;
 	uint8_t disp_brightness;
 

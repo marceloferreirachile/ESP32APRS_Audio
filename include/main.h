@@ -408,7 +408,6 @@ const char TNC_MODE[4][6] = {"NONE", "KISS", "TNC2", "YAESU"};
 const char WX_PORT[7][11] = {"NONE", "UART0_CSV", "UART1_CSV", "UART2_CSV", "MODBUS","SENSOR","TCP/UDP"};
 const char MODEM_TYPE[4][17] = {"AFSK_300", "AFSK_1200","AFSK_1200v23","GFSK9600(G3RUH)"};
 const char FX25_MODE[3][6] = {"NONE","RX","RX+TX"};
-const char PWR_MODE[3][10] = {"MODE A", "MODE B","MODE C"};
 const char WX_SENSOR[26][19]={"Wind Course","Wind Speed","Wind Gust","Temperature","Rain 1hr","Rain 24hr","Rain Midnight","Humidity","Barometric","Luminosity","Snow","Soil Temperature","Soil Humidity","Water Temperature","Water TDS","Water Level","PM 2.5","PM 10","Co2","CH2O","TVOC","UV","SOUND","VBAT","IBAT","VSOLAR"};
 const char MIC_E_MSG[9][10] = {"Emergency", "Priority", "Special", "Committed", "Returning", "InService", "En Route", "Off Duty", "UnUsed"};
 
