@@ -3485,14 +3485,26 @@ void handle_msg(AsyncWebServerRequest *request)
 		bool objPermanent[4] = {false};
 		for (uint8_t oi = 0; oi < 4; oi++)
 		{
-			objName[oi][0] = 0;
-			objText[oi][0] = 0;
+			// LU6JMF fix (Set/2026): pre-seed every field from the current config,
+			// not just symbol/lat/lon/interval. Without this, any commitObj request
+			// that doesn't carry literally every field for every slot (e.g. another
+			// device/tab submitting the form) silently wipes name/text/limit/
+			// active_for back to defaults for the slots it didn't include.
+			// NOTE: objEn/objPermanent stay default-false (declared above) on purpose -
+			// they're checkboxes, and an unchecked checkbox is simply absent from the
+			// POST body (standard HTML behavior). Pre-seeding those two from config
+			// would make it impossible to ever uncheck them via a normal full submit.
+			strlcpy(objName[oi], config.obj_name[oi], sizeof(objName[oi]));
+			strlcpy(objText[oi], config.obj_text[oi], sizeof(objText[oi]));
 			objSymbol[oi][0] = config.obj_symbol[oi][0] ? config.obj_symbol[oi][0] : '/';
 			objSymbol[oi][1] = config.obj_symbol[oi][1] ? config.obj_symbol[oi][1] : 'r';
 			objSymbol[oi][2] = 0;
 			objLat[oi] = config.obj_lat[oi];
 			objLon[oi] = config.obj_lon[oi];
+			objMode[oi] = config.obj_mode[oi];
 			objInterval[oi] = config.obj_interval[oi] ? config.obj_interval[oi] : 900;
+			objLimit[oi] = config.obj_limit[oi];
+			objActiveFor[oi] = config.obj_activefor[oi];
 		}
 		for (uint8_t i = 0; i < request->args(); i++)
 		{
@@ -3579,9 +3591,18 @@ void handle_msg(AsyncWebServerRequest *request)
 		uint8_t blnActiveFor[9]; // v2.1-lu6jmf: 0=default (72/24h), else 24/36/48/72
 		for (uint8_t bi = 0; bi < 9; bi++)
 		{
-			blnText[bi][0] = 0;
+			// LU6JMF fix (Set/2026): pre-seed text from the current config, same as
+			// commitObj. Without this, a commitBLN request that doesn't carry every
+			// field for every slot (e.g. another device/tab submitting the form)
+			// silently wipes the bulletin/news text back to empty for the slots it
+			// didn't include.
+			// NOTE: blnEn stays default-false (declared above) on purpose - it's a
+			// checkbox, and an unchecked checkbox is simply absent from the POST
+			// body (standard HTML behavior). Pre-seeding it from config would make
+			// it impossible to ever uncheck it via a normal full submit.
+			strlcpy(blnText[bi], config.bln_text[bi], sizeof(blnText[bi]));
 			blnInterval[bi] = config.bln_interval[bi];
-			blnLimit[bi] = 0; // Empty field = unlimited
+			blnLimit[bi] = config.bln_limit[bi];
 			blnActiveFor[bi] = config.bln_activefor[bi];
 		}
 
@@ -5703,6 +5724,7 @@ void handle_mod(AsyncWebServerRequest *request)
 		html->print("<td style=\"text-align: left;\"><input min=\"0\" max=\"999999\" name=\"pppPin\" type=\"number\" value=\"");
 		char *pppPinStr = intToString(atoi(config.ppp_pin));
 		html->print(pppPinStr);
+		free(pppPinStr);
 		html->print("\" /> <i>*PIN of SIM</i></td>\n");
 		html->print("</tr>\n");
 		html->print("<tr>\n");
@@ -5711,6 +5733,7 @@ void handle_mod(AsyncWebServerRequest *request)
 		html->print("<td style=\"text-align: left;\"><input min=\"-1\" max=\"50\" name=\"rx\" type=\"number\" value=\"");
 		char *pppRxStr = intToString(config.ppp_rx_gpio);
 		html->print(pppRxStr);
+		free(pppRxStr);
 		html->print("\" /></td>\n");
 		html->print("</tr>\n");
 
@@ -5719,6 +5742,7 @@ void handle_mod(AsyncWebServerRequest *request)
 		html->print("<td style=\"text-align: left;\"><input min=\"-1\" max=\"50\" name=\"tx\" type=\"number\" value=\"");
 		char *pppTxStr = intToString(config.ppp_tx_gpio);
 		html->print(pppTxStr);
+		free(pppTxStr);
 		html->print("\" /></td>\n");
 		html->print("</tr>\n");
 
@@ -5733,6 +5757,7 @@ void handle_mod(AsyncWebServerRequest *request)
 		html->print("<td style=\"text-align: left;\"><input min=\"-1\" max=\"50\"  name=\"rst\" type=\"number\" value=\"");
 		char *pppRstStr = intToString(config.ppp_rst_gpio);
 		html->print(pppRstStr);
+		free(pppRstStr);
 		html->print("\" /> Active:<input type=\"radio\" name=\"rst_active\" value=\"0\" ");
 		html->print(LowFlag);
 		html->print("/>LOW <input type=\"radio\" name=\"rst_active\" value=\"1\" ");
@@ -5744,6 +5769,7 @@ void handle_mod(AsyncWebServerRequest *request)
 		html->print("<td style=\"text-align: left;\"><input min=\"0\" max=\"999999\" name=\"rstDly\" type=\"number\" value=\"");
 		char *pppRstDelayStr = intToString(config.ppp_rst_delay);
 		html->print(pppRstDelayStr);
+		free(pppRstDelayStr);
 		html->print("\" /> mSec.</td>\n");
 		html->print("</tr>\n");
 		html->print("<tr>\n");
@@ -6653,6 +6679,7 @@ void handle_mod2(AsyncWebServerRequest *request)
 		html->print("<td style=\"text-align: left;\"><input min=\"1024\" max=\"65535\"  id=\"Port\" name=\"Port\" type=\"number\" value=\"");
 		char *gnssTcpPortStr = intToString(config.gnss_tcp_port);
 		html->print(gnssTcpPortStr);
+		free(gnssTcpPortStr);
 		html->print("\" /></td>\n");
 		html->print("</tr>\n");
 
@@ -6714,9 +6741,11 @@ void handle_mod2(AsyncWebServerRequest *request)
 		html->print("<td style=\"text-align: left;\"><input min=\"-1\" max=\"");
 		char *gpioMaxStr20 = intToString(GPIO_NUM_MAX);
 		html->print(gpioMaxStr20);
+		free(gpioMaxStr20);
 		html->print("\" name=\"address\" type=\"number\" value=\"");
 		char *modbusAddrStr = intToString(config.modbus_address);
 		html->print(modbusAddrStr);
+		free(modbusAddrStr);
 		html->print("\" /></td>\n");
 		html->print("</tr>\n");
 
@@ -6725,9 +6754,11 @@ void handle_mod2(AsyncWebServerRequest *request)
 		html->print("<td style=\"text-align: left;\"><input min=\"-1\" max=\"");
 		char *gpioMaxStr21 = intToString(GPIO_NUM_MAX);
 		html->print(gpioMaxStr21);
+		free(gpioMaxStr21);
 		html->print("\" name=\"de\" type=\"number\" value=\"");
 		char *modbusDeStr = intToString(config.modbus_de_gpio);
 		html->print(modbusDeStr);
+		free(modbusDeStr);
 		html->print("\" /></td>\n");
 		html->print("</tr>\n");
 
