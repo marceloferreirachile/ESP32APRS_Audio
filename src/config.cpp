@@ -451,14 +451,9 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     doc["tcpKissPort1"] = config.tcp_kiss_port1;
     doc["tcpKissPort2"] = config.tcp_kiss_port2;
 
-    // Power control
-    doc["pwrEn"] = config.pwr_en;
-    doc["pwrMode"] = config.pwr_mode;
-    doc["pwrSleep"] = config.pwr_sleep_interval;
+    // Power control - only pwr_stanby_delay survives (Set/2026, LU6JMF): the
+    // rest was a dead "Power Save Mode" toggle, removed to save space.
     doc["pwrStanby"] = config.pwr_stanby_delay;
-    doc["pwrSleepAct"] = config.pwr_sleep_activate;
-    doc["pwrIO"] = config.pwr_gpio;
-    doc["pwrIOAct"] = config.pwr_active;
 
 #ifdef BLUETOOTH
         doc["btSlave"] = config.bt_slave;
@@ -561,6 +556,39 @@ bool saveConfiguration(const char *filename, const Configuration &config)
         doc[key] = config.bln_interval[bi];
         snprintf(key, sizeof(key), "blnLimit%d", bi + 1);
         doc[key] = config.bln_limit[bi];
+        snprintf(key, sizeof(key), "blnActFor%d", bi + 1);
+        doc[key] = config.bln_activefor[bi];
+    }
+
+    // Objects (Object1-4) - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+    // LU6JMF fix (Set/2026): estes campos nunca eram salvos aqui - o Object
+    // vivia so em RAM e qualquer reboot apagava tudo (nome/texto/posicao/
+    // ativo), mesmo com o commitObj corrigido. Agora persiste igual ao BLN.
+    for (uint8_t oi = 0; oi < 4; oi++)
+    {
+        char okey[20];
+        snprintf(okey, sizeof(okey), "objEn%d", oi + 1);
+        doc[okey] = config.obj_en[oi];
+        snprintf(okey, sizeof(okey), "objName%d", oi + 1);
+        doc[okey] = config.obj_name[oi];
+        snprintf(okey, sizeof(okey), "objLat%d", oi + 1);
+        doc[okey] = config.obj_lat[oi];
+        snprintf(okey, sizeof(okey), "objLon%d", oi + 1);
+        doc[okey] = config.obj_lon[oi];
+        snprintf(okey, sizeof(okey), "objSymbol%d", oi + 1);
+        doc[okey] = config.obj_symbol[oi];
+        snprintf(okey, sizeof(okey), "objText%d", oi + 1);
+        doc[okey] = config.obj_text[oi];
+        snprintf(okey, sizeof(okey), "objMode%d", oi + 1);
+        doc[okey] = config.obj_mode[oi];
+        snprintf(okey, sizeof(okey), "objInterval%d", oi + 1);
+        doc[okey] = config.obj_interval[oi];
+        snprintf(okey, sizeof(okey), "objLimit%d", oi + 1);
+        doc[okey] = config.obj_limit[oi];
+        snprintf(okey, sizeof(okey), "objActiveFor%d", oi + 1);
+        doc[okey] = config.obj_activefor[oi];
+        snprintf(okey, sizeof(okey), "objPermanent%d", oi + 1);
+        doc[okey] = config.obj_permanent[oi];
     }
 
     // Serialize JSON to file
@@ -988,14 +1016,8 @@ bool loadConfiguration(const char *filename, Configuration &config)
         config.tcp_kiss_port1 = doc["tcpKissPort1"] | 8001;
         config.tcp_kiss_port2 = doc["tcpKissPort2"] | 8002;
 
-        // Power control
-        config.pwr_en = doc["pwrEn"];
-        config.pwr_mode = doc["pwrMode"];
-        config.pwr_sleep_interval = doc["pwrSleep"];
-        config.pwr_stanby_delay = doc["pwrStanby"];
-        config.pwr_sleep_activate = doc["pwrSleepAct"];
-        config.pwr_gpio = doc["pwrIO"];
-        config.pwr_active = doc["pwrIOAct"];
+        // Power control - only pwr_stanby_delay survives (Set/2026, LU6JMF)
+        config.pwr_stanby_delay = doc["pwrStanby"] | 30;
 
 #ifdef BLUETOOTH
         config.bt_slave = doc["btSlave"];
@@ -1117,6 +1139,56 @@ bool loadConfiguration(const char *filename, Configuration &config)
                 config.bln_interval[bi] = doc[key] | 1800;
                 snprintf(key, sizeof(key), "blnLimit%d", bi + 1);
                 config.bln_limit[bi] = doc[key] | 0;
+            }
+            snprintf(key, sizeof(key), "blnActFor%d", bi + 1);
+            config.bln_activefor[bi] = doc[key] | 0;
+        }
+
+        // Objects (Object1-4) - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
+        // LU6JMF fix (Set/2026): faltava o load pareado do save acima - sem
+        // isso o Object voltava sempre pro default (desativado/vazio) em
+        // todo boot, mesmo tendo sido salvo certinho no arquivo.
+        for (uint8_t oi = 0; oi < 4; oi++)
+        {
+            char okey[20];
+            snprintf(okey, sizeof(okey), "objEn%d", oi + 1);
+            if (doc[okey].isNull())
+            {
+                config.obj_en[oi] = false;
+                config.obj_name[oi][0] = 0;
+                config.obj_lat[oi] = 0;
+                config.obj_lon[oi] = 0;
+                strlcpy(config.obj_symbol[oi], "/r", sizeof(config.obj_symbol[oi]));
+                config.obj_text[oi][0] = 0;
+                config.obj_mode[oi] = 0;
+                config.obj_interval[oi] = 900;
+                config.obj_limit[oi] = 0;
+                config.obj_activefor[oi] = 0;
+                config.obj_permanent[oi] = false;
+            }
+            else
+            {
+                config.obj_en[oi] = doc[okey];
+                snprintf(okey, sizeof(okey), "objName%d", oi + 1);
+                strlcpy(config.obj_name[oi], doc[okey] | "", sizeof(config.obj_name[oi]));
+                snprintf(okey, sizeof(okey), "objLat%d", oi + 1);
+                config.obj_lat[oi] = doc[okey] | 0.0;
+                snprintf(okey, sizeof(okey), "objLon%d", oi + 1);
+                config.obj_lon[oi] = doc[okey] | 0.0;
+                snprintf(okey, sizeof(okey), "objSymbol%d", oi + 1);
+                strlcpy(config.obj_symbol[oi], doc[okey] | "/r", sizeof(config.obj_symbol[oi]));
+                snprintf(okey, sizeof(okey), "objText%d", oi + 1);
+                strlcpy(config.obj_text[oi], doc[okey] | "", sizeof(config.obj_text[oi]));
+                snprintf(okey, sizeof(okey), "objMode%d", oi + 1);
+                config.obj_mode[oi] = doc[okey] | 0;
+                snprintf(okey, sizeof(okey), "objInterval%d", oi + 1);
+                config.obj_interval[oi] = doc[okey] | 900;
+                snprintf(okey, sizeof(okey), "objLimit%d", oi + 1);
+                config.obj_limit[oi] = doc[okey] | 0;
+                snprintf(okey, sizeof(okey), "objActiveFor%d", oi + 1);
+                config.obj_activefor[oi] = doc[okey] | 0;
+                snprintf(okey, sizeof(okey), "objPermanent%d", oi + 1);
+                config.obj_permanent[oi] = doc[okey];
             }
         }
 

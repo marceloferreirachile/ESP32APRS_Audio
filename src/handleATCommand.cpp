@@ -2627,69 +2627,16 @@ String handleATCommand(String cmd)
         return "OK";
     }
 
-    if (cmd == "AT+PWR_EN?")
-        return String(config.pwr_en ? "1" : "0");
-    else if (cmd == "AT+PWR_EN=1")
-    {
-        config.pwr_en = true;
-        return "OK";
-    }
-    else if (cmd == "AT+PWR_EN=0")
-    {
-        config.pwr_en = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+PWR_MODE?")
-        return String(config.pwr_mode);
-    else if (cmd.startsWith("AT+PWR_MODE="))
-    {
-        config.pwr_mode = cmd.substring(12).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+PWR_SLEEP_INTERVAL?")
-        return String(config.pwr_sleep_interval);
-    else if (cmd.startsWith("AT+PWR_SLEEP_INTERVAL="))
-    {
-        config.pwr_sleep_interval = cmd.substring(22).toInt();
-        return "OK";
-    }
+    // AT+PWR_EN / PWR_MODE / PWR_SLEEP_INTERVAL / PWR_SLEEP_ACTIVATE /
+    // PWR_GPIO / PWR_ACTIVE removed (Set/2026, LU6JMF): dead "Power Save
+    // Mode" feature, nothing in the firmware acted on these. AT+PWR_STANBY_
+    // DELAY stays below - it's genuinely used (OLED standby timeout).
 
     if (cmd == "AT+PWR_STANBY_DELAY?")
         return String(config.pwr_stanby_delay);
     else if (cmd.startsWith("AT+PWR_STANBY_DELAY="))
     {
         config.pwr_stanby_delay = cmd.substring(20).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+PWR_SLEEP_ACTIVATE?")
-        return String(config.pwr_sleep_activate);
-    else if (cmd.startsWith("AT+PWR_SLEEP_ACTIVATE="))
-    {
-        config.pwr_sleep_activate = cmd.substring(22).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+PWR_GPIO?")
-        return String(config.pwr_gpio);
-    else if (cmd.startsWith("AT+PWR_GPIO="))
-    {
-        config.pwr_gpio = cmd.substring(12).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+PWR_ACTIVE?")
-        return String(config.pwr_active ? "1" : "0");
-    else if (cmd == "AT+PWR_ACTIVE=1")
-    {
-        config.pwr_active = true;
-        return "OK";
-    }
-    else if (cmd == "AT+PWR_ACTIVE=0")
-    {
-        config.pwr_active = false;
         return "OK";
     }
 
