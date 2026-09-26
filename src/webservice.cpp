@@ -11715,14 +11715,14 @@ void handle_wireless(AsyncWebServerRequest *request)
 			{
 				if (request->arg(i) != "")
 				{
-					strcpy(config.wifi_ap_ssid, request->arg(i).c_str());
+					strlcpy(config.wifi_ap_ssid, request->arg(i).c_str(), sizeof(config.wifi_ap_ssid));
 				}
 			}
 			if (request->argName(i) == "wifi_passAP")
 			{
 				if (request->arg(i) != "")
 				{
-					strcpy(config.wifi_ap_pass, request->arg(i).c_str());
+					strlcpy(config.wifi_ap_pass, request->arg(i).c_str(), sizeof(config.wifi_ap_pass));
 				}
 			}
 		}
