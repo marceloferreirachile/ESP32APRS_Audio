@@ -327,10 +327,52 @@ typedef struct Telemetry_struct
 	bool EQNS_FLAG;
 } TelemetryType;
 
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira
+// RF job metadata used by the central TX Scheduler.
+// Type identifies the producer; Priority controls future RF arbitration.
+// Ported from the TX-SCHEDULER-TEST project onto the v2.1.3.1 base.
+// -----------------------------------------------------------------------------
+enum Lu6jmfTxJobType : uint8_t
+{
+    LU6JMF_TXJOB_GENERIC = 0,
+    LU6JMF_TXJOB_ACK,
+    LU6JMF_TXJOB_MESSAGE,
+    LU6JMF_TXJOB_MSG_RETRY,
+    LU6JMF_TXJOB_DIGI,
+    LU6JMF_TXJOB_TRACKER,
+    LU6JMF_TXJOB_IGATE,
+    LU6JMF_TXJOB_DIGI_POSITION,
+    LU6JMF_TXJOB_WX,
+    LU6JMF_TXJOB_TLM,
+    LU6JMF_TXJOB_BULLETIN,
+    LU6JMF_TXJOB_NEWS,
+    LU6JMF_TXJOB_OBJECT,
+    LU6JMF_TXJOB_INET2RF,
+    LU6JMF_TXJOB_EXTERNAL
+};
+
+enum Lu6jmfTxPriority : uint8_t
+{
+    // LU6JMF - Marcelo Ferreira: bottom tier for noisy/low-value periodic
+    // traffic (e.g. TLM) that should wait behind everything else, including
+    // plain LOW. Never preempts anything; only CRITICAL may preempt it.
+    LU6JMF_TXPRIO_VERY_LOW = 0,
+    LU6JMF_TXPRIO_LOW,
+    LU6JMF_TXPRIO_NORMAL,
+    LU6JMF_TXPRIO_HIGH,
+    LU6JMF_TXPRIO_CRITICAL
+};
+
 typedef struct txQueue_struct
 {
 	bool Active;
 	uint8_t Channel;
+
+    // LU6JMF - Marcelo Ferreira: scheduler metadata.
+    uint8_t JobType;
+    uint8_t Priority;
+
 	long timeStamp;
 	int Delay;
 	size_t length;
@@ -445,6 +487,91 @@ int packet2Raw(String &tnc2, AX25Msg &Packet);
 //bool waitResponse(String &data, String rsp = "\r\n", uint32_t timeout = 1000);
 //String sendIsAckMsg(String toCallSign, char *msgId);
 bool pkgTxPush(const char *info, size_t len, int dly,uint8_t Ch);
+
+// LU6JMF - Marcelo Ferreira
+// Extended TX Scheduler entry point. Existing producers may continue using
+// pkgTxPush() and are classified as GENERIC / NORMAL until migrated.
+bool pkgTxPushJob(const char *info,
+                  size_t len,
+                  int dly,
+                  uint8_t Ch,
+                  uint8_t jobType,
+                  uint8_t priority);
+
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira
+// TX Scheduler diagnostics (ported from TX-SCHEDULER-TEST). Not yet exposed
+// on a web page here - kept available for a future /txdebug port.
+// -----------------------------------------------------------------------------
+struct Lu6jmfTxDebugEvent
+{
+    uint32_t timestamp;
+    uint32_t value;
+    uint8_t code;
+
+    // LU6JMF - Marcelo Ferreira
+    // Producer identity is independent from the event-specific value.
+    uint8_t jobType;
+};
+
+void lu6jmfTxDebugSnapshot(bool *busy,
+                           bool *pttSeen,
+                           bool *txNow,
+                           bool *pttOffPending,
+                           bool *dcdBusy,
+                           uint32_t *completed,
+                           uint32_t *rejected,
+                           uint32_t *lastCycle,
+                           uint32_t *lastWait,
+                           uint32_t *currentCycle);
+
+uint8_t lu6jmfTxDebugEvents(Lu6jmfTxDebugEvent *events, uint8_t maxEvents);
+
+struct Lu6jmfTxTimingDebug
+{
+    uint8_t jobType;
+    uint32_t lastAirMs;
+    uint32_t avgAirMs;
+    uint32_t maxAirMs;
+    uint32_t samples;
+};
+
+uint8_t lu6jmfTxDebugTiming(Lu6jmfTxTimingDebug *stats,
+                            uint8_t maxStats);
+
+struct Lu6jmfTxQueueDebug
+{
+    uint8_t current;
+    uint8_t peak;
+    uint8_t capacity;
+    uint32_t saturated;
+    uint32_t rejected;
+};
+
+struct Lu6jmfTxQueueWaitDebug
+{
+    uint8_t priority;
+    uint32_t lastMs;
+    uint32_t avgMs;
+    uint32_t maxMs;
+    uint32_t samples;
+};
+
+void lu6jmfTxDebugQueue(Lu6jmfTxQueueDebug *queue);
+
+uint8_t lu6jmfTxDebugQueueWait(Lu6jmfTxQueueWaitDebug *stats,
+                               uint8_t maxStats);
+
+struct Lu6jmfTxQueueRejectDebug
+{
+    uint8_t jobType;
+    uint32_t rejected;
+};
+
+uint8_t lu6jmfTxDebugQueueRejectedByJob(
+    Lu6jmfTxQueueRejectDebug *stats,
+    uint8_t maxStats);
+
 //bool pkgTxUpdate(const char *info, int delay);
 void dispWindow(String line, uint8_t mode, bool filter);
 void dispTxWindow(txDisp txs);

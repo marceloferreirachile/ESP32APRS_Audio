@@ -187,6 +187,13 @@ void Ax25TransmitCheck(void);
  */
 void Ax25Init(uint8_t fx25Mode);
 
+/**
+ * @brief Read TX ring buffer diagnostics (head/tail/full flag/init stage)
+ * @warning Diagnostic only - added 2026-09 by LU6JMF to investigate RF TX
+ * silently stopping over time while APRS-IS keeps working
+ */
+void Ax25GetTxDiag(uint8_t *head, uint8_t *tail, bool *bufferFull, uint8_t *initStage);
+
 void ax25_decode(uint8_t *buf,size_t len,uint16_t mVrms, AX25Msg *msg);
 
 char ax25_encode(ax25frame &frame, char *txt,int size);

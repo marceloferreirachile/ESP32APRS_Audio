@@ -541,22 +541,99 @@ endParseFx25Frame:
 }
 #endif
 
+// v2.1.3.1-lu6jmf: forward-declared instead of #include "netlog.h" here, to
+// avoid pulling a LittleFS dependency into this vendored library file for
+// just one diagnostic helper - implemented in src/netlog.cpp.
+void NetLogWrite(const char *line);
+
 void *Ax25WriteTxFrame(uint8_t *data, uint16_t size)
 {
+	// Diagnostic only - added 2026-09 by LU6JMF to see exactly what went to RF
+	// (this function is the single entry point into the RF TX ring buffer, used
+	// by every source: beacons, Object, messages, digipeated packets, KISS).
+	// Deliberately NOT logging APRS-IS traffic - that's a separate code path and
+	// already visible on aprs.fi. Decodes callsigns + info text once, then tags
+	// the outcome (OK/DROP) at whichever exit point this call actually takes.
+	// v2.1.3.1-lu6jmf: static, not stack-local - this function is called from
+	// deep within taskAPRS's call chain on a tight stack budget. A prior version
+	// of this diagnostic put ~235 bytes of locals here and caused a real stack
+	// canary crash (taskAPRS) at the very first beacon TX. Not reentrant-unsafe:
+	// only taskAPRS calls into the RF TX path, never concurrently with itself.
+	static char rfDiagLine[140];
+	{
+		uint8_t *p = data;
+		static char dst[7], src[7];
+		memset(dst, 0, sizeof(dst));
+		memset(src, 0, sizeof(src));
+		for (uint8_t i = 0; i < 6 && (uint16_t)(p - data) < size; i++) { char c = (*p++ >> 1); dst[i] = (c == ' ') ? 0 : c; }
+		uint8_t dstSsid = ((uint16_t)(p - data) < size) ? ((*p++ >> 1) & 0x0F) : 0;
+		for (uint8_t i = 0; i < 6 && (uint16_t)(p - data) < size; i++) { char c = (*p++ >> 1); src[i] = (c == ' ') ? 0 : c; }
+		uint8_t srcSsid = ((uint16_t)(p - data) < size) ? ((*p >> 1) & 0x0F) : 0;
+		bool lastAddr = ((uint16_t)(p - data) < size) ? (*p & 0x01) : true;
+		p++;
+		while (!lastAddr && (uint16_t)(p - data) < size)
+		{
+			p += 6;
+			if ((uint16_t)(p - data) >= size) break;
+			lastAddr = (*p & 0x01);
+			p++;
+		}
+		static char info[81];
+		memset(info, 0, sizeof(info));
+		if ((uint16_t)((p - data) + 2) <= size)
+		{
+			p += 2; // skip control + PID
+			int infoLen = size - (int)(p - data);
+			if (infoLen > 80) infoLen = 80;
+			if (infoLen < 0) infoLen = 0;
+			memcpy(info, p, infoLen);
+			for (int i = 0; i < infoLen; i++)
+				if ((uint8_t)info[i] < 32 || (uint8_t)info[i] > 126) info[i] = '.';
+			info[infoLen] = 0;
+		}
+		snprintf(rfDiagLine, sizeof(rfDiagLine), "%s-%u>%s-%u:%s", src, srcSsid, dst, dstSsid, info);
+	}
+
+	// v2.1.3.1-lu6jmf: shared scratch buffer for netlog lines (static - same
+	// stack-budget reasoning as rfDiagLine above).
+	static char netlogLine[160];
+
 	if(txFrameBufferFull)
+	{
+		// v2.1.3.1-lu6jmf: snprintf once into the static scratch buffer, then
+		// Serial.print() it - NOT Serial.printf("...%s...", rfDiagLine). printf's
+		// %s goes through newlib's _svfprintf_r, which has a large stack frame;
+		// called from this deep in taskAPRS's chain (taskAPRS->pkgTxSend->
+		// APRS_sendTNC2Pkt->Ax25WriteTxFrame) that was enough to trip the hardware
+		// alloca-exception and overflow taskAPRS's 4096-word stack on the very
+		// first TX. Serial.print() of a plain buffer has no such cost.
+		snprintf(netlogLine, sizeof(netlogLine), "[RFTX DROP-FULL] %s", rfDiagLine);
+		Serial.println(netlogLine);
+		NetLogWrite(netlogLine);
 		return NULL;
+	}
 
 #ifdef ENABLE_FX25
 	if(Ax25Config.fx25 && Ax25Config.fx25Tx)
 	{
 		void *ret = writeFx25Frame(data, size);
 		if(ret)
+		{
+			// v2.1.3.1-lu6jmf: see stack-overflow comment above - Serial.print(), not printf("%s").
+			snprintf(netlogLine, sizeof(netlogLine), "[RFTX OK-FX25] %s", rfDiagLine);
+			Serial.println(netlogLine);
+			NetLogWrite(netlogLine);
 			return ret;
+		}
 	}
 #endif
 
 	if(GET_FREE_SIZE(FRAME_BUFFER_SIZE, txBufferHead, txBufferTail) < size)
 	{
+		// v2.1.3.1-lu6jmf: see stack-overflow comment above - Serial.print(), not printf("%s").
+		snprintf(netlogLine, sizeof(netlogLine), "[RFTX DROP-NOSPACE] %s", rfDiagLine);
+		Serial.println(netlogLine);
+		NetLogWrite(netlogLine);
 		return NULL;
 	}
 
@@ -582,6 +659,15 @@ void *Ax25WriteTxFrame(uint8_t *data, uint16_t size)
 	if(txFrameHead == txFrameTail)
 		txFrameBufferFull = true;
 	//__enable_irq();
+	// v2.1.3.1-lu6jmf: this is the exact call site the stack-overflow crash was
+	// traced to (addr2line on a real "Stack canary watchpoint triggered
+	// (taskAPRS)" backtrace: taskAPRS->pkgTxSend->APRS_sendTNC2Pkt->
+	// Ax25WriteTxFrame->Serial.printf->...->_svfprintf_r->_xt_alloca_exc).
+	// Serial.print() of a pre-built buffer instead of printf("%s") removes
+	// newlib's heavy formatter from taskAPRS's already-tight stack budget.
+	snprintf(netlogLine, sizeof(netlogLine), "[RFTX OK] %s", rfDiagLine);
+	Serial.println(netlogLine);
+	NetLogWrite(netlogLine);
 	return ret;
 }
 
@@ -1071,6 +1157,13 @@ static void transmitStart(void)
  */
 void Ax25TransmitCheck(void)
 {
+	 // v2.1.3.1-lu6jmf: don't attempt to key up until AFSK_hw_init() has fully
+	 // configured the DAC timer. Without this, taskAPRS (higher priority) can
+	 // preempt taskAPRSPoll mid-init and call DAC_TimerEnable(true) on a
+	 // half-initialized timer_dac, causing a deterministic boot-time crash.
+	 // See afskHwReady comment in AFSK.cpp for full explanation.
+	 if(!AFSK_IsHwReady())
+	 	return;
 	 if(txInitStage == TX_INIT_OFF) //TX not initialized at all, nothing to transmit
 	 	return;
 	 if(txInitStage == TX_INIT_TRANSMITTING) //already transmitting
@@ -1102,6 +1195,18 @@ void Ax25TransmitCheck(void)
 	 		}
 	 	}
 	 }
+}
+
+// Diagnostic only - added 2026-09 by LU6JMF to investigate RF TX silently
+// stopping over time while APRS-IS keeps working. Read-only snapshot of the
+// 3-slot TX ring buffer state, safe to call from another task (single-word
+// reads of counters that only the AX.25 ISR/task machinery writes).
+void Ax25GetTxDiag(uint8_t *head, uint8_t *tail, bool *bufferFull, uint8_t *initStage)
+{
+	*head = txFrameHead;
+	*tail = txFrameTail;
+	*bufferFull = txFrameBufferFull;
+	*initStage = (uint8_t)txInitStage;
 }
 
 void Ax25Init(uint8_t fx25Mode)

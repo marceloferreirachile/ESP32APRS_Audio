@@ -556,8 +556,17 @@ bool saveConfiguration(const char *filename, const Configuration &config)
         doc[key] = config.bln_interval[bi];
         snprintf(key, sizeof(key), "blnLimit%d", bi + 1);
         doc[key] = config.bln_limit[bi];
-        snprintf(key, sizeof(key), "blnActFor%d", bi + 1);
-        doc[key] = config.bln_activefor[bi];
+
+        // LU6JMF - Marcelo Ferreira:
+        // BLN1-BLN9 share the same campaign lifetime and real-send counter.
+        snprintf(key, sizeof(key), "blnDuration%d", bi + 1);
+        doc[key] = config.bln_duration[bi];
+
+        snprintf(key, sizeof(key), "blnStarted%d", bi + 1);
+        doc[key] = config.bln_started_at[bi];
+
+        snprintf(key, sizeof(key), "blnSentTotal%d", bi + 1);
+        doc[key] = config.bln_sent_total[bi];
     }
 
     // Objects (Object1-4) - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
@@ -1127,8 +1136,11 @@ bool loadConfiguration(const char *filename, Configuration &config)
             {
                 config.bln_en[bi] = false;
                 config.bln_text[bi][0] = 0;
-                config.bln_interval[bi] = 1800;
+                config.bln_interval[bi] = 30; // LU6JMF - Marcelo Ferreira: minutes
                 config.bln_limit[bi] = 0;
+                config.bln_duration[bi] = 72;
+                config.bln_started_at[bi] = 0;
+                config.bln_sent_total[bi] = 0;
             }
             else
             {
@@ -1136,12 +1148,51 @@ bool loadConfiguration(const char *filename, Configuration &config)
                 snprintf(key, sizeof(key), "blnText%d", bi + 1);
                 strlcpy(config.bln_text[bi], doc[key] | "", sizeof(config.bln_text[bi]));
                 snprintf(key, sizeof(key), "blnInterval%d", bi + 1);
-                config.bln_interval[bi] = doc[key] | 1800;
+                config.bln_interval[bi] = doc[key] | 30; // LU6JMF - Marcelo Ferreira: minutes
+
+                // LU6JMF - Marcelo Ferreira:
+                // One-time compatibility with our earlier BLN implementation,
+                // where the interval was stored in seconds.
+                // Values above the current UI maximum (1440 min) are legacy seconds.
+                if (bi < 4 && config.bln_interval[bi] > 1440)
+                {
+                    config.bln_interval[bi] =
+                        (config.bln_interval[bi] + 30) / 60;
+
+                    if (config.bln_interval[bi] == 0)
+                        config.bln_interval[bi] = 1;
+                }
+
                 snprintf(key, sizeof(key), "blnLimit%d", bi + 1);
                 config.bln_limit[bi] = doc[key] | 0;
             }
-            snprintf(key, sizeof(key), "blnActFor%d", bi + 1);
-            config.bln_activefor[bi] = doc[key] | 0;
+
+            // LU6JMF - Marcelo Ferreira:
+            // Common BLN1-BLN9 campaign state (replaces bln_activefor).
+            snprintf(key, sizeof(key), "blnDuration%d", bi + 1);
+            config.bln_duration[bi] = doc[key] | 72;
+
+            // Only the supported calendar lifetimes are accepted.
+            if (config.bln_duration[bi] != 24 &&
+                config.bln_duration[bi] != 36 &&
+                config.bln_duration[bi] != 48 &&
+                config.bln_duration[bi] != 72)
+            {
+                config.bln_duration[bi] = 72;
+            }
+
+            snprintf(key, sizeof(key), "blnStarted%d", bi + 1);
+            if (!doc[key].isNull())
+            {
+                config.bln_started_at[bi] = doc[key] | 0UL;
+            }
+            else
+            {
+                config.bln_started_at[bi] = 0;
+            }
+
+            snprintf(key, sizeof(key), "blnSentTotal%d", bi + 1);
+            config.bln_sent_total[bi] = doc[key] | 0;
         }
 
         // Objects (Object1-4) - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026

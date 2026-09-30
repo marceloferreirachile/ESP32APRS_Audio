@@ -14,6 +14,8 @@
 #include <esp_system.h>
 #include "main.h"
 #include <LibAPRSesp.h>
+// LU6JMF - Marcelo Ferreira: DCD state used by TX Scheduler diagnostics.
+#include "modem.h"
 #include <limits.h>
 #include <KISS.h>
 #include "webservice.h"
@@ -58,6 +60,7 @@
 #include <rom/spi_flash.h>
 #include "FS.h"
 #include <LITTLEFS.h>
+#include "netlog.h"
 
 #include <time.h>
 
@@ -2875,7 +2878,449 @@ int pkgTxCount()
     return count;
 }
 
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira
+// TX Scheduler: one RF frame at a time.
+// Busy begins when AX.25 accepts a frame and ends only after real PTT release.
+// -----------------------------------------------------------------------------
+static volatile bool lu6jmfRfTxBusy = false;
+static volatile bool lu6jmfRfPttSeen = false;
+
+static uint32_t lu6jmfRfDispatchMs = 0;
+static uint32_t lu6jmfRfPttOnMs = 0;
+
+// LU6JMF - Marcelo Ferreira
+// Preserve the last measured DISPATCH -> PTT ON delay after TX completion.
+static uint32_t lu6jmfRfLastWaitMs = 0;
+
+static uint32_t lu6jmfRfLastCycleMs = 0;
+static uint32_t lu6jmfRfCompleted = 0;
+static uint32_t lu6jmfRfRejected = 0;
+
+// LU6JMF - Marcelo Ferreira
+// Identity of the single RF job currently owned by the TX lifecycle.
+static uint8_t lu6jmfRfActiveJobType = LU6JMF_TXJOB_GENERIC;
+
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira
+// Phase 2J: learned real RF airtime by producer type.
+//
+// Airtime is measured only from observed PTT ON to authoritative PTT OFF.
+// These values are diagnostic / learning data only. They NEVER decide when a
+// transmission has completed and NEVER release the RF scheduler.
+// -----------------------------------------------------------------------------
+struct Lu6jmfTxTimingStat
+{
+    uint32_t lastAirMs;
+    uint32_t avgAirMs;
+    uint32_t maxAirMs;
+    uint32_t samples;
+};
+
+static const uint8_t LU6JMF_TX_JOB_COUNT = LU6JMF_TXJOB_EXTERNAL + 1;
+static Lu6jmfTxTimingStat lu6jmfTxTiming[LU6JMF_TX_JOB_COUNT];
+
+static void lu6jmfTxTimingLearn(uint8_t jobType, uint32_t airMs)
+{
+    if (jobType >= LU6JMF_TX_JOB_COUNT)
+        return;
+
+    Lu6jmfTxTimingStat &stat = lu6jmfTxTiming[jobType];
+
+    stat.lastAirMs = airMs;
+
+    if (stat.samples == 0)
+    {
+        stat.avgAirMs = airMs;
+        stat.maxAirMs = airMs;
+    }
+    else
+    {
+        // Smoothed moving average: 7/8 history + 1/8 newest sample.
+        stat.avgAirMs =
+            (uint32_t)(((uint64_t)stat.avgAirMs * 7ULL + airMs) / 8ULL);
+
+        if (airMs > stat.maxAirMs)
+            stat.maxAirMs = airMs;
+    }
+
+    if (stat.samples < UINT32_MAX)
+        stat.samples++;
+}
+
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira
+// Phase 2K: central queue congestion and RF wait diagnostics.
+//
+// Observational only. These counters NEVER participate in RF arbitration,
+// admission, ACK protection, PTT control or scheduler completion.
+// -----------------------------------------------------------------------------
+struct Lu6jmfTxQueueWaitStat
+{
+    uint32_t lastMs;
+    uint32_t avgMs;
+    uint32_t maxMs;
+    uint32_t samples;
+};
+
+// LU6JMF - Marcelo Ferreira: VERY_LOW, LOW, NORMAL, HIGH, CRITICAL.
+static const uint8_t LU6JMF_TX_PRIORITY_COUNT = 5;
+static Lu6jmfTxQueueWaitStat
+    lu6jmfTxQueueWait[LU6JMF_TX_PRIORITY_COUNT];
+
+static uint8_t lu6jmfTxQueuePeak = 0;
+static uint32_t lu6jmfTxQueueSaturated = 0;
+static uint32_t lu6jmfTxQueueRejected = 0;
+
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira
+// Phase 2L-A: identify which producers are actually rejected when the
+// central queue is full. Diagnostic only; no queue policy changes yet.
+// -----------------------------------------------------------------------------
+static uint32_t
+    lu6jmfTxQueueRejectedByJob[LU6JMF_TX_JOB_COUNT];
+
+static uint8_t lu6jmfTxQueueCountLocked()
+{
+    uint8_t count = 0;
+
+    for (int i = 0; i < PKGTXSIZE; i++)
+    {
+        if (txQueue[i].Active)
+            count++;
+    }
+
+    return count;
+}
+
+static void lu6jmfTxQueueObserveLocked()
+{
+    uint8_t count = lu6jmfTxQueueCountLocked();
+
+    if (count > lu6jmfTxQueuePeak)
+        lu6jmfTxQueuePeak = count;
+}
+
+static void lu6jmfTxQueueWaitLearn(uint8_t priority, uint32_t waitMs)
+{
+    if (priority >= LU6JMF_TX_PRIORITY_COUNT)
+        return;
+
+    Lu6jmfTxQueueWaitStat &stat = lu6jmfTxQueueWait[priority];
+
+    stat.lastMs = waitMs;
+
+    if (stat.samples == 0)
+    {
+        stat.avgMs = waitMs;
+        stat.maxMs = waitMs;
+    }
+    else
+    {
+        stat.avgMs =
+            (uint32_t)(((uint64_t)stat.avgMs * 7ULL + waitMs) / 8ULL);
+
+        if (waitMs > stat.maxMs)
+            stat.maxMs = waitMs;
+    }
+
+    if (stat.samples < UINT32_MAX)
+        stat.samples++;
+}
+
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira
+// Phase 2H: short post-message ACK protection window.
+// After MESSAGE / MSG RETRY RF completion, LOW priority RF jobs are held
+// briefly while CRITICAL, HIGH and NORMAL traffic remain eligible.
+// -----------------------------------------------------------------------------
+static const uint32_t LU6JMF_ACK_WINDOW_MS = 5000;
+static uint32_t lu6jmfAckWindowUntilMs = 0;
+static bool lu6jmfAckWindowActive = false;
+
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira
+// TX Event Log: lightweight circular diagnostic trace stored only in RAM.
+// No packet payloads, no dynamic allocation and no flash writes.
+// -----------------------------------------------------------------------------
+enum Lu6jmfTxEventCode : uint8_t
+{
+    LU6JMF_TXEV_RF_ACCEPTED = 1,
+    LU6JMF_TXEV_PTT_ON,
+    LU6JMF_TXEV_PTT_OFF_TASK,
+    LU6JMF_TXEV_PTT_OFF_DONE,
+    LU6JMF_TXEV_RF_RELEASE,
+    LU6JMF_TXEV_AX25_REJECT,
+
+    // LU6JMF - Marcelo Ferreira
+    // Phase 2G: observe central queue admission without changing RF policy.
+    LU6JMF_TXEV_QUEUE_PUSH,
+    LU6JMF_TXEV_QUEUE_FULL,
+
+    // LU6JMF - Marcelo Ferreira
+    // Phase 2H: post-message ACK protection window diagnostics.
+    LU6JMF_TXEV_ACK_WINDOW_START,
+    LU6JMF_TXEV_ACK_WINDOW_END,
+
+    // LU6JMF - Marcelo Ferreira
+    // Phase 2I: CRITICAL admission replaced a pending LOW RF job.
+    LU6JMF_TXEV_QUEUE_PREEMPT
+};
+
+struct Lu6jmfTxEvent
+{
+    uint32_t timestamp;
+    uint32_t value;
+    uint8_t code;
+
+    // LU6JMF - Marcelo Ferreira
+    // Job identity follows the event without overloading value.
+    uint8_t jobType;
+};
+
+static const uint8_t LU6JMF_TX_EVENT_COUNT = 24;
+static Lu6jmfTxEvent lu6jmfTxEvents[LU6JMF_TX_EVENT_COUNT];
+static uint8_t lu6jmfTxEventHead = 0;
+static uint8_t lu6jmfTxEventUsed = 0;
+
+static void lu6jmfTxEventAdd(uint8_t code,
+                             uint32_t value = 0,
+                             uint8_t jobType = LU6JMF_TXJOB_GENERIC)
+{
+    Lu6jmfTxEvent &event = lu6jmfTxEvents[lu6jmfTxEventHead];
+
+    event.timestamp = millis();
+    event.value = value;
+    event.code = code;
+    event.jobType = jobType;
+
+    lu6jmfTxEventHead++;
+    if (lu6jmfTxEventHead >= LU6JMF_TX_EVENT_COUNT)
+        lu6jmfTxEventHead = 0;
+
+    if (lu6jmfTxEventUsed < LU6JMF_TX_EVENT_COUNT)
+        lu6jmfTxEventUsed++;
+}
+
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira
+// Lightweight TX Scheduler diagnostics for the temporary /txdebug web page.
+// No dynamic allocation, no flash writes and no packet payload storage.
+// -----------------------------------------------------------------------------
+void lu6jmfTxDebugSnapshot(bool *busy,
+                           bool *pttSeen,
+                           bool *txNow,
+                           bool *pttOffPending,
+                           bool *dcdBusy,
+                           uint32_t *completed,
+                           uint32_t *rejected,
+                           uint32_t *lastCycle,
+                           uint32_t *lastWait,
+                           uint32_t *currentCycle)
+{
+    uint32_t now = millis();
+
+    if (busy)
+        *busy = lu6jmfRfTxBusy;
+
+    if (pttSeen)
+        *pttSeen = lu6jmfRfPttSeen;
+
+    if (txNow)
+        *txNow = getTransmit();
+
+    if (pttOffPending)
+        *pttOffPending = pttOff;
+
+    if (dcdBusy)
+        *dcdBusy = ModemDcdState() != 0;
+
+    if (completed)
+        *completed = lu6jmfRfCompleted;
+
+    if (rejected)
+        *rejected = lu6jmfRfRejected;
+
+    if (lastCycle)
+        *lastCycle = lu6jmfRfLastCycleMs;
+
+    if (lastWait)
+        *lastWait = lu6jmfRfLastWaitMs;
+
+    if (currentCycle)
+    {
+        if (lu6jmfRfTxBusy)
+            *currentCycle = now - lu6jmfRfDispatchMs;
+        else
+            *currentCycle = 0;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira
+// Copy TX Event Log newest-first for web diagnostics.
+// Internal scheduler storage remains private to main.cpp.
+// -----------------------------------------------------------------------------
+uint8_t lu6jmfTxDebugEvents(Lu6jmfTxDebugEvent *events, uint8_t maxEvents)
+{
+    if (!events || maxEvents == 0)
+        return 0;
+
+    uint8_t count = lu6jmfTxEventUsed;
+    if (count > maxEvents)
+        count = maxEvents;
+
+    for (uint8_t n = 0; n < count; n++)
+    {
+        int index = (int)lu6jmfTxEventHead - 1 - n;
+
+        while (index < 0)
+            index += LU6JMF_TX_EVENT_COUNT;
+
+        events[n].timestamp = lu6jmfTxEvents[index].timestamp;
+        events[n].value = lu6jmfTxEvents[index].value;
+        events[n].code = lu6jmfTxEvents[index].code;
+        events[n].jobType = lu6jmfTxEvents[index].jobType;
+    }
+
+    return count;
+}
+
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira
+// Phase 2J: copy learned RF airtime statistics for web diagnostics.
+// Only producer types with at least one real PTT sample are returned.
+// -----------------------------------------------------------------------------
+uint8_t lu6jmfTxDebugTiming(Lu6jmfTxTimingDebug *stats,
+                            uint8_t maxStats)
+{
+    if (!stats || maxStats == 0)
+        return 0;
+
+    uint8_t count = 0;
+
+    for (uint8_t jobType = 0;
+         jobType < LU6JMF_TX_JOB_COUNT && count < maxStats;
+         jobType++)
+    {
+        const Lu6jmfTxTimingStat &source =
+            lu6jmfTxTiming[jobType];
+
+        if (source.samples == 0)
+            continue;
+
+        stats[count].jobType = jobType;
+        stats[count].lastAirMs = source.lastAirMs;
+        stats[count].avgAirMs = source.avgAirMs;
+        stats[count].maxAirMs = source.maxAirMs;
+        stats[count].samples = source.samples;
+
+        count++;
+    }
+
+    return count;
+}
+
 bool pkgTxPush(const char *info, size_t len, int dly, uint8_t Ch)
+{
+    // -------------------------------------------------------------------------
+    // LU6JMF - Marcelo Ferreira
+    // Backward-compatible entry point.
+    // Unmigrated producers remain GENERIC / NORMAL.
+    // -------------------------------------------------------------------------
+    return pkgTxPushJob(info,
+                        len,
+                        dly,
+                        Ch,
+                        LU6JMF_TXJOB_GENERIC,
+                        LU6JMF_TXPRIO_NORMAL);
+}
+
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira
+// Phase 2K: copy central queue diagnostics for the web UI.
+// -----------------------------------------------------------------------------
+void lu6jmfTxDebugQueue(Lu6jmfTxQueueDebug *queue)
+{
+    if (!queue)
+        return;
+
+    psramLock();
+
+    queue->current = lu6jmfTxQueueCountLocked();
+    queue->peak = lu6jmfTxQueuePeak;
+    queue->capacity = PKGTXSIZE;
+    queue->saturated = lu6jmfTxQueueSaturated;
+    queue->rejected = lu6jmfTxQueueRejected;
+
+    psramUnlock();
+}
+
+uint8_t lu6jmfTxDebugQueueWait(Lu6jmfTxQueueWaitDebug *stats,
+                               uint8_t maxStats)
+{
+    if (!stats || maxStats == 0)
+        return 0;
+
+    uint8_t count = LU6JMF_TX_PRIORITY_COUNT;
+
+    if (count > maxStats)
+        count = maxStats;
+
+    for (uint8_t i = 0; i < count; i++)
+    {
+        stats[i].priority = i;
+        stats[i].lastMs = lu6jmfTxQueueWait[i].lastMs;
+        stats[i].avgMs = lu6jmfTxQueueWait[i].avgMs;
+        stats[i].maxMs = lu6jmfTxQueueWait[i].maxMs;
+        stats[i].samples = lu6jmfTxQueueWait[i].samples;
+    }
+
+    return count;
+}
+
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira
+// Phase 2L-A: copy rejected admission counters by producer.
+// Only producers with at least one rejection are returned.
+// -----------------------------------------------------------------------------
+uint8_t lu6jmfTxDebugQueueRejectedByJob(
+    Lu6jmfTxQueueRejectDebug *stats,
+    uint8_t maxStats)
+{
+    if (!stats || maxStats == 0)
+        return 0;
+
+    uint8_t count = 0;
+
+    psramLock();
+
+    for (uint8_t jobType = 0;
+         jobType < LU6JMF_TX_JOB_COUNT && count < maxStats;
+         jobType++)
+    {
+        uint32_t rejected =
+            lu6jmfTxQueueRejectedByJob[jobType];
+
+        if (rejected == 0)
+            continue;
+
+        stats[count].jobType = jobType;
+        stats[count].rejected = rejected;
+        count++;
+    }
+
+    psramUnlock();
+
+    return count;
+}
+
+bool pkgTxPushJob(const char *info,
+                  size_t len,
+                  int dly,
+                  uint8_t Ch,
+                  uint8_t jobType,
+                  uint8_t priority)
 {
     char *ecs = strstr(info, ">");
     if (ecs == NULL)
@@ -2898,17 +3343,40 @@ bool pkgTxPush(const char *info, size_t len, int dly, uint8_t Ch)
     //   }
     // }
 
-    // Add
-    // v2.1.4-lu6jmf: report whether a free slot was actually found. Was previously
-    // always "return true" even when the queue was full and nothing got queued -
-    // callers had no way to know a packet had been silently dropped.
+    // -------------------------------------------------------------------------
+    // LU6JMF - Marcelo Ferreira
+    // TX Scheduler: report whether the packet was actually accepted by txQueue.
+    // Prevents a silent packet loss when all PKGTXSIZE slots are occupied.
+    // -------------------------------------------------------------------------
     bool queued = false;
+
+    // -------------------------------------------------------------------------
+    // LU6JMF - Marcelo Ferreira
+    // Phase 2K: remember whether this admission attempt encountered all
+    // central queue slots occupied. A later CRITICAL preemption may still
+    // admit the packet, but the saturation event itself remains meaningful.
+    // -------------------------------------------------------------------------
+    bool queueWasFull =
+        (lu6jmfTxQueueCountLocked() >= PKGTXSIZE);
+
+    if (queueWasFull && lu6jmfTxQueueSaturated < UINT32_MAX)
+        lu6jmfTxQueueSaturated++;
+
+    // LU6JMF - Marcelo Ferreira
+    // Phase 2I diagnostic metadata. These values are meaningful only when
+    // CRITICAL admission replaces a LOW RF job.
+    bool preempted = false;
+    uint8_t preemptedJobType = LU6JMF_TXJOB_GENERIC;
+    uint8_t preemptedPriority = LU6JMF_TXPRIO_LOW;
+
+    // Add normally when a free slot exists.
     for (int i = 0; i < PKGTXSIZE; i++)
     {
         if (txQueue[i].Active == false)
         {
             if (len > sizeof(txQueue[i].Info))
                 len = sizeof(txQueue[i].Info);
+
             memset(txQueue[i].Info, 0, sizeof(txQueue[i].Info));
             memcpy(&txQueue[i].Info[0], info, len);
             txQueue[i].length = len;
@@ -2916,103 +3384,403 @@ bool pkgTxPush(const char *info, size_t len, int dly, uint8_t Ch)
             txQueue[i].Active = true;
             txQueue[i].timeStamp = millis();
             txQueue[i].Channel = Ch;
+
+            // LU6JMF - Marcelo Ferreira
+            // Store producer identity and RF arbitration priority with the job.
+            txQueue[i].JobType = jobType;
+            txQueue[i].Priority = priority;
+
             queued = true;
             break;
         }
     }
+
+    // -------------------------------------------------------------------------
+    // LU6JMF - Marcelo Ferreira
+    // Phase 2I: Critical Queue Admission.
+    //
+    // If the central queue is full, only CRITICAL traffic may replace another
+    // job, and only a LOW job whose RF_CHANNEL is still pending is eligible.
+    //
+    // LOW jobs that already consumed RF but still own another channel are never
+    // touched here. HIGH/NORMAL/CRITICAL jobs are never preempted.
+    //
+    // Among multiple eligible LOW/VERY_LOW victims, replace the newest one so
+    // the job that has already waited longest retains its place in the queue.
+    // -------------------------------------------------------------------------
+    if (!queued && priority == LU6JMF_TXPRIO_CRITICAL)
+    {
+        int victimSlot = -1;
+        uint32_t victimAge = 0;
+        uint32_t nowMs = millis();
+
+        for (int i = 0; i < PKGTXSIZE; i++)
+        {
+            if (!txQueue[i].Active)
+                continue;
+
+            // LU6JMF - Marcelo Ferreira: eligible victims are LOW or below
+            // (i.e. also VERY_LOW). HIGH/NORMAL/CRITICAL stay untouched.
+            if (txQueue[i].Priority > LU6JMF_TXPRIO_LOW)
+                continue;
+
+            if (!(txQueue[i].Channel & RF_CHANNEL))
+                continue;
+
+            uint32_t age = nowMs - (uint32_t)txQueue[i].timeStamp;
+
+            // Smaller age = newer LOW job.
+            if (victimSlot < 0 || age < victimAge)
+            {
+                victimSlot = i;
+                victimAge = age;
+            }
+        }
+
+        if (victimSlot >= 0)
+        {
+            preemptedJobType = txQueue[victimSlot].JobType;
+            preemptedPriority = txQueue[victimSlot].Priority;
+
+            if (len > sizeof(txQueue[victimSlot].Info))
+                len = sizeof(txQueue[victimSlot].Info);
+
+            memset(txQueue[victimSlot].Info,
+                   0,
+                   sizeof(txQueue[victimSlot].Info));
+
+            memcpy(&txQueue[victimSlot].Info[0], info, len);
+
+            txQueue[victimSlot].length = len;
+            txQueue[victimSlot].Delay = dly;
+            txQueue[victimSlot].Active = true;
+            txQueue[victimSlot].timeStamp = millis();
+            txQueue[victimSlot].Channel = Ch;
+            txQueue[victimSlot].JobType = jobType;
+            txQueue[victimSlot].Priority = priority;
+
+            queued = true;
+            preempted = true;
+        }
+    }
+
+    // LU6JMF - Marcelo Ferreira
+    // Phase 2K: update high-water mark after the admission decision.
+    lu6jmfTxQueueObserveLocked();
+
+    if (!queued && queueWasFull)
+    {
+        if (lu6jmfTxQueueRejected < UINT32_MAX)
+            lu6jmfTxQueueRejected++;
+
+        // LU6JMF - Marcelo Ferreira
+        // Phase 2L-A: preserve the identity of rejected producers even after
+        // their QUEUE FULL event rolls out of the 24-entry diagnostic log.
+        if (jobType < LU6JMF_TX_JOB_COUNT &&
+            lu6jmfTxQueueRejectedByJob[jobType] < UINT32_MAX)
+        {
+            lu6jmfTxQueueRejectedByJob[jobType]++;
+        }
+    }
+
     psramUnlock();
-    if (!queued)
-        log_d("pkgTxPush: TX queue full (%d slots), packet dropped: %s", PKGTXSIZE, info);
+
+    // -------------------------------------------------------------------------
+    // LU6JMF - Marcelo Ferreira
+    // Phase 2G / 2I TX Scheduler diagnostics.
+    // Logging occurs after psramUnlock() so diagnostics do not extend the queue
+    // critical section.
+    //
+    // QUEUE PREEMPT value:
+    //   bits 0..7   = displaced JobType
+    //   bits 8..15  = displaced Priority
+    // -------------------------------------------------------------------------
+    if (preempted)
+    {
+        uint32_t preemptValue =
+            ((uint32_t)preemptedJobType) |
+            ((uint32_t)preemptedPriority << 8);
+
+        lu6jmfTxEventAdd(LU6JMF_TXEV_QUEUE_PREEMPT,
+                         preemptValue,
+                         jobType);
+    }
+    else if (queued)
+    {
+        lu6jmfTxEventAdd(LU6JMF_TXEV_QUEUE_PUSH,
+                         priority,
+                         jobType);
+    }
+    else
+    {
+        lu6jmfTxEventAdd(LU6JMF_TXEV_QUEUE_FULL,
+                         priority,
+                         jobType);
+    }
+
     return queued;
 }
 
 bool pkgTxSend()
 {
-//   if (getReceive())
-//     return false;
+    // -------------------------------------------------------------------------
+    // LU6JMF - Marcelo Ferreira
+    // TX Scheduler:
+    // - APRS-IS remains independent from RF.
+    // - Only one RF frame may enter AX.25 per TX lifecycle.
+    // - AX.25 rejection keeps the packet queued.
+    // - Next RF frame is released only after real PTT OFF.
+    // -------------------------------------------------------------------------
+
+    // Observe real PTT start for timing/debug only.
+    // Completion is NEVER inferred from this timer.
+    if (lu6jmfRfTxBusy && !lu6jmfRfPttSeen && getTransmit())
+    {
+        lu6jmfRfPttSeen = true;
+        lu6jmfRfPttOnMs = millis();
+        lu6jmfRfLastWaitMs = lu6jmfRfPttOnMs - lu6jmfRfDispatchMs;
+        lu6jmfTxEventAdd(LU6JMF_TXEV_PTT_ON,
+                         lu6jmfRfLastWaitMs,
+                         lu6jmfRfActiveJobType);
+
+        log_d("[LU6JMF-TX] PTT ON wait=%lu ms",
+              (unsigned long)lu6jmfRfLastWaitMs);
+    }
+
     psramLock();
-    // char info[300];
+
+    // -------------------------------------------------------------------------
+    // PASS 1: APRS-IS
+    // Internet traffic remains independent even while RF is busy.
+    // -------------------------------------------------------------------------
     for (int i = 0; i < PKGTXSIZE; i++)
     {
-        if (txQueue[i].Active)
+        if (!txQueue[i].Active)
+            continue;
+
+        int decTime = millis() - txQueue[i].timeStamp;
+
+        if (txQueue[i].Channel & INET_CHANNEL)
         {
-            int decTime = millis() - txQueue[i].timeStamp;
-            if (txQueue[i].Channel & INET_CHANNEL)
+            if (config.igate_en == false)
             {
-                if (config.igate_en == false)
-                {
-                    txQueue[i].Channel &= ~INET_CHANNEL;
-                }
-                else
-                {
-                    if (aprsClient.connected())
-                    {
-                        // Copy data and release mutex before blocking TCP write
-                        char infoTmp[sizeof(txQueue[i].Info)];
-                        memcpy(infoTmp, txQueue[i].Info, txQueue[i].length);
-                        infoTmp[txQueue[i].length] = '\0';
-                        size_t lenTmp = txQueue[i].length;
-                        txQueue[i].Channel &= ~INET_CHANNEL;
-                        psramUnlock();
-
-                        aprsClient.write(infoTmp, lenTmp); // Send binary frame packet to APRS-IS (aprsc)
-                        aprsClient.write("\r\n");           // Send CR LF the end frame packet
-                        log_d("TX->INET: %s", infoTmp);
-
-                        psramLock();
-                        continue;
-                    }
-                }
+                txQueue[i].Channel &= ~INET_CHANNEL;
             }
-            if (decTime > txQueue[i].Delay)
+            else if (aprsClient.connected())
             {
-                if (txQueue[i].Channel & RF_CHANNEL)
-                {
+                char infoTmp[sizeof(txQueue[i].Info)];
 
-                    psramUnlock();
-                    if (config.rf_en)
-                    {
-                        if ((config.rf_type == RF_SR_1WV) || (config.rf_type == RF_SR_1WU) || (config.rf_type == RF_SR_1W350))
-                        {
-                            digitalWrite(config.rf_pwr_gpio, LOW);
-                            if (config.rf_power ^ !config.rf_pwr_active)
-                                pinMode(config.rf_pwr_gpio, OPEN_DRAIN);
-                            else
-                                pinMode(config.rf_pwr_gpio, OUTPUT);
-                        }
-                        else
-                        {
-                            digitalWrite(config.rf_pwr_gpio, config.rf_power ^ !config.rf_pwr_active); // ON RF Power H/L
-                        }
-                    }
-                    status.txCount++;
-                    log_d("TX->RF[%i]: %s\n", txQueue[i].length, txQueue[i].Info);
-                    APRS_setPreamble(config.preamble * 100); // Send packet to RF
-                    APRS_sendTNC2Pkt((uint8_t *)txQueue[i].Info, txQueue[i].length);
-                    igateTLM.TX++;
-                
-                    // free(info);
-                    //  for (int i = 0; i < 100; i++)
-                    //  {
-                    //      // if (digitalRead(config.rf_ptt_gpio) ^ config.rf_ptt_active)
-                    //      if (!getTransmit())
-                    //          break;
-                    //      delay(50); // TOT 5sec
-                    //  }
-                    // digitalWrite(config.rf_pwr_gpio, !config.rf_pwr_active); // OFF RF Power H/L
-                    // pinMode(config.rf_pwr_gpio, OUTPUT);
-                    psramLock();
-                    txQueue[i].Channel &= ~RF_CHANNEL;
-                }
-            }
+                size_t lenTmp = txQueue[i].length;
+                if (lenTmp >= sizeof(infoTmp))
+                    lenTmp = sizeof(infoTmp) - 1;
 
-            if ((txQueue[i].Channel == 0) || (decTime > 60000))
-            {
-                txQueue[i].Channel = 0;
-                txQueue[i].Active = false;
+                memcpy(infoTmp, txQueue[i].Info, lenTmp);
+                infoTmp[lenTmp] = '\0';
+
+                txQueue[i].Channel &= ~INET_CHANNEL;
+
+                psramUnlock();
+
+                aprsClient.write(infoTmp, lenTmp);
+                aprsClient.write("\r\n");
+                log_d("TX->INET: %s", infoTmp);
+
+                psramLock();
             }
         }
+
+        // ---------------------------------------------------------------------
+        // LU6JMF - Marcelo Ferreira
+        // TX Scheduler: never silently expire a pending RF transmission.
+        // Once INET is handled, the slot may be released only when no channel
+        // remains. RF lifecycle is controlled independently by the scheduler.
+        // ---------------------------------------------------------------------
+        if (txQueue[i].Channel == 0)
+        {
+            txQueue[i].Active = false;
+        }
     }
+
+    // One RF frame is already waiting/transmitting/completing.
+    if (lu6jmfRfTxBusy)
+    {
+        psramUnlock();
+        return true;
+    }
+
+    // -------------------------------------------------------------------------
+    // PASS 2: RF
+    //
+    // LU6JMF - Marcelo Ferreira
+    // Central RF priority arbitration:
+    //   1. Only active RF jobs whose Delay has expired may compete.
+    //   2. Highest Priority wins.
+    //   3. For equal Priority, the oldest eligible job wins (FIFO by age).
+    //   4. Only ONE selected job may enter AX.25 per RF lifecycle.
+    //
+    // An active transmission is never preempted. Arbitration occurs only
+    // after the previous RF lifecycle has completed with real PTT OFF.
+    // -------------------------------------------------------------------------
+    int selectedSlot = -1;
+    uint8_t selectedPriority = LU6JMF_TXPRIO_LOW;
+    uint32_t selectedAge = 0;
+    uint32_t nowMs = millis();
+
+    // -------------------------------------------------------------------------
+    // LU6JMF - Marcelo Ferreira
+    // Phase 2H: expire the post-message ACK protection window using
+    // wrap-safe millis() arithmetic. The event is emitted only once.
+    // -------------------------------------------------------------------------
+    if (lu6jmfAckWindowActive &&
+        (int32_t)(nowMs - lu6jmfAckWindowUntilMs) >= 0)
+    {
+        lu6jmfAckWindowActive = false;
+        lu6jmfAckWindowUntilMs = 0;
+
+        lu6jmfTxEventAdd(LU6JMF_TXEV_ACK_WINDOW_END,
+                         0,
+                         LU6JMF_TXJOB_GENERIC);
+    }
+
+    for (int i = 0; i < PKGTXSIZE; i++)
+    {
+        if (!txQueue[i].Active)
+            continue;
+
+        if (!(txQueue[i].Channel & RF_CHANNEL))
+            continue;
+
+        uint32_t age = nowMs - (uint32_t)txQueue[i].timeStamp;
+
+        if (age <= (uint32_t)txQueue[i].Delay)
+            continue;
+
+        uint8_t priority = txQueue[i].Priority;
+
+        // ---------------------------------------------------------------------
+        // LU6JMF - Marcelo Ferreira
+        // Phase 2H: during the ACK window only LOW/VERY_LOW RF traffic waits.
+        // CRITICAL, HIGH and NORMAL remain fully eligible.
+        // The queued packet itself is not modified or discarded.
+        // ---------------------------------------------------------------------
+        if (lu6jmfAckWindowActive &&
+            priority <= LU6JMF_TXPRIO_LOW)
+        {
+            continue;
+        }
+
+        if (selectedSlot < 0 ||
+            priority > selectedPriority ||
+            (priority == selectedPriority && age > selectedAge))
+        {
+            selectedSlot = i;
+            selectedPriority = priority;
+            selectedAge = age;
+        }
+    }
+
+    if (selectedSlot >= 0)
+    {
+        int i = selectedSlot;
+
+        uint8_t rfInfo[sizeof(txQueue[i].Info)];
+        size_t rfLength = txQueue[i].length;
+
+        if (rfLength > sizeof(rfInfo))
+            rfLength = sizeof(rfInfo);
+
+        memcpy(rfInfo, txQueue[i].Info, rfLength);
+
+        psramUnlock();
+
+        if (config.rf_en)
+        {
+            if ((config.rf_type == RF_SR_1WV) ||
+                (config.rf_type == RF_SR_1WU) ||
+                (config.rf_type == RF_SR_1W350))
+            {
+                digitalWrite(config.rf_pwr_gpio, LOW);
+
+                if (config.rf_power ^ !config.rf_pwr_active)
+                    pinMode(config.rf_pwr_gpio, OPEN_DRAIN);
+                else
+                    pinMode(config.rf_pwr_gpio, OUTPUT);
+            }
+            else
+            {
+                digitalWrite(
+                    config.rf_pwr_gpio,
+                    config.rf_power ^ !config.rf_pwr_active
+                );
+            }
+        }
+
+        log_d("TX->RF[%i]: %s", (int)rfLength, (char *)rfInfo);
+
+        APRS_setPreamble(config.preamble * 100);
+
+        bool accepted = APRS_sendTNC2Pkt(rfInfo, rfLength);
+
+        psramLock();
+
+        if (accepted)
+        {
+            // -----------------------------------------------------------------
+            // LU6JMF - Marcelo Ferreira
+            // Phase 2K: selectedAge is the real central-queue wait from
+            // admission timestamp until this job won RF arbitration.
+            // Learn only after AX.25 actually accepts the selected frame.
+            // -----------------------------------------------------------------
+            lu6jmfTxQueueWaitLearn(selectedPriority, selectedAge);
+
+            // -----------------------------------------------------------------
+            // LU6JMF - Marcelo Ferreira
+            // Consume RF_CHANNEL only after lower AX.25 accepts the frame.
+            // -----------------------------------------------------------------
+            txQueue[i].Channel &= ~RF_CHANNEL;
+
+            lu6jmfRfTxBusy = true;
+            lu6jmfRfPttSeen = false;
+            lu6jmfRfDispatchMs = millis();
+            lu6jmfRfPttOnMs = 0;
+
+            // LU6JMF - Marcelo Ferreira
+            // Bind producer identity to the complete RF lifecycle.
+            lu6jmfRfActiveJobType = txQueue[i].JobType;
+
+            lu6jmfTxEventAdd(LU6JMF_TXEV_RF_ACCEPTED,
+                             (uint32_t)i,
+                             lu6jmfRfActiveJobType);
+
+            status.txCount++;
+            igateTLM.TX++;
+
+            log_d("[LU6JMF-TX] DISPATCH slot=%d len=%u",
+                  i, (unsigned int)rfLength);
+
+            if (txQueue[i].Channel == 0)
+                txQueue[i].Active = false;
+        }
+        else
+        {
+            // AX.25 rejected the frame. RF_CHANNEL remains set for retry.
+            lu6jmfRfRejected++;
+
+            // LU6JMF - Marcelo Ferreira
+            // AX.25 rejected before lifecycle ownership; identify the candidate.
+            lu6jmfTxEventAdd(LU6JMF_TXEV_AX25_REJECT,
+                             lu6jmfRfRejected,
+                             txQueue[i].JobType);
+
+            log_d("[LU6JMF-TX] AX25 REJECT slot=%d rejected=%lu",
+                  i, (unsigned long)lu6jmfRfRejected);
+        }
+
+        // Never feed a second RF frame in the same scheduler pass.
+        psramUnlock();
+        return true;
+    }
+
     psramUnlock();
     return true;
 }
@@ -3591,6 +4359,11 @@ void setup()
         log_d("File system mounted");
         log_d("Total space: %lu\n", LITTLEFS.totalBytes());
         log_d("Use space:  %lu\n\n", LITTLEFS.usedBytes());
+        // v2.1.3.1-lu6jmf: NetLogInit()/boot-reason logging removed again -
+        // restoring the exact baseline already confirmed stable on real
+        // hardware (main.cpp with zero netlog calls, AFSK.cpp/AX25.cpp fixes
+        // only). Re-add one piece at a time only after a live USB boot
+        // capture is in hand for each step.
     }
 
     Serial.println();
@@ -4160,7 +4933,7 @@ bool sendAPRSObject(uint8_t idx, const char *name, double lat, double lon, const
         SendMode |= RF_CHANNEL;
     if (config.msg_inet)
         SendMode |= INET_CHANNEL;
-    bool ok = pkgTxPush(packet.c_str(), packet.length(), 0, SendMode);
+    bool ok = pkgTxPushJob(packet.c_str(), packet.length(), 0, SendMode, LU6JMF_TXJOB_OBJECT, LU6JMF_TXPRIO_LOW);
     if (ok)
         log_d("Object%d sent TNC2: %s", idx + 1, packet.c_str());
     return ok;
@@ -4385,7 +5158,7 @@ void mqtt_callback(char *topic, byte *payload, unsigned int length)
     }
     else
     {
-        pkgTxPush((const char *)payload_ptr, length, 0, RF_CHANNEL);
+        pkgTxPushJob((const char *)payload_ptr, length, 0, RF_CHANNEL, LU6JMF_TXJOB_INET2RF, LU6JMF_TXPRIO_NORMAL);
     }
     free(payload_ptr);
 }
@@ -5115,7 +5888,7 @@ void tracker_status(char *text)
         SendMode |= RF_CHANNEL;
     if (config.trk_loc2inet)
         SendMode |= INET_CHANNEL;
-    pkgTxPush(tnc2Raw.c_str(), tnc2Raw.length(), 0, SendMode);
+    pkgTxPushJob(tnc2Raw.c_str(), tnc2Raw.length(), 0, SendMode, LU6JMF_TXJOB_TRACKER, LU6JMF_TXPRIO_NORMAL);
 }
 
 void igate_status(char *text)
@@ -5146,7 +5919,7 @@ void igate_status(char *text)
         SendMode |= RF_CHANNEL;
     if (config.igate_loc2inet)
         SendMode |= INET_CHANNEL;
-    pkgTxPush(tnc2Raw.c_str(), tnc2Raw.length(), 0, SendMode);
+    pkgTxPushJob(tnc2Raw.c_str(), tnc2Raw.length(), 0, SendMode, LU6JMF_TXJOB_IGATE, LU6JMF_TXPRIO_NORMAL);
 }
 
 void digi_status(char *text)
@@ -5177,7 +5950,7 @@ void digi_status(char *text)
         SendMode |= RF_CHANNEL;
     if (config.digi_loc2inet)
         SendMode |= INET_CHANNEL;
-    pkgTxPush(tnc2Raw.c_str(), tnc2Raw.length(), 0, SendMode);
+    pkgTxPushJob(tnc2Raw.c_str(), tnc2Raw.length(), 0, SendMode, LU6JMF_TXJOB_DIGI_POSITION, LU6JMF_TXPRIO_NORMAL);
 }
 
 String wx_report(double lat, double lon, double alt, String comment)
@@ -5759,7 +6532,7 @@ void sendIsPkg(char *raw)
     if (aprsClient.connected())
         aprsClient.println(tnc2Raw); // Send packet to Inet
     if (config.digi_en)
-        pkgTxPush(str, strlen(str), 0, RF_CHANNEL);
+        pkgTxPushJob(str, strlen(str), 0, RF_CHANNEL, LU6JMF_TXJOB_GENERIC, LU6JMF_TXPRIO_NORMAL);
 }
 
 void sendIsPkgMsg(char *raw)
@@ -5868,7 +6641,7 @@ void sendTelemetry_0(char *raw, bool header)
         SendMode |= RF_CHANNEL;
     if (config.tlm0_2inet)
         SendMode |= INET_CHANNEL;
-    pkgTxPush(str, strlen(str), 0, SendMode);
+    pkgTxPushJob(str, strlen(str), 0, SendMode, LU6JMF_TXJOB_TLM, LU6JMF_TXPRIO_VERY_LOW);
 
 #if 1
     if (config.tlm0_2rf)
@@ -5877,7 +6650,7 @@ void sendTelemetry_0(char *raw, bool header)
         // char *rawP = (char *)malloc(rawData.length());
         //  rawData.toCharArray(rawP, rawData.length());
         // memcpy(rawP, rawData.c_str(), rawData.length());
-        pkgTxPush(str, strlen(str), 0, RF_CHANNEL);
+        pkgTxPushJob(str, strlen(str), 0, RF_CHANNEL, LU6JMF_TXJOB_TLM, LU6JMF_TXPRIO_VERY_LOW);
         // pushTxDisp(TXCH_RF, "TX DIGI POS", sts);
         // free(rawP);
     }
@@ -5949,7 +6722,7 @@ void sendTelemetry_trk(char *raw)
         SendMode |= RF_CHANNEL;
     if (config.trk_loc2inet)
         SendMode |= INET_CHANNEL;
-    pkgTxPush(str, strlen(str), 1000, SendMode);
+    pkgTxPushJob(str, strlen(str), 1000, SendMode, LU6JMF_TXJOB_TLM, LU6JMF_TXPRIO_VERY_LOW);
 
     // if (config.trk_loc2rf)
     // { // TLM SEND TO RF
@@ -6021,7 +6794,7 @@ void sendTelemetry_igate(char *raw)
         SendMode |= RF_CHANNEL;
     if (config.igate_loc2inet)
         SendMode |= INET_CHANNEL;
-    pkgTxPush(str, strlen(str), 0, SendMode);
+    pkgTxPushJob(str, strlen(str), 0, SendMode, LU6JMF_TXJOB_TLM, LU6JMF_TXPRIO_VERY_LOW);
     // if (config.igate_loc2rf)
     // { // TLM SEND TO RF
     //     pkgTxPush(str, strlen(str), 0);
@@ -6086,7 +6859,7 @@ void sendTelemetry_digi(char *raw)
         SendMode |= RF_CHANNEL;
     if (config.digi_loc2inet)
         SendMode |= INET_CHANNEL;
-    pkgTxPush(str, strlen(str), 0, SendMode);
+    pkgTxPushJob(str, strlen(str), 0, SendMode, LU6JMF_TXJOB_TLM, LU6JMF_TXPRIO_VERY_LOW);
     // if (config.digi_loc2rf)
     // { // TLM SEND TO RF
     //     pkgTxPush(str, strlen(str), 0);
@@ -6777,13 +7550,30 @@ long timeSlot;
 unsigned long iGatetickInterval;
 unsigned long WxInterval;
 bool initInterval = true;
+// Diagnostic only - added 2026-09 by LU6JMF to investigate RF TX silently
+// stopping over time while APRS-IS keeps working. See Ax25GetTxDiag().
+unsigned long txDiagInterval = 0;
 int trkTlmInvCount = 0;
 int igateTlmInvCount = 0;
 uint16_t blnSentCount[9] = {0}; // RAM-only counter, resets on reboot or when a bulletin is (re)enabled
 // --- v2.1-lu6jmf: BLN Active-for tracking + NEWS5-NEWS9 growing-gap state (RAM-only) ---
+// LU6JMF - Marcelo Ferreira: superseded by the calendar campaign engine below
+// (bln_started_at/bln_sent_total + blnNextStage/blnNextEpoch). Left declared
+// only because blnSTSInterval is still reused for boot staggering elsewhere.
 unsigned long blnActivatedAt[9] = {0};   // millis() when each slot was (re)enabled, for the Active-for deadline
 unsigned long blnNewsGap[9] = {0};       // NEWS1-NEWS5 only: current gap in ms, grows by +T after every send
 bool blnNewsFirstSent[9] = {false};      // NEWS1-NEWS5 only: whether the immediate msg1 already went out
+
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira
+// TX Scheduler: BLN1-BLN9 calendar campaign engine state, ported from the
+// TX-SCHEDULER-TEST project. Persistent source of truth lives in
+// config.bln_started_at[] and config.bln_sent_total[].
+// -----------------------------------------------------------------------------
+volatile bool blnRestartPending[9] = {
+    false, false, false, false, false, false, false, false, false};
+uint16_t blnNextStage[9] = {0};
+uint32_t blnNextEpoch[9] = {0};
 // --- v2.1-lu6jmf: Objects (Object1-Object4) runtime state (RAM-only) ---
 unsigned long objActivatedAt[4] = {0};
 unsigned long objSTSInterval[4] = {0};
@@ -6861,8 +7651,76 @@ void taskAPRS(void *pvParameters)
         // which is NOT safe from ISR context — overflows the ISR stack.
         if (pttOff)
         {
+            lu6jmfTxEventAdd(LU6JMF_TXEV_PTT_OFF_TASK,
+                             0,
+                             lu6jmfRfActiveJobType);
+
             setPtt(false);
+
+            // setPtt(false) returned: PTT release path completed in task context.
+            lu6jmfTxEventAdd(LU6JMF_TXEV_PTT_OFF_DONE,
+                             0,
+                             lu6jmfRfActiveJobType);
             pttOff = false;
+
+            // -----------------------------------------------------------------
+            // LU6JMF - Marcelo Ferreira
+            // TX Scheduler: authoritative RF completion point.
+            // ModemTransmitStop() has completed and physical PTT is now OFF.
+            // Only here is the scheduler allowed to release the next RF frame.
+            // -----------------------------------------------------------------
+            if (lu6jmfRfTxBusy)
+            {
+                uint32_t txEndMs = millis();
+
+                lu6jmfRfLastCycleMs = txEndMs - lu6jmfRfDispatchMs;
+
+                // -------------------------------------------------------------
+                // LU6JMF - Marcelo Ferreira
+                // Phase 2J: learn actual RF airtime only when PTT ON was really
+                // observed. PTT OFF here remains the authoritative completion.
+                // -------------------------------------------------------------
+                if (lu6jmfRfPttSeen && lu6jmfRfPttOnMs != 0)
+                {
+                    uint32_t airMs = txEndMs - lu6jmfRfPttOnMs;
+                    lu6jmfTxTimingLearn(lu6jmfRfActiveJobType, airMs);
+                }
+
+                lu6jmfRfCompleted++;
+                lu6jmfTxEventAdd(LU6JMF_TXEV_RF_RELEASE,
+                                 lu6jmfRfLastCycleMs,
+                                 lu6jmfRfActiveJobType);
+
+                // -------------------------------------------------------------
+                // LU6JMF - Marcelo Ferreira
+                // Phase 2H: start the ACK protection window only after the
+                // MESSAGE / MSG RETRY RF lifecycle has really completed.
+                // Physical PTT is already OFF at this authoritative point.
+                // -------------------------------------------------------------
+                if (lu6jmfRfActiveJobType == LU6JMF_TXJOB_MESSAGE ||
+                    lu6jmfRfActiveJobType == LU6JMF_TXJOB_MSG_RETRY)
+                {
+                    lu6jmfAckWindowUntilMs = txEndMs + LU6JMF_ACK_WINDOW_MS;
+                    lu6jmfAckWindowActive = true;
+
+                    lu6jmfTxEventAdd(LU6JMF_TXEV_ACK_WINDOW_START,
+                                     LU6JMF_ACK_WINDOW_MS,
+                                     lu6jmfRfActiveJobType);
+                }
+
+                log_d("[LU6JMF-TX] PTT OFF cycle=%lu ms completed=%lu",
+                      (unsigned long)lu6jmfRfLastCycleMs,
+                      (unsigned long)lu6jmfRfCompleted);
+
+                lu6jmfRfTxBusy = false;
+                lu6jmfRfPttSeen = false;
+                lu6jmfRfPttOnMs = 0;
+
+                // LU6JMF - Marcelo Ferreira
+                // No RF lifecycle owns a producer after real PTT release.
+                lu6jmfRfActiveJobType = LU6JMF_TXJOB_GENERIC;
+            }
+
             //log_i("[TX-END] PTT released, fifo=%d frames=%u", fifoSampleCount, frameDecodeCount);
         }
         long now = millis();
@@ -6907,7 +7765,7 @@ void taskAPRS(void *pvParameters)
                         SendMode |= RF_CHANNEL;
                     if (config.igate_loc2inet)
                         SendMode |= INET_CHANNEL;
-                    pkgTxPush(rxValue.c_str(), rxValue.length(), 1, SendMode);
+                    pkgTxPushJob(rxValue.c_str(), rxValue.length(), 1, SendMode, LU6JMF_TXJOB_EXTERNAL, LU6JMF_TXPRIO_NORMAL);
                 }
                 else if (config.bt_mode == 2)
                 {
@@ -6941,7 +7799,7 @@ void taskAPRS(void *pvParameters)
                     SendMode |= RF_CHANNEL;
                 if (config.igate_loc2inet)
                     SendMode |= INET_CHANNEL;
-                pkgTxPush(rxValue.c_str(), rxValue.length(), 1, SendMode);
+                pkgTxPushJob(rxValue.c_str(), rxValue.length(), 1, SendMode, LU6JMF_TXJOB_EXTERNAL, LU6JMF_TXPRIO_NORMAL);
             }
             else if (config.bt_mode == 2)
             {
@@ -6972,6 +7830,10 @@ void taskAPRS(void *pvParameters)
         pkgTxSend();
         Ax25TransmitBuffer(); // transmit buffer (will return if nothing to be transmitted)
         Ax25TransmitCheck();  // check for pending transmission request
+
+        // v2.1.3.1-lu6jmf: TXDIAG block temporarily removed for bisection -
+        // testing NetLogInit()+boot-reason alone first (see setup()). Re-add
+        // once that alone is confirmed stable on real hardware.
 
         //     timeSlot = millis() + 100;
         // }
@@ -7281,7 +8143,7 @@ void taskAPRS(void *pvParameters)
                     SendMode |= RF_CHANNEL;
                 if (config.trk_loc2inet)
                     SendMode |= INET_CHANNEL;
-                pkgTxPush(rawData.c_str(), rawData.length(), 0, SendMode);
+                pkgTxPushJob(rawData.c_str(), rawData.length(), 0, SendMode, LU6JMF_TXJOB_TRACKER, LU6JMF_TXPRIO_NORMAL);
 
                 //                 if (config.trk_loc2rf)
                 //                 { // TRACKER SEND TO RF
@@ -7340,6 +8202,8 @@ void taskAPRS(void *pvParameters)
                     }
                     log_d("Peak:%d Valley:%d Signal:%d mV:%d", peak, valley, signalLevel, mV);
                     log_d("RX TNC2: %s", tnc2.c_str());
+                    // v2.1.3.1-lu6jmf: RX diagnostic block temporarily removed for
+                    // bisection - see comment near txDiagInterval above.
                     type = pkgType((const char *)incomingPacket.info);
                     newIGatePkg = true;
                     newDigiPkg = true;
@@ -7509,110 +8373,256 @@ void taskAPRS(void *pvParameters)
         // retries (nobody ACKs a BLN) and honors an optional send-count limit (0 = unlimited).
         for (uint8_t bi = 0; bi < 9; bi++)
         {
-            if (config.bln_en[bi] && strlen(config.bln_text[bi]) > 0)
+            do
             {
-                // v2.1-lu6jmf: Active-for deadline, shared by BLN Alerts (bi<4) and NEWS5-NEWS9 (bi>=4)
-                if (blnActivatedAt[bi] == 0)
-                    blnActivatedAt[bi] = millis();
+            if (!config.bln_en[bi] ||
+                config.bln_interval[bi] == 0 ||
+                strlen(config.bln_text[bi]) == 0)
+            {
+                break;
+            }
 
-                uint8_t activeForHours = config.bln_activefor[bi];
-                if (activeForHours == 0)
-                    activeForHours = 24; // default if not chosen: 24h for both Alerts and News (user can raise it)
-                if (activeForHours > 72)
-                    activeForHours = 72; // hard ceiling - BLN/NEWS never have the Objects' Permanent escape hatch
-                unsigned long activeForMs = (unsigned long)activeForHours * 3600000UL;
+            const time_t rawNow = time(NULL);
+            if (rawNow <= 1700000000)
+                break;
 
-                if (millis() - blnActivatedAt[bi] >= activeForMs)
+            const uint32_t nowEpoch = (uint32_t)rawNow;
+            const uint32_t baseSeconds =
+                (uint32_t)config.bln_interval[bi] * 60UL;
+            const uint32_t durationSeconds =
+                (uint32_t)config.bln_duration[bi] * 3600UL;
+
+            // A configuration change/re-enable starts a fresh campaign.
+            // LU6JMF - Marcelo Ferreira:
+            // Leave started_at at zero so the common campaign-start block
+            // below owns the exact start time and sends TX1 immediately.
+            if (blnRestartPending[bi])
+            {
+                blnRestartPending[bi] = false;
+
+                config.bln_started_at[bi] = 0;
+                config.bln_sent_total[bi] = 0;
+
+                blnSentCount[bi] = 0;
+                blnNextStage[bi] = 0;
+                blnNextEpoch[bi] = 0;
+            }
+
+            // No dated campaign yet: start it now.
+            if (config.bln_started_at[bi] == 0)
+            {
+                config.bln_started_at[bi] = nowEpoch;
+                config.bln_sent_total[bi] = 0;
+                blnSentCount[bi] = 0;
+
+                char blnCall[6];
+                snprintf(blnCall, sizeof(blnCall), "BLN%d", bi + 1);
+
+                sendAPRSMessage(
+                    String(blnCall),
+                    String(config.bln_text[bi]),
+                    false,
+                    true,
+                    (bi < 4)
+                        ? LU6JMF_TXJOB_BULLETIN
+                        : LU6JMF_TXJOB_NEWS);
+
+                config.bln_sent_total[bi]++;
+                blnSentCount[bi] = config.bln_sent_total[bi];
+
+                blnNextStage[bi] = 2;
+                blnNextEpoch[bi] = nowEpoch + baseSeconds;
+
+                saveConfiguration("/default.cfg", config);
+
+                log_d("BLN%d campaign started: TX1 sent (%u/%u), duration=%uh",
+                      bi + 1,
+                      config.bln_sent_total[bi],
+                      config.bln_limit[bi],
+                      config.bln_duration[bi]);
+
+                // Limit=1 finishes immediately after TX1.
+                if (config.bln_limit[bi] > 0 &&
+                    config.bln_sent_total[bi] >= config.bln_limit[bi])
                 {
-                    char slotCall[16];
-                    if (bi < 4)
-                        snprintf(slotCall, sizeof(slotCall), "BLN%d", bi + 1);
-                    else
-                        // v2.1.4-lu6jmf: Group Bulletin format (BLN + digit + up to-5-char group
-                        // name, per APRS101.pdf ch.14) - recognized as a bulletin everywhere, while
-                        // still showing "NEWS" in the raw address so it's visually distinct from Alerts.
-                        // sendAPRSMessage() pads/truncates the addressee to the required 9 bytes.
-                        snprintf(slotCall, sizeof(slotCall), "BLN%dNEWS", bi + 1);
                     config.bln_en[bi] = false;
-                    blnActivatedAt[bi] = 0;
-                    blnNewsFirstSent[bi] = false;
-                    blnNewsGap[bi] = 0;
-                    saveConfiguration("/default.cfg", config);
-                    log_d("%s reached Active-for deadline (%uh), disabled", slotCall, activeForHours);
-                }
-                else if (bi < 4)
-                {
-                    // --- BLN Alerts: fixed interval (dropdown: 300/600/900/1800/3600s) ---
-                    if (config.bln_interval[bi] > 10 && millis() > blnSTSInterval[bi])
-                    {
-                        blnSTSInterval[bi] = millis() + ((unsigned long)config.bln_interval[bi] * 1000);
-                        char blnCall[6];
-                        snprintf(blnCall, sizeof(blnCall), "BLN%d", bi + 1);
-                        sendAPRSMessage(String(blnCall), String(config.bln_text[bi]), false, true);
-                        blnSentCount[bi]++;
-                        log_d("Bulletin %s sent (%u/%u): %s", blnCall, blnSentCount[bi], config.bln_limit[bi], config.bln_text[bi]);
+                    config.bln_started_at[bi] = 0;
+                    blnNextStage[bi] = 0;
+                    blnNextEpoch[bi] = 0;
 
-                        if (config.bln_limit[bi] > 0 && blnSentCount[bi] >= config.bln_limit[bi])
-                        {
-                            config.bln_en[bi] = false; // Reached the send-count limit: auto-disable, keep text/interval/limit saved
-                            blnActivatedAt[bi] = 0;
-                            saveConfiguration("/default.cfg", config);
-                            log_d("Bulletin %s reached send limit (%u), disabled", blnCall, config.bln_limit[bi]);
-                        }
+                    saveConfiguration("/default.cfg", config);
+
+                    log_d("BLN%d reached send limit (%u), disabled",
+                          bi + 1,
+                          config.bln_limit[bi]);
+                }
+
+                break;
+            }
+
+            // Do not transmit if system time moved behind campaign start.
+            if (nowEpoch < config.bln_started_at[bi])
+                break;
+
+            const uint32_t elapsed =
+                nowEpoch - config.bln_started_at[bi];
+
+            // Same selectable calendar lifetime for BLN and NEWS.
+            if (elapsed >= durationSeconds)
+            {
+                config.bln_en[bi] = false;
+                config.bln_started_at[bi] = 0;
+                blnNextStage[bi] = 0;
+                blnNextEpoch[bi] = 0;
+
+                saveConfiguration("/default.cfg", config);
+
+                log_d("BLN%d expired after %u calendar hours, disabled",
+                      bi + 1,
+                      config.bln_duration[bi]);
+
+                break;
+            }
+
+            // Limit is based only on transmissions that really occurred.
+            if (config.bln_limit[bi] > 0 &&
+                config.bln_sent_total[bi] >= config.bln_limit[bi])
+            {
+                config.bln_en[bi] = false;
+                config.bln_started_at[bi] = 0;
+                blnNextStage[bi] = 0;
+                blnNextEpoch[bi] = 0;
+
+                saveConfiguration("/default.cfg", config);
+
+                log_d("BLN%d reached persisted send limit (%u), disabled",
+                      bi + 1,
+                      config.bln_limit[bi]);
+
+                break;
+            }
+
+            // After reboot/update, reconstruct ONLY the first FUTURE mark.
+            // Any calendar transmissions missed while OFF remain missed.
+            if (blnNextStage[bi] == 0 ||
+                blnNextEpoch[bi] == 0)
+            {
+                uint16_t stage = 2;
+                uint32_t offset = baseSeconds;
+
+                if (bi < 4)
+                {
+                    // BLN fixed:
+                    // 0, B, 2B, 3B, 4B...
+                    while (offset <= elapsed &&
+                           offset < durationSeconds)
+                    {
+                        stage++;
+                        offset += baseSeconds;
                     }
                 }
                 else
                 {
-                    // --- NEWS1-NEWS5: growing-gap progression. msg1 immediate, then gaps 2T,3T,4T,5T... ---
-                    uint16_t baseT = config.bln_interval[bi]; // seconds
-                    if (baseT < 300)
-                        baseT = 300; // firmware floor: 5 min minimum, never lower
-
-                    // v2.1.4-lu6jmf: the on-air addressee MUST start with "BLN" to be recognized as an
-                    // APRS bulletin by receiving stations/radios (APRS spec: bulletin ID = BLN + one digit).
-                    // "NEWS1-NEWS5" is only the label shown in our own web UI - real radios never see it.
-                    char newsCall[16];
-                    snprintf(newsCall, sizeof(newsCall), "BLN%dNEWS", bi + 1); // v2.1.4-lu6jmf: Group Bulletin (see slotCall comment above)
-
-                    if (!blnNewsFirstSent[bi])
+                    // NEWS progressive:
+                    // 0, B, B+2B, B+2B+3B...
+                    while (offset <= elapsed &&
+                           offset < durationSeconds)
                     {
-                        sendAPRSMessage(String(newsCall), String(config.bln_text[bi]), false, true);
-                        blnSentCount[bi]++;
-                        blnNewsFirstSent[bi] = true;
-                        blnNewsGap[bi] = (unsigned long)baseT * 1000UL * 2UL; // gap for msg1->msg2 = 2T
-                        blnSTSInterval[bi] = millis() + blnNewsGap[bi];
-                        log_d("%s sent immediately (%u/%u): %s", newsCall, blnSentCount[bi], config.bln_limit[bi], config.bln_text[bi]);
-                    }
-                    else if (millis() > blnSTSInterval[bi])
-                    {
-                        sendAPRSMessage(String(newsCall), String(config.bln_text[bi]), false, true);
-                        blnSentCount[bi]++;
-                        blnNewsGap[bi] += (unsigned long)baseT * 1000UL; // next gap = previous gap + T
-                        blnSTSInterval[bi] = millis() + blnNewsGap[bi];
-                        log_d("%s sent (%u/%u), next gap %lus: %s", newsCall, blnSentCount[bi], config.bln_limit[bi], blnNewsGap[bi] / 1000, config.bln_text[bi]);
-
-                        if (config.bln_limit[bi] > 0 && blnSentCount[bi] >= config.bln_limit[bi])
-                        {
-                            config.bln_en[bi] = false;
-                            blnActivatedAt[bi] = 0;
-                            blnNewsFirstSent[bi] = false;
-                            blnNewsGap[bi] = 0;
-                            saveConfiguration("/default.cfg", config);
-                            log_d("%s reached send limit (%u), disabled", newsCall, config.bln_limit[bi]);
-                        }
+                        stage++;
+                        offset +=
+                            baseSeconds * (uint32_t)(stage - 1);
                     }
                 }
+
+                blnNextStage[bi] = stage;
+                blnNextEpoch[bi] =
+                    config.bln_started_at[bi] + offset;
+
+                log_d("BLN%d restored: next stage %u in %lu sec",
+                      bi + 1,
+                      blnNextStage[bi],
+                      (unsigned long)(blnNextEpoch[bi] - nowEpoch));
             }
-            else
+
+            // Only a current/future scheduled mark may transmit.
+            if (nowEpoch >= blnNextEpoch[bi])
             {
-                // Disabled: clear runtime state so a future re-enable starts clean from msg1
-                blnActivatedAt[bi] = 0;
-                if (bi >= 4)
+                char blnCall[6];
+                snprintf(blnCall, sizeof(blnCall), "BLN%d", bi + 1);
+
+                sendAPRSMessage(
+                    String(blnCall),
+                    String(config.bln_text[bi]),
+                    false,
+                    true,
+                    (bi < 4)
+                        ? LU6JMF_TXJOB_BULLETIN
+                        : LU6JMF_TXJOB_NEWS);
+
+                config.bln_sent_total[bi]++;
+                blnSentCount[bi] = config.bln_sent_total[bi];
+
+                const uint16_t transmittedStage =
+                    blnNextStage[bi];
+
+                // LU6JMF - Marcelo Ferreira:
+                // Advance to the first FUTURE calendar mark.
+                // Never replay/catch up marks that became overdue.
+                //
+                // This remains the ONLY scheduling difference:
+                // BLN  = fixed base interval.
+                // NEWS = progressive stage x base interval.
+                if (bi < 4)
                 {
-                    blnNewsFirstSent[bi] = false;
-                    blnNewsGap[bi] = 0;
+                    do
+                    {
+                        blnNextEpoch[bi] += baseSeconds;
+                        blnNextStage[bi]++;
+                    }
+                    while (blnNextEpoch[bi] <= nowEpoch);
+                }
+                else
+                {
+                    uint16_t nextStage = transmittedStage;
+
+                    do
+                    {
+                        blnNextEpoch[bi] +=
+                            baseSeconds * (uint32_t)nextStage;
+
+                        nextStage++;
+                    }
+                    while (blnNextEpoch[bi] <= nowEpoch);
+
+                    blnNextStage[bi] = nextStage;
+                }
+
+                // Persist real send count so Limit survives reboot.
+                saveConfiguration("/default.cfg", config);
+
+                log_d("BLN%d stage %u sent (%u/%u), next=%lu",
+                      bi + 1,
+                      transmittedStage,
+                      config.bln_sent_total[bi],
+                      config.bln_limit[bi],
+                      (unsigned long)blnNextEpoch[bi]);
+
+                if (config.bln_limit[bi] > 0 &&
+                    config.bln_sent_total[bi] >= config.bln_limit[bi])
+                {
+                    config.bln_en[bi] = false;
+                    config.bln_started_at[bi] = 0;
+                    blnNextStage[bi] = 0;
+                    blnNextEpoch[bi] = 0;
+
+                    saveConfiguration("/default.cfg", config);
+
+                    log_d("BLN%d reached send limit (%u), disabled",
+                          bi + 1,
+                          config.bln_limit[bi]);
                 }
             }
+            } while (false);
 
             // --- v2.1-lu6jmf: Objects (Object1-Object4) - only run once, when bi==0, alongside the BLN loop ---
             if (bi == 0)
@@ -7907,7 +8917,7 @@ void taskAPRS(void *pvParameters)
                             SendMode |= RF_CHANNEL;
                         if (config.igate_loc2inet)
                             SendMode |= INET_CHANNEL;
-                        pkgTxPush(rawData.c_str(), rawData.length(), 0, SendMode);
+                        pkgTxPushJob(rawData.c_str(), rawData.length(), 0, SendMode, LU6JMF_TXJOB_IGATE, LU6JMF_TXPRIO_NORMAL);
 //                         if (config.igate_loc2rf)
 //                         { // IGATE SEND POSITION TO RF
 //                             char *rawP = (char *)calloc(rawData.length(), sizeof(char));
@@ -8173,7 +9183,7 @@ void taskAPRS(void *pvParameters)
                             SendMode |= RF_CHANNEL;
                         if (config.digi_loc2inet)
                             SendMode |= INET_CHANNEL;
-                        pkgTxPush(rawData.c_str(), rawData.length(), 0, SendMode);
+                        pkgTxPushJob(rawData.c_str(), rawData.length(), 0, SendMode, LU6JMF_TXJOB_DIGI_POSITION, LU6JMF_TXPRIO_NORMAL);
 //                         if (config.digi_loc2rf)
 //                         { // DIGI SEND POSITION TO RF
 //                             char *rawP = (char *)calloc(rawData.length(), sizeof(char));
@@ -8251,7 +9261,7 @@ void taskAPRS(void *pvParameters)
                         // char *rawP = (char *)calloc(digiPkg.length()+1, sizeof(char));
                         //  digiPkg.toCharArray(rawP, digiPkg.length());
                         // memcpy(rawP, digiPkg.c_str(), digiPkg.length());
-                        pkgTxPush(digiPkg.c_str(), digiPkg.length(), digiDelay, RF_CHANNEL);
+                        pkgTxPushJob(digiPkg.c_str(), digiPkg.length(), digiDelay, RF_CHANNEL, LU6JMF_TXJOB_DIGI, LU6JMF_TXPRIO_NORMAL);
                         digiPkg.clear();
                         // pkgTxPush(rawP, digiPkg.length(), digiDelay, RF_CHANNEL);
                         sprintf(sts, "--src call--\n%s\nDelay: %dms.", incomingPacket.src.call, digiDelay);
@@ -8308,7 +9318,7 @@ void taskAPRS(void *pvParameters)
                         SendMode |= RF_CHANNEL;
                     if (config.wx_2inet)
                         SendMode |= INET_CHANNEL;
-                    pkgTxPush(rawData.c_str(), rawData.length(), 0, SendMode);
+                    pkgTxPushJob(rawData.c_str(), rawData.length(), 0, SendMode, LU6JMF_TXJOB_WX, LU6JMF_TXPRIO_VERY_LOW);
 //                     if (config.wx_2rf)
 //                     { // WX SEND POSITION TO RF
 //                         char *rawP = (char *)calloc(rawData.length(), sizeof(char));
@@ -9288,7 +10298,7 @@ void taskNetwork(void *pvParameters)
                                                 memcpy(tnc2_buf + prefixLen, line_buf, copyLen);
                                                 size_t totalLen = (size_t)prefixLen + copyLen;
                                                 tnc2_buf[totalLen] = 0;
-                                                pkgTxPush(tnc2_buf, totalLen, 0, RF_CHANNEL);
+                                                pkgTxPushJob(tnc2_buf, totalLen, 0, RF_CHANNEL, LU6JMF_TXJOB_INET2RF, LU6JMF_TXPRIO_NORMAL);
                                                 char sts[50];
                                                 sprintf(sts, "--SRC CALL--\n%s\n", src_call);
 #if defined OLED || defined ST7735_160x80 || defined GUI_LCD
