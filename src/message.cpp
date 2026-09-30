@@ -366,7 +366,7 @@ int pkgMsgUpdate(const char *call, const char *raw, uint16_t msg_id, int8_t ack,
 }
 
 // ===== ส่งข้อความ APRS =====
-void sendAPRSMessage(const String &toCall, const String &message, bool encrypt, bool noRetry)
+void sendAPRSMessage(const String &toCall, const String &message, bool encrypt, bool noRetry, uint8_t jobType)
 {
     ++msgID;
     if (toCall == "")
@@ -426,7 +426,18 @@ void sendAPRSMessage(const String &toCall, const String &message, bool encrypt, 
         SendMode |= RF_CHANNEL;
     if (config.msg_inet)
         SendMode |= INET_CHANNEL;
-    pkgTxPush(packet.c_str(), packet.length(), 0, SendMode);
+    // LU6JMF - Marcelo Ferreira
+    // TX Scheduler: APRS Message framing may also carry BLN/NEWS jobs.
+    // Normal messages are HIGH priority; background bulletin/news jobs are LOW.
+    uint8_t priority = LU6JMF_TXPRIO_HIGH;
+    if (jobType == LU6JMF_TXJOB_BULLETIN ||
+        jobType == LU6JMF_TXJOB_NEWS)
+    {
+        priority = LU6JMF_TXPRIO_LOW;
+    }
+
+    pkgTxPushJob(packet.c_str(), packet.length(), 0, SendMode,
+                 jobType, priority);
     log_d("Send APRS Message to %s msgID %d TNC2: %s", toCall.c_str(), msgID, packet.c_str());
     if (config.msg_retry == 0 || noRetry)
         pkgMsgUpdate(toCall.c_str(), message.c_str(), msgID, -2, false); // -2=No retry (also forced for bulletins: nobody ACKs a BLN)
@@ -480,7 +491,8 @@ void sendAPRSMessageRetry()
                 SendMode |= RF_CHANNEL;
             if (config.msg_inet)
                 SendMode |= INET_CHANNEL;
-            pkgTxPush(packet.c_str(), packet.length(), 0, SendMode);
+            pkgTxPushJob(packet.c_str(), packet.length(), 0, SendMode,
+                         LU6JMF_TXJOB_MSG_RETRY, LU6JMF_TXPRIO_HIGH);
             log_d("Retry APRS Message msgQueue[%i] to %s msgID %d ack left %i TNC2: %s", i, msgQueue[i].callsign, msgQueue[i].msgID, msgQueue[i].ack, packet.c_str());
             //pkgMsgUpdate(msgQueue[i].callsign, msgQueue[i].text, msgQueue[i].msgID, msgQueue[i].ack);
             // log_d(">> " + packet);
@@ -515,7 +527,8 @@ void sendAPRSAck(const String &toCall, const String &msgNo)
         SendMode |= RF_CHANNEL;
     if (config.msg_inet)
         SendMode |= INET_CHANNEL;
-    pkgTxPush(packet.c_str(), packet.length(), 0, SendMode);
+    pkgTxPushJob(packet.c_str(), packet.length(), 0, SendMode,
+                 LU6JMF_TXJOB_ACK, LU6JMF_TXPRIO_CRITICAL);
     log_d("Send APRS ACK to %s msgNo %s TNC2: %s", toCall.c_str(), msgNo.c_str(), packet.c_str());
 }
 

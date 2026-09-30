@@ -8,7 +8,11 @@ This is a custom fork by LU6JMF (Marcelo, Concepcion del Uruguay, Entre Rios, Ar
 
 **New device / full reset:** use the one-click browser installer, no software needed: **https://marceloferreirachile.github.io/ESP32APRS_Audio/**
 
-**Existing device (this fork or another firmware), no USB needed:** update through the device's own web panel - see "Existing device" in the [latest release notes](https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/latest). In short: About tab -> Manual Firmware Update -> Manual Filesystem Update. Your WiFi/APRS configuration is restored automatically after the filesystem step.
+**Existing device (this fork or another firmware), no USB needed:** update through the device's own web panel - see "Existing device" in the [latest release notes](https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/latest). In short:
+1. About tab -> Manual Firmware Update -> upload `firmware.bin`. The device reboots.
+2. File tab -> upload, one at a time: `icons.dat`, `main_shell.html`, `style.css`.
+
+Always do both steps, even if a given release only changed the firmware - it costs nothing and keeps the device's filesystem in sync with the firmware in case a future release does need it. Your WiFi/APRS configuration is preserved throughout; only devices still on very old v1.8/v1.9 firmware need a full USB reflash first (see the note in the release notes) before this web-panel flow applies.
 
 The sections below (Feature, Hardware, PlatformIO Quick Start, raw ESP32 Flash Download Tool) are the original upstream documentation and mostly still apply, with the installer above now recommended over manual flashing for this fork.
 

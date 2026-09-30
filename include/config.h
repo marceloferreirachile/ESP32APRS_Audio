@@ -493,10 +493,15 @@ typedef struct Config_Struct
 	// Bulletins BLN1-BLN9 - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
 	bool bln_en[9];
 	char bln_text[9][STATUS_SIZE];
-	uint16_t bln_interval[9]; // seconds. BLN1-BLN4 (Alerts): 300/600/900/1800/3600. NEWS5-NEWS9: base T, min 300.
+	uint16_t bln_interval[9]; // LU6JMF - Marcelo Ferreira: interval stored in minutes (Set/2026 - was seconds before)
 	uint16_t bln_limit[9]; // 0 = unlimited, send forever until disabled
-	// --- v2.1-lu6jmf: BLN Active-for deadline (Alerts + News, both slots 0-8) ---
-	uint8_t bln_activefor[9]; // hours: 0=default (72 for Alerts idx<4, 24 for News idx>=4), else 24/36/48/72
+
+	// LU6JMF - Marcelo Ferreira:
+	// Common BLN1-BLN9 campaign controls (replaces the old bln_activefor
+	// deadline scheme). Both normal BLN and NEWS share the same resources.
+	uint8_t bln_duration[9];     // Active calendar lifetime: 24, 36, 48 or 72 hours
+	uint32_t bln_started_at[9];  // Unix epoch; 0 = no active/dated campaign
+	uint16_t bln_sent_total[9];  // Real transmissions in the current campaign
 	// --- v2.1-lu6jmf: Objects (Object1-Object4), MSG tab, below BLN ---
 	bool obj_en[4];
 	char obj_name[4][10]; // Item/Obj Name, 3-9 chars (same field/validation as igate_object)

@@ -39,6 +39,16 @@ def copy_firmware(source, target, env):
     shutil.copy2(src, dst)
     print("\n*** Firmware saved: {} ***\n".format(dst))
 
+    # LU6JMF - Marcelo Ferreira
+    # Also drop a copy in a plain, visible folder at the project root (not
+    # inside the dot-hidden .pio/) so it's easy to find in Finder without
+    # toggling hidden files.
+    easy_dir = os.path.join(env.subst("$PROJECT_DIR"), "firmware_releases")
+    os.makedirs(easy_dir, exist_ok=True)
+    easy_dst = os.path.join(easy_dir, os.path.basename(dst))
+    shutil.copy2(src, easy_dst)
+    print("*** Firmware also saved (easy-to-find copy): {} ***\n".format(easy_dst))
+
     # Write version info (used by webservice.cpp handle_check_version to detect
     # new firmware releases). JSON is used instead of plain text so it can be
     # parsed easily with ArduinoJson on the device.

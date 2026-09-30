@@ -9,6 +9,11 @@
 */
 #include <Arduino.h>
 #include "webservice.h"
+// LU6JMF - Marcelo Ferreira: PRIME account system, ported from TX-SCHEDULER-TEST.
+#include "prime.h"
+// LU6JMF - Marcelo Ferreira: motor de templates (fase 6), template embutido no
+// firmware - ver include/template_engine.h.
+#include "template_engine.h"
 #include "base64.hpp"
 #include "wireguard_vpn.h"
 #include <LibAPRSesp.h>
@@ -141,6 +146,7 @@ extern double VBat;
 extern bool VBat_Flag;
 extern char lastResetReasonStr[24];
 extern uint16_t blnSentCount[9];
+extern volatile bool blnRestartPending[9];
 
 #ifdef OLED
 #ifdef SH1106
@@ -277,6 +283,72 @@ void notFound(AsyncWebServerRequest *request)
 	request->send(404, "text/plain", "Not found");
 }
 
+// v2.1.3.1-lu6jmf: serves the netlog files (see netlog.cpp) as a simple
+// auto-refreshing HTML page at /netdebug, so they can be watched live in a
+// browser tab without curl/USB - same-origin, so no CORS issues like an
+// external HTML file would hit. Content is read fresh from LittleFS on every
+// request (meta-refresh every 5s), not cached/streamed, since these files
+// are small (12KB total budget) by design.
+static void netdebugPrintFile(AsyncResponseStream *web, const char *path, const char *label)
+{
+	web->print("<div class=\"lbl\">");
+	web->print(label);
+	web->print("</div><pre>");
+	if (LITTLEFS.exists(path))
+	{
+		File f = LITTLEFS.open(path, "r");
+		if (f)
+		{
+			while (f.available())
+			{
+				char buf[128];
+				size_t n = f.readBytes(buf, sizeof(buf) - 1);
+				buf[n] = 0;
+				// Minimal HTML-escaping so packet content with < or & can't break the page.
+				for (size_t i = 0; i < n; i++)
+				{
+					char c = buf[i];
+					if (c == '<') web->print("&lt;");
+					else if (c == '&') web->print("&amp;");
+					else web->write((uint8_t)c);
+				}
+			}
+			f.close();
+		}
+	}
+	else
+	{
+		web->print("(arquivo nao existe ainda)");
+	}
+	web->print("</pre>\n");
+}
+
+void handle_netdebug(AsyncWebServerRequest *request)
+{
+	if (!request->authenticate(config.http_username, config.http_password))
+	{
+		return request->requestAuthentication();
+	}
+
+	AsyncResponseStream *web = request->beginResponseStream("text/html", 4000);
+	if (!web)
+		return;
+
+	web->print("<!DOCTYPE html><html><head><meta charset=\"UTF-8\">");
+	web->print("<meta http-equiv=\"refresh\" content=\"5\">");
+	web->print("<title>NetDebug</title><style>");
+	web->print("body{background:#111;color:#0f0;font-family:monospace;padding:12px;}");
+	web->print("h1{color:#9f9;font-size:15px;}");
+	web->print(".lbl{color:#6cf;font-size:13px;margin-top:10px;}");
+	web->print("pre{background:#000;border:1px solid #333;padding:8px;white-space:pre-wrap;word-break:break-all;font-size:12px;}");
+	web->print("</style></head><body>");
+	web->print("<h1>NetDebug - atualiza a cada 5s</h1>");
+	netdebugPrintFile(web, "/netlog0.txt", "netlog0.txt");
+	netdebugPrintFile(web, "/netlog1.txt", "netlog1.txt");
+	web->print("</body></html>");
+	request->send(web);
+}
+
 void handle_logout(AsyncWebServerRequest *request)
 {
 	char *webString = allocateStringMemory(64); // Small buffer for "Log out"
@@ -296,6 +368,62 @@ void setMainPage(AsyncWebServerRequest *request)
 		return request->requestAuthentication();
 	}
 
+	// LU6JMF - Marcelo Ferreira:
+	// Fase 6 (tirar HTML do codigo pra templates): a casca do SPA (o que
+	// setMainPage imprime abaixo) agora tambem existe como arquivo em
+	// LittleFS (data/templates/main_shell.html), com 4 placeholders pros
+	// pontos dinamicos ({{TITLE}}, {{H1}}, {{MQTT_TAB_JS}}, {{MQTT_TAB_BTN}}).
+	// Um device que so recebeu o .bin por OTA (sem subir esse arquivo pela
+	// pagina Storage) ainda nao tem o template no filesystem - nesse caso o
+	// bloco abaixo simplesmente nao entra, e o codigo antigo (mantido logo
+	// depois, inalterado) gera a mesma pagina exatamente como sempre gerou.
+	if (LITTLEFS.exists("/main_shell.html"))
+	{
+		File tf = LITTLEFS.open("/main_shell.html", "r");
+		if (tf)
+		{
+			String tpl;
+			tpl.reserve(tf.size() + 1);
+			while (tf.available())
+				tpl += (char)tf.read();
+			tf.close();
+
+			char temp_buffer[512];
+			// LU6JMF - Marcelo Ferreira:
+			// AR-APRS visual identity - fixed brand name/version, independent
+			// of the configurable network hostname (matches the "black"
+			// palette/branding already used in the newer TX-SCHEDULER engine).
+			tpl.replace("{{TITLE}}", "<title>AR-APRS - Argentina APRS System</title>\n");
+
+			snprintf(temp_buffer, sizeof(temp_buffer),
+					 "<h1 style=\"margin-bottom:2px;\">AR-APRS</h1>\n"
+					 "<div style=\"text-align:center;font-size:11px;margin-bottom:2px;\">Argentina APRS System &middot; V%s%s</div>\n",
+					 VERSION, VERSION_BUILD);
+			tpl.replace("{{H1}}", temp_buffer);
+
+#ifdef MQTT
+			tpl.replace("{{MQTT_TAB_JS}}", "} else if (tabName == 'MQTT') {\n$(\"#contentmain\").load(\"/mqtt\");\n");
+			tpl.replace("{{MQTT_TAB_BTN}}", "<button class=\"nav-tabs\" onclick=\"selectTab(event, 'MQTT')\">MQTT</button>\n");
+#else
+			tpl.replace("{{MQTT_TAB_JS}}", "");
+			tpl.replace("{{MQTT_TAB_BTN}}", "");
+#endif
+
+			AsyncResponseStream *tplStream = request->beginResponseStream("text/html", tpl.length() + 200);
+			if (tplStream)
+			{
+				tplStream->print(tpl);
+				tplStream->addHeader("Sensor", "content");
+				tplStream->addHeader("Cache-Control", "no-cache");
+				request->send(tplStream);
+				lastHeardTimeout = 0;
+				lastHeard_Flag = true;
+				return;
+			}
+		}
+	}
+
+	// ---- Fallback: embedded shell, used when the LittleFS template is absent ----
 	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
 	AsyncResponseStream *webString = request->beginResponseStream("text/html", 26000);
 	if (!webString)
@@ -318,15 +446,10 @@ void setMainPage(AsyncWebServerRequest *request)
 	webString->print("<meta http-equiv=\"Expires\" content=\"0\" />\n");
 
 	char temp_buffer[512];
-	if (strlen(config.host_name) > 0)
-	{
-		snprintf(temp_buffer, sizeof(temp_buffer), "<title>%s</title>\n", config.host_name);
-		webString->print(temp_buffer);
-	}
-	else
-	{
-		webString->print("<title>ESP32APRS_Audio</title>\n");
-	}
+	// LU6JMF - Marcelo Ferreira:
+	// AR-APRS visual identity - fixed brand name/version, independent of the
+	// configurable network hostname.
+	webString->print("<title>AR-APRS - Argentina APRS System</title>\n");
 
 	webString->print("<link rel=\"stylesheet\" type=\"text/css\" href=\"style.css\" />\n");
 	webString->print("<script src=\"/jquery-3.7.1.js\"></script>\n");
@@ -363,6 +486,8 @@ void setMainPage(AsyncWebServerRequest *request)
 #endif
 	webString->print("} else if (tabName == 'MSG') {\n");
 	webString->print("$(\"#contentmain\").load(\"/msg\");\n");
+	webString->print("} else if (tabName == 'OBJ') {\n");
+	webString->print("$(\"#contentmain\").load(\"/object\");\n");
 	webString->print("} else if (tabName == 'WiFi') {\n");
 	webString->print("$(\"#contentmain\").load(\"/wireless\");\n");
 	webString->print("} else if (tabName == 'MOD') {\n");
@@ -375,6 +500,8 @@ void setMainPage(AsyncWebServerRequest *request)
 	webString->print("$(\"#contentmain\").load(\"/storage\");\n");
 	webString->print("} else if (tabName == 'About') {\n");
 	webString->print("$(\"#contentmain\").load(\"/about\");\n");
+	webString->print("} else if (tabName == 'PRIME') {\n");
+	webString->print("$(\"#contentmain\").load(\"/prime\");\n");
 	webString->print("}\n");
 	webString->print("\n");
 	webString->print("if (evt != null) evt.currentTarget.className += \" active\";\n");
@@ -522,16 +649,13 @@ webString->print("function printLastHeard(data) {\n");
 	webString->print("<div class=\"header\">\n");
 	// webString->print("<div style=\"font-size: 8px; text-align: right; padding-right: 8px;\">ESP32IGate Firmware V" + String(VERSION) + "</div>\n");
 	// webString->print("<div style=\"font-size: 8px; text-align: right; padding-right: 8px;\"><a href=\"/logout\">[LOG OUT]</a></div>\n");
-	if (strlen(config.host_name) > 0)
-	{
-		snprintf(temp_buffer, sizeof(temp_buffer), "<h1>%s</h1>\n", config.host_name);
-		webString->print(temp_buffer);
-	}
-	else
-	{
-		webString->print("<h1>ESP32APRS_Audio</h1>\n");
-	}
-	webString->print("<div style=\"font-size: 8px; text-align: right; padding-right: 8px;\"><a href=\"/logout\">[LOG OUT]</a></div>\n");
+	// LU6JMF - Marcelo Ferreira: AR-APRS header, version generated from build data.
+	webString->print("<h1 style=\"margin-bottom:2px;\">AR-APRS</h1>\n");
+	snprintf(temp_buffer, sizeof(temp_buffer),
+			 "<div style=\"text-align:center;font-size:11px;margin-bottom:2px;\">Argentina APRS System &middot; V%s%s</div>\n",
+			 VERSION, VERSION_BUILD);
+	webString->print(temp_buffer);
+	webString->print("<div style=\"font-size: 8px; text-align: right; padding-right: 8px;\"><a href=\"/logout\" style=\"color:#d7d7d7;\">[LOG OUT]</a></div>\n");
 	webString->print("<div class=\"row\">\n");
 	webString->print("<ul class=\"nav nav-tabs\" style=\"margin: 5px;\">\n");
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'DashBoard')\">DashBoard</button>\n");
@@ -547,12 +671,14 @@ webString->print("function printLastHeard(data) {\n");
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'MQTT')\">MQTT</button>\n");
 #endif
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'MSG')\">MSG</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'OBJ')\">OBJ</button>\n");
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'WiFi')\">WiFi</button>\n");
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'MOD')\">MOD</button>\n");
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'IO')\">I/O</button>\n");
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'System')\">System</button>\n");
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'File')\">File</button>\n");
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'About')\">About</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'PRIME')\">PRIME</button>\n");
 	webString->print("</ul>\n");
 	webString->print("</div>\n");
 	webString->print("</div>\n");
@@ -563,7 +689,9 @@ webString->print("function printLastHeard(data) {\n");
 	webString->print("</div>\n");
 	webString->print("<br />\n");
 	webString->print("<div class=\"footer\">\n");
-	webString->print("ESP32APRS_Audio Web Configuration<br />Copy right ©2023.\n");
+	// LU6JMF - Marcelo Ferreira: AR-APRS signature.
+	webString->print("AR-APRS &middot; Argentina APRS System &middot; 2027<br />\n");
+	webString->print("LU6JMF &mdash; Marcelo Ferreira\n");
 	webString->print("<br />\n");
 	webString->print("</div>\n");
 	webString->print("</div>\n");
@@ -597,7 +725,19 @@ webString->print("function printLastHeard(data) {\n");
 
 void handle_css(AsyncWebServerRequest *request)
 {
-	const char *css = ".container{width:900px;text-align:left;margin:auto;border-radius:10px 10px 10px 10px;-moz-border-radius:10px 10px 10px 10px;-webkit-border-radius:10px 10px 10px 10px;-khtml-border-radius:10px 10px 10px 10px;-ms-border-radius:10px 10px 10px 10px;box-shadow:3px 3px 3px #707070;background:#fff;border-color: #2194ec;padding: 0px;border-width: 5px;border-style:solid;}body,font{font:12px verdana,arial,sans-serif;color:#fff}.header{background:#2194ec;text-decoration:none;color:#fff;font-family:verdana,arial,sans-serif;text-align:left;padding:5px 0;border-radius:10px 10px 0 0;-moz-border-radius:10px 10px 0 0;-webkit-border-radius:10px 10px 0 0;-khtml-border-radius:10px 10px 0 0;-ms-border-radius:10px 10px 0 0}.content{margin:0 0 0 166px;padding:1px 5px 5px;color:#000;background:#fff;text-align:center;font-size: 8pt;}.contentwide{padding:50px 5px 5px;color:#000;background:#fff;text-align:center}.contentwide h2{color:#000;font:1em verdana,arial,sans-serif;text-align:center;font-weight:700;padding:0;margin:0;font-size: 12pt;}.footer{background:#2194ec;text-decoration:none;color:#fff;font-family:verdana,arial,sans-serif;font-size:9px;text-align:center;padding:10px 0;border-radius:0 0 10px 10px;-moz-border-radius:0 0 10px 10px;-webkit-border-radius:0 0 10px 10px;-khtml-border-radius:0 0 10px 10px;-ms-border-radius:0 0 10px 10px;clear:both}#tail{height:450px;width:805px;overflow-y:scroll;overflow-x:scroll;color:#0f0;background:#000}table{vertical-align:middle;text-align:center;empty-cells:show;padding-left:3;padding-right:3;padding-top:3;padding-bottom:3;border-collapse:collapse;border-color:#0f07f2;border-style:solid;border-spacing:0px;border-width:3px;text-decoration:none;color:#fff;background:#000;font-family:verdana,arial,sans-serif;font-size : 12px;width:100%;white-space:nowrap}table th{cursor: pointer;user-select: none;font-size: 10pt;font-family:lucidia console,Monaco,monospace;text-shadow:1px 1px #0e038c;text-decoration:none;background:#0525f7;border:1px solid silver}table tr:nth-child(even){background:#f7f7f7}table tr:nth-child(odd){background:#eeeeee}table td{color:#000;font-family:lucidia console,Monaco,monospace;text-decoration:none;border:1px solid #010369}body{background:#edf0f5;color:#000}a{text-decoration:none}a:link,a:visited{text-decoration:none;color:#0000e0;font-weight:400}th:last-child a.tooltip:hover span{left:auto;right:0}ul{padding:5px;margin:10px 0;list-style:none;float:left}ul li{float:left;display:inline;margin:0 10px}ul li a{text-decoration:none;float:left;color:#999;cursor:pointer;font:900 14px/22px arial,Helvetica,sans-serif}ul li a span{margin:0 10px 0 -10px;padding:1px 8px 5px 18px;position:relative;float:left}h1{text-shadow:2px 2px #303030;text-align:center}.toggle{position:absolute;margin-left:-9999px;visibility:hidden}.toggle+label{display:block;position:relative;cursor:pointer;outline:none}input.toggle-round-flat+label{padding:1px;width:33px;height:18px;background-color:#ddd;border-radius:10px;transition:background .4s}input.toggle-round-flat+label:before,input.toggle-round-flat+label:after{display:block;position:absolute;}input.toggle-round-flat+label:before{top:1px;left:1px;bottom:1px;right:1px;background-color:#fff;border-radius:10px;transition:background .4s}input.toggle-round-flat+label:after{top:2px;left:2px;bottom:2px;width:16px;background-color:#ddd;border-radius:12px;transition:margin .4s,background .4s}input.toggle-round-flat:checked+label{background-color:#dd4b39}input.toggle-round-flat:checked+label:after{margin-left:14px;background-color:#dd4b39}@-moz-document url-prefix(){select,input{margin:0;padding:0;border-width:1px;font:12px verdana,arial,sans-serif}input[type=button],button,input[type=submit]{padding:0 3px;border-radius:3px 3px 3px 3px;-moz-border-radius:3px 3px 3px 3px}}.nice-select.small,.nice-select-dropdown li.option{height:24px!important;min-height:24px!important;line-height:24px!important}.nice-select.small ul li:nth-of-type(2){clear:both}.nav{margin-bottom:0;padding-left:10;list-style:none}.nav>li{position:relative;display:block}.nav>li>a{position:relative;display:block;padding:5px 10px}.nav>li>a:hover,.nav>li>a:focus{text-decoration:none;background-color:#eee}.nav>li.disabled>a{color:#999}.nav>li.disabled>a:hover,.nav>li.disabled>a:focus{color:#999;text-decoration:none;background-color:initial;cursor:not-allowed}.nav .open>a,.nav .open>a:hover,.nav .open>a:focus{background-color:#eee;border-color:#428bca}.nav .nav-divider{height:1px;margin:9px 0;overflow:hidden;background-color:#e5e5e5}.nav>li>a>img{max-width:none}.nav-tabs{border-bottom:1px solid #ddd}.nav-tabs>li{float:left;margin-bottom:-1px}.nav-tabs>li>a{margin-right:0;line-height:1.42857143;border:1px solid #ddd;border-radius:10px 10px 0 0}.nav-tabs>li>a:hover{border-color:#eee #eee #ddd}.nav-tabs>button{margin-right:0;line-height:1.42857143;border:2px solid #ddd;border-radius:10px 10px 0 0}.nav-tabs>button:hover{background-color:#25bbfc;border-color:#428bca;color:#eaf2f9;border-bottom-color:transparent;}.nav-tabs>button.active,.nav-tabs>button.active:hover,.nav-tabs>button.active:focus{color:#f7fdfd;background-color:#1aae0d;border:1px solid #ddd;border-bottom-color:transparent;cursor:default}.nav-tabs>li.active>a,.nav-tabs>li.active>a:hover,.nav-tabs>li.active>a:focus{color:#428bca;background-color:#e5e5e5;border:1px solid #ddd;border-bottom-color:transparent;cursor:default}.nav-tabs.nav-justified{width:100%;border-bottom:0}.nav-tabs.nav-justified>li{float:none}.nav-tabs.nav-justified>li>a{text-align:center;margin-bottom:5px}.nav-tabs.nav-justified>.dropdown .dropdown-menu{top:auto;left:auto}.nav-status{float:left;margin:0;padding:3px;width:160px;font-weight:400;min-height:600}#bar,#prgbar {background-color: #f1f1f1;border-radius: 14px}#bar {background-color: #3498db;width: 0%;height: 14px}.switch{position:relative;display:inline-block;width:34px;height:16px}.switch input{opacity:0;width:0;height:0}.slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background-color:#f55959;-webkit-transition:.4s;transition:.4s}.slider:before{position:absolute;content:\"\";height:12px;width:12px;left:2px;bottom:2px;background-color:#fff;-webkit-transition:.4s;transition:.4s}input:checked+.slider{background-color:#5ca30a}input:focus+.slider{box-shadow:0 0 1px #5ca30a}input:checked+.slider:before{-webkit-transform:translateX(16px);-ms-transform:translateX(16px);transform:translateX(16px)}.slider.round{border-radius:34px}.slider.round:before{border-radius:50%}.button{border:1px solid #06c;background-color:#09c;color:#fff;padding:5px 10px;border-radius: 3px}.button:hover{border:1px solid #09c;background-color:#0ac;color:#fff}.button:disabled,button[disabled]{border:1px solid #999;background-color:#ccc;color:#666}.arrow {margin-left: 5px;font-size: 12px;}\n";
+	// LU6JMF - Marcelo Ferreira:
+	// Fase 6 (tirar HTML/CSS do codigo pra templates): style.css agora vive em
+	// LittleFS (data/style.css) e e servido direto dali quando presente. Um
+	// device que so recebeu o .bin por OTA (sem subir esse arquivo pela pagina
+	// Storage) ainda nao tem esse arquivo no filesystem - nesse caso cai pro
+	// texto embutido abaixo, que fica igual ao style.css de hoje. Sem esse
+	// fallback a pagina ficaria sem estilo ate alguem subir o arquivo.
+	if (LITTLEFS.exists("/style.css"))
+	{
+		request->send(LITTLEFS, "/style.css", "text/css");
+		return;
+	}
+	const char *css = ".container{width:900px;text-align:left;margin:auto;border-radius:10px 10px 10px 10px;-moz-border-radius:10px 10px 10px 10px;-webkit-border-radius:10px 10px 10px 10px;-khtml-border-radius:10px 10px 10px 10px;-ms-border-radius:10px 10px 10px 10px;box-shadow:3px 3px 3px #707070;background:#fff;border-color: #171717;padding: 0px;border-width: 5px;border-style:solid;}body,font{font:12px verdana,arial,sans-serif;color:#fff}.header{background:#171717;text-decoration:none;color:#fff;font-family:verdana,arial,sans-serif;text-align:left;padding:5px 0;border-radius:10px 10px 0 0;-moz-border-radius:10px 10px 0 0;-webkit-border-radius:10px 10px 0 0;-khtml-border-radius:10px 10px 0 0;-ms-border-radius:10px 10px 0 0}.content{margin:0 0 0 166px;padding:1px 5px 5px;color:#000;background:#fff;text-align:center;font-size: 8pt;}.contentwide{padding:50px 5px 5px;color:#000;background:#fff;text-align:center}.contentwide h2{color:#000;font:1em verdana,arial,sans-serif;text-align:center;font-weight:700;padding:0;margin:0;font-size: 12pt;}.footer{background:#171717;text-decoration:none;color:#fff;font-family:verdana,arial,sans-serif;font-size:9px;text-align:center;padding:10px 0;border-radius:0 0 10px 10px;-moz-border-radius:0 0 10px 10px;-webkit-border-radius:0 0 10px 10px;-khtml-border-radius:0 0 10px 10px;-ms-border-radius:0 0 10px 10px;clear:both}#tail{height:450px;width:805px;overflow-y:scroll;overflow-x:scroll;color:#0f0;background:#000}table{vertical-align:middle;text-align:center;empty-cells:show;padding-left:3;padding-right:3;padding-top:3;padding-bottom:3;border-collapse:collapse;border-color:#263B43;border-style:solid;border-spacing:0px;border-width:3px;text-decoration:none;color:#fff;background:#000;font-family:verdana,arial,sans-serif;font-size : 12px;width:100%;white-space:nowrap}table th{cursor: pointer;user-select: none;font-size: 10pt;font-family:lucidia console,Monaco,monospace;text-shadow:1px 1px #0e038c;text-decoration:none;background:#1F4E5F;border:1px solid silver}table tr:nth-child(even){background:#f7f7f7}table tr:nth-child(odd){background:#eeeeee}table td{color:#000;font-family:lucidia console,Monaco,monospace;text-decoration:none;border:1px solid #263B43}body{background:#edf0f5;color:#000}a{text-decoration:none}a:link,a:visited{text-decoration:none;color:#0000e0;font-weight:400}th:last-child a.tooltip:hover span{left:auto;right:0}ul{padding:5px;margin:10px 0;list-style:none;float:left}ul li{float:left;display:inline;margin:0 10px}ul li a{text-decoration:none;float:left;color:#999;cursor:pointer;font:900 14px/22px arial,Helvetica,sans-serif}ul li a span{margin:0 10px 0 -10px;padding:1px 8px 5px 18px;position:relative;float:left}h1{text-shadow:2px 2px #303030;text-align:center}.toggle{position:absolute;margin-left:-9999px;visibility:hidden}.toggle+label{display:block;position:relative;cursor:pointer;outline:none}input.toggle-round-flat+label{padding:1px;width:33px;height:18px;background-color:#ddd;border-radius:10px;transition:background .4s}input.toggle-round-flat+label:before,input.toggle-round-flat+label:after{display:block;position:absolute;}input.toggle-round-flat+label:before{top:1px;left:1px;bottom:1px;right:1px;background-color:#fff;border-radius:10px;transition:background .4s}input.toggle-round-flat+label:after{top:2px;left:2px;bottom:2px;width:16px;background-color:#ddd;border-radius:12px;transition:margin .4s,background .4s}input.toggle-round-flat:checked+label{background-color:#dd4b39}input.toggle-round-flat:checked+label:after{margin-left:14px;background-color:#dd4b39}@-moz-document url-prefix(){select,input{margin:0;padding:0;border-width:1px;font:12px verdana,arial,sans-serif}input[type=button],button,input[type=submit]{padding:0 3px;border-radius:3px 3px 3px 3px;-moz-border-radius:3px 3px 3px 3px}}.nice-select.small,.nice-select-dropdown li.option{height:24px!important;min-height:24px!important;line-height:24px!important}.nice-select.small ul li:nth-of-type(2){clear:both}.nav{margin-bottom:0;padding-left:10;list-style:none}.nav>li{position:relative;display:block}.nav>li>a{position:relative;display:block;padding:5px 10px}.nav>li>a:hover,.nav>li>a:focus{text-decoration:none;background-color:#eee}.nav>li.disabled>a{color:#999}.nav>li.disabled>a:hover,.nav>li.disabled>a:focus{color:#999;text-decoration:none;background-color:initial;cursor:not-allowed}.nav .open>a,.nav .open>a:hover,.nav .open>a:focus{background-color:#eee;border-color:#428bca}.nav .nav-divider{height:1px;margin:9px 0;overflow:hidden;background-color:#e5e5e5}.nav>li>a>img{max-width:none}.nav-tabs{border-bottom:1px solid #ddd}.nav-tabs>li{float:left;margin-bottom:-1px}.nav-tabs>li>a{margin-right:0;line-height:1.42857143;border:1px solid #ddd;border-radius:10px 10px 0 0}.nav-tabs>li>a:hover{border-color:#eee #eee #ddd}.nav-tabs>button{margin-right:0;line-height:1.42857143;border:2px solid #ddd;border-radius:10px 10px 0 0;padding:1px 4px;font-size:12px;flex:1 1 auto;min-width:0;white-space:nowrap}.nav-tabs>button:hover{background-color:#25bbfc;border-color:#428bca;color:#eaf2f9;border-bottom-color:transparent;}.nav-tabs>button.active,.nav-tabs>button.active:hover,.nav-tabs>button.active:focus{color:#f7fdfd;background-color:#1aae0d;border:1px solid #ddd;border-bottom-color:transparent;cursor:default}.nav-tabs>li.active>a,.nav-tabs>li.active>a:hover,.nav-tabs>li.active>a:focus{color:#428bca;background-color:#e5e5e5;border:1px solid #ddd;border-bottom-color:transparent;cursor:default}.nav-tabs.nav-justified{width:100%;border-bottom:0}.nav-tabs.nav-justified>li{float:none}.nav-tabs.nav-justified>li>a{text-align:center;margin-bottom:5px}.nav-tabs.nav-justified>.dropdown .dropdown-menu{top:auto;left:auto}.nav-status{float:left;margin:0;padding:3px;width:160px;font-weight:400;min-height:600}#bar,#prgbar {background-color: #f1f1f1;border-radius: 14px}#bar {background-color: #3498db;width: 0%;height: 14px}.switch{position:relative;display:inline-block;width:34px;height:16px}.switch input{opacity:0;width:0;height:0}.slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background-color:#f55959;-webkit-transition:.4s;transition:.4s}.slider:before{position:absolute;content:\"\";height:12px;width:12px;left:2px;bottom:2px;background-color:#fff;-webkit-transition:.4s;transition:.4s}input:checked+.slider{background-color:#5ca30a}input:focus+.slider{box-shadow:0 0 1px #5ca30a}input:checked+.slider:before{-webkit-transform:translateX(16px);-ms-transform:translateX(16px);transform:translateX(16px)}.slider.round{border-radius:34px}.slider.round:before{border-radius:50%}.button{border:1px solid #06c;background-color:#09c;color:#fff;padding:5px 10px;border-radius: 3px}.button:hover{border:1px solid #09c;background-color:#0ac;color:#fff}.button:disabled,button[disabled]{border:1px solid #999;background-color:#ccc;color:#666}.arrow {margin-left: 5px;font-size: 12px;}\n";
 	request->send_P(200, "text/css", css);
 }
 
@@ -620,6 +760,74 @@ void handle_jquery(AsyncWebServerRequest *request)
 #endif
 }
 
+// LU6JMF - Marcelo Ferreira: fase 6 - template embutido no firmware (ver about).
+static const char *DASHBOARD_TEMPLATE =
+	"<script type=\"text/javascript\">\n"
+	"function reloadSysInfo() {\n"
+	"$(\"#sysInfo\").load(\"/sysinfo\", function () { setTimeout(reloadSysInfo, 60000) });\n"
+	"}\n"
+	"setTimeout(reloadSysInfo(), 100);\n"
+	"function reloadSidebarInfo() {\n"
+	"$(\"#sidebarInfo\").load(\"/sidebarInfo\", function () { setTimeout(reloadSidebarInfo, 10000) });\n"
+	"}\n"
+	"setTimeout(reloadSidebarInfo, 1000);\n"
+	"$(window).trigger('resize');\n"
+	"</script>\n"
+	"<div id=\"sysInfo\">\n</div>\n"
+	"<br />\n"
+	"<div class=\"nav-status\">\n"
+	"<div id=\"sidebarInfo\">\n</div>\n"
+	"<br />\n"
+	"<table>\n<tr>\n<th colspan=\"2\">Radio Info</th>\n</tr>\n"
+	"{{#if rf}}"
+	"<tr>\n<td>Freq.TX</td>\n<td style=\"background: #ffffff;\">{{freqTx}} MHz</td>\n</tr>\n"
+	"<tr>\n<td>Freq.RX</td>\n<td style=\"background: #ffffff;\">{{freqRx}} MHz</td>\n</tr>\n"
+	"<tr>\n<td>TX PWR</td>\n<td>{{txPower}}</td>\n</tr>\n"
+	"{{/if}}"
+	"<tr>\n<td>MODEM</td>\n<td style=\"background: #ffffff;\">{{modem}}</td>\n</tr>\n"
+	"<tr>\n<td>FX.25</td>\n<td style=\"background: #ffffff;\">{{fx25}}</td>\n</tr>\n"
+	"</table>\n\n"
+	"{{#if igate}}"
+	"<br />\n<table>\n<tr>\n<th colspan=\"2\">APRS-IS SERVER</th>\n</tr>\n"
+	"<tr>\n<td>HOST</td>\n<td style=\"background: #ffffff;\">{{igate.host}}</td>\n</tr>\n"
+	"<tr>\n<td>PORT</td>\n<td style=\"background: #ffffff;\">{{igate.port}}</td>\n</tr>\n"
+	"</table>\n"
+	"{{/if}}"
+	"<br />\n<table>\n<tr>\n<th colspan=\"2\">WiFi</th>\n</tr>\n"
+	"<tr>\n<td>MODE</td>\n<td style=\"background: #ffffff;\">{{wifiMode}}</td>\n</tr>\n"
+	"<tr>\n<td>SSID</td>\n<td style=\"background: #ffffff;\">{{ssid}}</td>\n</tr>\n"
+	"<tr>\n<td>RSSI</td>\n"
+	"{{#if wifiConnected}}"
+	"<td style=\"background: #ffffff;\">{{rssi}} dBm</td>\n"
+	"{{else}}"
+	"<td style=\"background:#606060; color:#b0b0b0;\" aria-disabled=\"true\">Disconnect</td>\n"
+	"{{/if}}"
+	"</tr>\n</table>\n<br />\n"
+	"{{#if bluetooth}}"
+	"<table>\n<tr>\n<th colspan=\"2\">Bluetooth</th>\n</tr>\n"
+	"<td>Master</td>\n"
+	"{{#if bluetooth.master}}"
+	"<td style=\"background:#0b0; color:#030; width:50%;\">Enabled</td>\n"
+	"{{else}}"
+	"<td style=\"background:#606060; color:#b0b0b0;\" aria-disabled=\"true\">Disabled</td>\n"
+	"{{/if}}"
+	"</tr>\n<tr>\n<tr>\n<td>NAME</td>\n<td style=\"background: #ffffff;\">{{bluetooth.name}}</td>\n</tr>\n"
+	"<tr>\n<tr>\n<td>MODE</td>\n<td style=\"background: #ffffff;\">{{bluetooth.mode}}</td>\n</tr>\n<tr>\n</table>\n"
+	"{{/if}}"
+	"</div>\n</div>\n\n"
+	"<div class=\"content\">\n<div id=\"lastHeard\">\n"
+	"<table id=\"aprsTable\">\n<thread>\n"
+	"<th colspan=\"7\" style=\"background-color: #070ac2;\">LAST HEARD <a href=\"/tnc2\" target=\"_tnc2\" style=\"color: yellow;font-size:8pt\">[RAW]</a></th>\n"
+	"<tr>\n<th data-sort=\"time\" style=\"min-width:10ch\"><span><b>Time ({{tzStr}})</b></span><span class=\"arrow\"></span></th>\n"
+	"<th style=\"min-width:16px\">ICON</th>\n"
+	"<th data-sort=\"callsign\" style=\"min-width:10ch\">Callsign<span class=\"arrow\"></span></th>\n"
+	"<th>VIA LAST PATH</th>\n"
+	"<th data-sort=\"dx\" style=\"min-width:5ch\">DX<span class=\"arrow\"></span></th>\n"
+	"<th data-sort=\"packet\" style=\"min-width:5ch\">PACKET<span class=\"arrow\"></span></th>\n"
+	"<th data-sort=\"audio\" style=\"min-width:5ch\">AUDIO<span class=\"arrow\"></span></th>\n"
+	"</tr></thread>\n<tbody id=\"aprsTableBody\"></tbody>\n"
+	"</table>\n</div>\n";
+
 void handle_dashboard(AsyncWebServerRequest *request)
 {
 	char temp_buffer[200];
@@ -629,293 +837,126 @@ void handle_dashboard(AsyncWebServerRequest *request)
 	// }
 	StandByTick = millis() + (config.pwr_stanby_delay * 1000);
 
-	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-	AsyncResponseStream *webString = request->beginResponseStream("text/html", 14000);
+	JsonDocument data;
+
+	data["rf"] = config.rf_en; // truthy flag for {{#if rf}}
+	snprintf(temp_buffer, sizeof(temp_buffer), "%.4f", config.freq_tx);
+	data["freqTx"] = temp_buffer;
+	snprintf(temp_buffer, sizeof(temp_buffer), "%.4f", config.freq_rx);
+	data["freqRx"] = temp_buffer;
+	data["txPower"] = config.rf_power ? "HIGH" : "LOW";
+
+	data["modem"] = MODEM_TYPE[config.modem_type];
+	data["fx25"] = FX25_MODE[config.fx25_mode];
+
+	if (config.igate_en)
+	{
+		JsonObject igate = data["igate"].to<JsonObject>();
+		igate["host"] = config.aprs_host;
+		igate["port"] = config.aprs_port;
+	}
+
+	const char *strWiFiMode = "OFF";
+	if (config.wifi_mode == WIFI_STA_FIX) strWiFiMode = "STA";
+	else if (config.wifi_mode == WIFI_AP_FIX) strWiFiMode = "AP";
+	else if (config.wifi_mode == WIFI_AP_STA_FIX) strWiFiMode = "AP+STA";
+	data["wifiMode"] = strWiFiMode;
+	data["ssid"] = WiFi.SSID();
+	data["wifiConnected"] = WiFi.isConnected();
+	if (WiFi.isConnected())
+		data["rssi"] = WiFi.RSSI();
+
+#ifdef BLUETOOTH
+	JsonObject bt = data["bluetooth"].to<JsonObject>();
+	bt["master"] = config.bt_master;
+	bt["name"] = config.bt_name;
+	if (config.bt_mode == 1) bt["mode"] = "TNC2";
+	else if (config.bt_mode == 2) bt["mode"] = "KISS";
+	else bt["mode"] = "NONE";
+#endif
+
+	if (config.timeZone >= 0)
+	{
+		if (config.timeZone == (int)config.timeZone)
+			snprintf(temp_buffer, sizeof(temp_buffer), "+%d", (int)config.timeZone);
+		else
+			snprintf(temp_buffer, sizeof(temp_buffer), "+%.1f", config.timeZone);
+	}
+	else
+	{
+		if (config.timeZone == (int)config.timeZone)
+			snprintf(temp_buffer, sizeof(temp_buffer), "%d", (int)config.timeZone);
+		else
+			snprintf(temp_buffer, sizeof(temp_buffer), "%.1f", config.timeZone);
+	}
+	data["tzStr"] = temp_buffer;
+
+	String html = renderTemplate(DASHBOARD_TEMPLATE, data.as<JsonVariant>());
+	AsyncResponseStream *webString = request->beginResponseStream("text/html", html.length() + 200);
 	if (!webString)
 	{
 		return; // Memory allocation failed
 	}
-
-	webString->print("<script type=\"text/javascript\">\n");
-	webString->print("function reloadSysInfo() {\n");
-	webString->print("$(\"#sysInfo\").load(\"/sysinfo\", function () { setTimeout(reloadSysInfo, 60000) });\n");
-	webString->print("}\n");
-	webString->print("setTimeout(reloadSysInfo(), 100);\n");
-	webString->print("function reloadSidebarInfo() {\n");
-	webString->print("$(\"#sidebarInfo\").load(\"/sidebarInfo\", function () { setTimeout(reloadSidebarInfo, 10000) });\n");
-	webString->print("}\n");
-	webString->print("setTimeout(reloadSidebarInfo, 1000);\n");
-	webString->print("$(window).trigger('resize');\n");
-
-	webString->print("</script>\n");
-
-	//webString->print("<script>\n");
-	// webString->print("let aprsData = [\n");
-	// webString->print("  { time: \"21:54:23\", icon: \"91-1.png\", callsign: \"HS5TQA-7\", path: \"RF: WIDE1-1\", dx: 0.0, packet: 2, audio: -19.6 },\n");
-	// webString->print("  { time: \"22:13:33\", icon: \"66-1.png\", callsign: \"HS5TQA-3\", path: \"RF: DIRECT\", dx: null, packet: 9, audio: -14.1 }\n");
-	// webString->print("];\n\n");
-	// webString->print("const tableBody = document.querySelector(\"#aprsTable tbody\");\n");
-	// webString->print("let sortDirection = {};\n");
-	// webString->print("let currentSortKey = null;\n\n");
-	// webString->print("function renderTable(data) {\n");
-	// webString->print("    tableBody.innerHTML = \"\";\n");
-	// webString->print("    data.forEach(row => {\n");
-	// webString->print("        const tr = document.createElement(\"tr\");\n");
-	// webString->print("        tr.innerHTML = `\n");
-	// webString->print("            <td>${row.time}</td>\n");
-	// webString->print("            <td><img src=\\\"http://aprs.nakhonthai.net/symbols/icons/${row.icon}\\\"></td>\n");
-	// webString->print("            <td>${row.callsign}</td>\n");
-	// webString->print("            <td>${row.path}</td>\n");
-	// webString->print("            <td>${row.dx !== null ? row.dx + \\\" km\\\" : \\\"-\\\"}</td>\n");
-	// webString->print("            <td>${row.packet}</td>\n");
-	// webString->print("            <td style=\\\"color:green;\\\">${row.audio !== null ? row.audio + \\\" dBV\\\" : \\\"-\\\"}</td>\n");
-	// webString->print("        `;\n");
-	// webString->print("        tableBody.appendChild(tr);\n");
-	// webString->print("    });\n");
-	// webString->print("}\n\n");
-	// webString->print("function clearArrows() {\n");
-	// webString->print("    document.querySelectorAll(\\\".arrow\\\").forEach(a => a.textContent = \\\"\\\");\n");
-	// webString->print("}\n\n");
-	// webString->print("document.querySelectorAll(\\\"#aprsTable th[data-sort]\\\")\n");
-	// webString->print(".forEach(header => {\n\n");
-	// webString->print("    header.addEventListener(\\\"click\\\", () => {\n\n");
-	// webString->print("        const key = header.dataset.sort;\n\n");
-	// webString->print("        sortDirection[key] = !sortDirection[key];\n");
-	// webString->print("        currentSortKey = key;\n\n");
-	// webString->print("        aprsData.sort((a, b) => {\n\n");
-	// webString->print("            let valA = a[key];\n");
-	// webString->print("            let valB = b[key];\n\n");
-	// webString->print("            if (key === \\\"time\\\") {\n");
-	// webString->print("                valA = new Date(\\\"1970-01-01T\\\" + valA);\n");
-	// webString->print("                valB = new Date(\\\"1970-01-01T\\\" + valB);\n");
-	// webString->print("            }\n\n");
-	// webString->print("            if (valA === null) return 1;\n");
-	// webString->print("            if (valB === null) return -1;\n\n");
-	// webString->print("            if (valA < valB) return sortDirection[key] ? -1 : 1;\n");
-	// webString->print("            if (valA > valB) return sortDirection[key] ? 1 : -1;\n");
-	// webString->print("            return 0;\n");
-	// webString->print("        });\n\n");
-	// webString->print("        clearArrows();\n\n");
-	// webString->print("        const arrowSpan = header.querySelector(\\\".arrow\\\");\n");
-	// webString->print("        arrowSpan.textContent = sortDirection[key] ? \\\"▲\\\" : \\\"▼\\\";\n\n");
-	// webString->print("        renderTable(aprsData);\n");
-	// webString->print("    });\n\n");
-	// webString->print("});\n\n");
-	// webString->print("renderTable(aprsData);\n");
-	// webString->print("</script>\n");
-
-
-	webString->print("<div id=\"sysInfo\">\n");
-	webString->print("</div>\n");
-
-	webString->print("<br />\n");
-	webString->print("<div class=\"nav-status\">\n");
-	webString->print("<div id=\"sidebarInfo\">\n");
-	webString->print("</div>\n");
-	webString->print("<br />\n");
-
-	webString->print("<table>\n");
-	webString->print("<tr>\n");
-	webString->print("<th colspan=\"2\">Radio Info</th>\n");
-	webString->print("</tr>\n");
-	if (config.rf_en)
-	{
-		webString->print("<tr>\n");
-		webString->print("<td>Freq.TX</td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%.4f MHz</td>\n", config.freq_tx);
-		webString->print(temp_buffer);
-
-		webString->print("</tr>\n");
-		webString->print("<tr>\n");
-		webString->print("<td>Freq.RX</td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%.4f MHz</td>\n", config.freq_rx);
-		webString->print(temp_buffer);
-
-		webString->print("</tr>\n");
-		webString->print("<tr>\n");
-		webString->print("<td>TX PWR</td>\n");
-		if (config.rf_power)
-			webString->print("<td>HIGH</td>\n");
-		else
-			webString->print("<td>LOW</td>\n");
-		webString->print("</tr>\n");
-	}
-	webString->print("<tr>\n");
-	webString->print("<td>MODEM</td>\n");
-
-	
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%s</td>\n", MODEM_TYPE[config.modem_type]);
-	webString->print(temp_buffer);
-
-	webString->print("</tr>\n");
-	webString->print("<tr>\n");
-	webString->print("<td>FX.25</td>\n");
-
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%s</td>\n", FX25_MODE[config.fx25_mode]);
-	webString->print(temp_buffer);
-
-	webString->print("</tr>\n");
-	webString->print("</table>\n");
-	webString->print("\n");
-	if (config.igate_en)
-	{
-		webString->print("<br />\n");
-		webString->print("<table>\n");
-		webString->print("<tr>\n");
-		webString->print("<th colspan=\"2\">APRS-IS SERVER</th>\n");
-		webString->print("</tr>\n");
-		webString->print("<tr>\n");
-		webString->print("<td>HOST</td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%s</td>\n", config.aprs_host);
-		webString->print(temp_buffer);
-
-		webString->print("</tr>\n");
-		webString->print("<tr>\n");
-		webString->print("<td>PORT</td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%d</td>\n", config.aprs_port);
-		webString->print(temp_buffer);
-
-		webString->print("</tr>\n");
-		webString->print("</table>\n");
-	}
-	webString->print("<br />\n");
-	webString->print("<table>\n");
-	webString->print("<tr>\n");
-	webString->print("<th colspan=\"2\">WiFi</th>\n");
-	webString->print("</tr>\n");
-	webString->print("<tr>\n");
-	webString->print("<td>MODE</td>\n");
-	const char *strWiFiMode = "OFF";
-	if (config.wifi_mode == WIFI_STA_FIX)
-	{
-		strWiFiMode = "STA";
-	}
-	else if (config.wifi_mode == WIFI_AP_FIX)
-	{
-		strWiFiMode = "AP";
-	}
-	else if (config.wifi_mode == WIFI_AP_STA_FIX)
-	{
-		strWiFiMode = "AP+STA";
-	}
-
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%s</td>\n", strWiFiMode);
-	webString->print(temp_buffer);
-
-	webString->print("</tr>\n");
-	webString->print("<tr>\n");
-	webString->print("<td>SSID</td>\n");
-
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%s</td>\n", WiFi.SSID().c_str());
-	webString->print(temp_buffer);
-
-	webString->print("</tr>\n");
-	webString->print("<tr>\n");
-	webString->print("<td>RSSI</td>\n");
-	if (WiFi.isConnected())
-	{
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%d dBm</td>\n", WiFi.RSSI());
-		webString->print(temp_buffer);
-	}
-	else
-		webString->print("<td style=\"background:#606060; color:#b0b0b0;\" aria-disabled=\"true\">Disconnect</td>\n");
-	webString->print("</tr>\n");
-	webString->print("</table>\n");
-	webString->print("<br />\n");
-#ifdef BLUETOOTH
-	webString->print("<table>\n");
-	webString->print("<tr>\n");
-
-	webString->print("<th colspan=\"2\">Bluetooth</th>\n");
-	webString->print("</tr>\n");
-	webString->print("<td>Master</td>\n");
-	if (config.bt_master)
-		webString->print("<td style=\"background:#0b0; color:#030; width:50%;\">Enabled</td>\n");
-	else
-		webString->print("<td style=\"background:#606060; color:#b0b0b0;\" aria-disabled=\"true\">Disabled</td>\n");
-	webString->print("</tr>\n");
-	webString->print("<tr>\n");
-	webString->print("<tr>\n");
-	webString->print("<td>NAME</td>\n");
-
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%s</td>\n", config.bt_name);
-	webString->print(temp_buffer);
-
-	webString->print("</tr>\n");
-	webString->print("<tr>\n");
-	webString->print("<tr>\n");
-	webString->print("<td>MODE</td>\n");
-	const char *btMode = "";
-	if (config.bt_mode == 1)
-	{
-		btMode = "TNC2";
-	}
-	else if (config.bt_mode == 2)
-	{
-		btMode = "KISS";
-	}
-	else
-	{
-		btMode = "NONE";
-	}
-
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%s</td>\n", btMode);
-	webString->print(temp_buffer);
-
-	webString->print("</tr>\n");
-	webString->print("<tr>\n");
-	webString->print("</table>\n");
-#endif
-	webString->print("</div>\n");
-
-	webString->print("</div>\n");
-	webString->print("\n");
-	webString->print("<div class=\"content\">\n");
-	webString->print("<div id=\"lastHeard\">\n");
-	//String lastHeardString = event_lastHeard(true);
-	//webString->print(lastHeardString.c_str());
-	//lastHeardString.clear();
-	webString->print("<table id=\"aprsTable\">\n<thread>\n");
-	webString->print("<th colspan=\"7\" style=\"background-color: #070ac2;\">LAST HEARD <a href=\"/tnc2\" target=\"_tnc2\" style=\"color: yellow;font-size:8pt\">[RAW]</a></th>\n");
-	webString->print("<tr>\n");
-	webString->print("<th data-sort=\"time\" style=\"min-width:10ch\"><span><b>Time (");
-	if (config.timeZone >= 0)
-		webString->print("+");
-	// else
-	//	webString->print("-");
-
-	if (config.timeZone == (int)config.timeZone)
-	{
-		sprintf(temp_buffer, "%d", (int)config.timeZone);
-		webString->print(temp_buffer);
-		webString->print(")</b></span><span class=\"arrow\"></span></th>\n");
-	}
-	else
-	{
-		sprintf(temp_buffer, "%.1f", config.timeZone);
-		webString->print(temp_buffer);
-		webString->print(")</b></span><span class=\"arrow\"></span></th>\n");
-	}
-	webString->print("<th style=\"min-width:16px\">ICON</th>\n");
-	webString->print("<th data-sort=\"callsign\" style=\"min-width:10ch\">Callsign<span class=\"arrow\"></span></th>\n");
-	webString->print("<th>VIA LAST PATH</th>\n");
-	webString->print("<th data-sort=\"dx\" style=\"min-width:5ch\">DX<span class=\"arrow\"></span></th>\n");
-	webString->print("<th data-sort=\"packet\" style=\"min-width:5ch\">PACKET<span class=\"arrow\"></span></th>\n");
-	webString->print("<th data-sort=\"audio\" style=\"min-width:5ch\">AUDIO<span class=\"arrow\"></span></th>\n");
-	webString->print("</tr></thread>\n<tbody id=\"aprsTableBody\"></tbody>\n");
-	webString->print("</table>\n");
-	webString->print("</div>\n");
-
+	webString->print(html);
 	webString->addHeader("dashboard", "content");
 	webString->addHeader("Cache-Control", "no-cache");
 	request->send(webString);
 	lastHeardTimeout = millis() + 500;
 	lastHeard_Flag = true;
 }
+
+// LU6JMF - Marcelo Ferreira: fase 6 - template embutido no firmware (ver about).
+// Nota: o rewrite corrigiu um bug de sintaxe pre-existente no bloco #ifdef MQTT
+// (um "print(...;);" com ponto-e-virgula sobrando dentro dos parenteses -
+// nunca compilava porque MQTT nao estava definido em nenhum build atual, por
+// isso nunca deu erro visivel) - a versao em template nao carrega esse bug.
+static const char *SIDEBAR_TEMPLATE =
+	"<table style=\"background:white;border-collapse: unset;\">\n"
+	"<tr>\n<th colspan=\"2\">Modes Enabled</th>\n</tr>\n<tr>\n"
+	"{{#if igate}}<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">IGATE</th>\n"
+	"{{else}}<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\">IGATE</th>\n{{/if}}"
+	"{{#if digi}}<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">DIGI</th>\n"
+	"{{else}}<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\">DIGI</th>\n{{/if}}"
+	"</tr>\n<tr>\n"
+	"{{#if wx}}<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">WX</th>\n"
+	"{{else}}<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\">WX</th>\n{{/if}}"
+	"{{#if tracker}}<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">TRACKER</th>\n"
+	"{{else}}<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\">TRACKER</th>\n{{/if}}"
+	"</tr>\n</table>\n<br />\n"
+	"<table style=\"background:white;border-collapse: unset;\">\n"
+	"<tr>\n<th colspan=\"2\">Network Status</th>\n</tr>\n<tr>\n"
+	"{{#if aprsis}}<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">APRS-IS</th>\n"
+	"{{else}}<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">APRS-IS</th>\n{{/if}}"
+	"{{#if vpn}}<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">VPN</th>\n"
+	"{{else}}<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">VPN</th>\n{{/if}}"
+	"</tr>\n<tr>\n"
+	"{{#if pppos}}<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">PPPoS</th>\n"
+	"{{else}}<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">PPPoS</th>\n{{/if}}"
+	"{{#if mqttCompiled}}"
+	"{{#if mqtt}}<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">MQTT</th>\n"
+	"{{else}}<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">MQTT</th>\n{{/if}}"
+	"{{/if}}"
+	"{{#if fx25}}<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">FX.25</th>\n"
+	"{{else}}<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">FX.25</th>\n{{/if}}"
+	"</tr>\n</table>\n<br />\n"
+	"<table>\n<tr>\n<th colspan=\"2\">STATISTICS</th>\n</tr>\n"
+	"<tr>\n<td style=\"width: 60px;text-align: right;\">RADIO RX:</td>\n<td style=\"background: #ffffff;\">{{rxCount}}</td>\n</tr>\n"
+	"<tr>\n<td style=\"width: 60px;text-align: right;\">PACKET RX:</td>\n<td style=\"background: #ffffff;\">{{allCount}}</td>\n</tr>\n"
+	"<tr>\n<td style=\"width: 60px;text-align: right;\">PACKET TX:</td>\n<td style=\"background: #ffffff;\">{{txCount}}</td>\n</tr>\n"
+	"<tr>\n<td style=\"width: 60px;text-align: right;\">RF2INET:</td>\n<td style=\"background: #ffffff;\">{{rf2inet}}</td>\n</tr>\n"
+	"<tr>\n<td style=\"width: 60px;text-align: right;\">INET2RF:</td>\n<td style=\"background: #ffffff;\">{{inet2rf}}</td>\n</tr>\n"
+	"<tr>\n<td style=\"width: 60px;text-align: right;\">DIGI:</td>\n<td style=\"background: #ffffff;\">{{digiCount}}</td>\n</tr>\n"
+	"<tr>\n<td style=\"width: 60px;text-align: right;\">DROP/ERR:</td>\n<td style=\"background: #ffffff;\">{{dropCount}}/{{errorCount}}</td>\n</tr>\n"
+	"</table>\n<br />\n"
+	"{{#if gnss}}"
+	"<table>\n<tr>\n<th colspan=\"2\">GPS Info <a href=\"/gnss\" target=\"_gnss\" style=\"color: yellow;font-size:8pt\">[View]</a></th>\n</tr>\n"
+	"<tr>\n<td>LAT:</td>\n<td style=\"background: #ffffff;text-align: left;\">{{gnss.lat}}</td>\n</tr>\n"
+	"<tr>\n<td>LON:</td>\n<td style=\"background: #ffffff;text-align: left;\">{{gnss.lon}}</td>\n</tr>\n"
+	"<tr>\n<td>ALT:</td>\n<td style=\"background: #ffffff;text-align: left;\">{{gnss.alt}}</td>\n</tr>\n"
+	"<tr>\n<td>SAT:</td>\n<td style=\"background: #ffffff;text-align: left;\">{{gnss.sat}}</td>\n</tr>\n"
+	"</table>\n"
+	"{{/if}}"
+	"<script>\n$(window).trigger('resize');\n</script>\n";
 
 void handle_sidebar(AsyncWebServerRequest *request)
 {
@@ -924,291 +965,177 @@ void handle_sidebar(AsyncWebServerRequest *request)
 		return request->requestAuthentication();
 	}
 
-	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-	AsyncResponseStream *html = request->beginResponseStream("text/html", 10000);
+	JsonDocument data;
+	data["igate"] = config.igate_en;
+	data["digi"] = config.digi_en;
+	data["wx"] = config.wx_en;
+	data["tracker"] = config.trk_en;
+	data["aprsis"] = aprsClient.connected();
+	data["vpn"] = wireguard_active();
+#ifdef PPPOS
+	data["pppos"] = PPP.connected();
+#else
+	data["pppos"] = false;
+#endif
+#ifdef MQTT
+	data["mqttCompiled"] = true;
+	data["mqtt"] = clientMQTT.connected();
+#else
+	data["mqttCompiled"] = false;
+#endif
+	data["fx25"] = config.fx25_mode > 0;
+
+	data["rxCount"] = status.rxCount;
+	data["allCount"] = status.allCount;
+	data["txCount"] = status.txCount;
+	data["rf2inet"] = status.rf2inet;
+	data["inet2rf"] = status.inet2rf;
+	data["digiCount"] = status.digiCount;
+	data["dropCount"] = status.dropCount;
+	data["errorCount"] = status.errorCount;
+
+	if (config.gnss_enable)
+	{
+		JsonObject gnss = data["gnss"].to<JsonObject>();
+		char buf[32];
+		snprintf(buf, sizeof(buf), "%f", gps.location.lat());
+		gnss["lat"] = buf;
+		snprintf(buf, sizeof(buf), "%f", gps.location.lng());
+		gnss["lon"] = buf;
+		snprintf(buf, sizeof(buf), "%f", gps.altitude.meters());
+		gnss["alt"] = buf;
+		gnss["sat"] = gps.satellites.value();
+	}
+
+	String html_str = renderTemplate(SIDEBAR_TEMPLATE, data.as<JsonVariant>());
+	AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
 	if (!html)
 	{
 		return; // Memory allocation failed
 	}
-
-	html->print("<table style=\"background:white;border-collapse: unset;\">\n");
-	html->print("<tr>\n");
-	html->print("<th colspan=\"2\">Modes Enabled</th>\n");
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	if (config.igate_en)
-		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">IGATE</th>\n");
-	else
-		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\">IGATE</th>\n");
-
-	if (config.digi_en)
-		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">DIGI</th>\n");
-	else
-		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\">DIGI</th>\n");
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	if (config.wx_en)
-		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">WX</th>\n");
-	else
-		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\">WX</th>\n");
-	if (config.trk_en)
-		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">TRACKER</th>\n");
-	else
-		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\">TRACKER</th>\n");
-	html->print("</tr>\n");
-	html->print("</table>\n");
-	html->print("<br />\n");
-	html->print("<table style=\"background:white;border-collapse: unset;\">\n");
-	html->print("<tr>\n");
-	html->print("<th colspan=\"2\">Network Status</th>\n");
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	if (aprsClient.connected() == true)
-		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">APRS-IS</th>\n");
-	else
-		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">APRS-IS</th>\n");
-	if (wireguard_active() == true)
-		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">VPN</th>\n");
-	else
-		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">VPN</th>\n");
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-// html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">4G LTE</th>\n");
-#ifdef PPPOS
-	if (PPP.connected())
-		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">PPPoS</th>\n");
-	else
-#endif
-		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">PPPoS</th>\n");
-#ifdef MQTT
-	if (clientMQTT.connected())
-		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">MQTT</th>\n");
-	else
-		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">MQTT</th>\n";);
-#endif
-	if (config.fx25_mode > 0)
-		html->print("<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">FX.25</th>\n");
-	else
-		html->print("<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">FX.25</th>\n");
-	html->print("</tr>\n");
-	html->print("</table>\n");
-	html->print("<br />\n");
-	html->print("<table>\n");
-	html->print("<tr>\n");
-	html->print("<th colspan=\"2\">STATISTICS</th>\n");
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	html->print("<td style=\"width: 60px;text-align: right;\">RADIO RX:</td>\n");
-
-	// Convert numeric values to strings using temporary buffers
-	char temp_buffer[64];
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%lu</td>\n", status.rxCount);
-	html->print(temp_buffer);
-
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	html->print("<td style=\"width: 60px;text-align: right;\">PACKET RX:</td>\n");
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%lu</td>\n", status.allCount);
-	html->print(temp_buffer);
-
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	html->print("<td style=\"width: 60px;text-align: right;\">PACKET TX:</td>\n");
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%lu</td>\n", status.txCount);
-	html->print(temp_buffer);
-
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	html->print("<td style=\"width: 60px;text-align: right;\">RF2INET:</td>\n");
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%lu</td>\n", status.rf2inet);
-	html->print(temp_buffer);
-
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	html->print("<td style=\"width: 60px;text-align: right;\">INET2RF:</td>\n");
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%lu</td>\n", status.inet2rf);
-	html->print(temp_buffer);
-
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	html->print("<td style=\"width: 60px;text-align: right;\">DIGI:</td>\n");
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%lu</td>\n", status.digiCount);
-	html->print(temp_buffer);
-
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	html->print("<td style=\"width: 60px;text-align: right;\">DROP/ERR:</td>\n");
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;\">%lu/", status.dropCount);
-	html->print(temp_buffer);
-	snprintf(temp_buffer, sizeof(temp_buffer), "%lu</td>\n", status.errorCount);
-	html->print(temp_buffer);
-
-	html->print("</tr>\n");
-	html->print("</table>\n");
-	html->print("<br />\n");
-	if (config.gnss_enable)
-	{
-		html->print("<table>\n");
-		html->print("<tr>\n");
-		html->print("<th colspan=\"2\">GPS Info <a href=\"/gnss\" target=\"_gnss\" style=\"color: yellow;font-size:8pt\">[View]</a></th>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td>LAT:</td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;text-align: left;\">%f</td>\n", gps.location.lat());
-		html->print(temp_buffer);
-
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td>LON:</td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;text-align: left;\">%f</td>\n", gps.location.lng());
-		html->print(temp_buffer);
-
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td>ALT:</td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;text-align: left;\">%f</td>\n", gps.altitude.meters());
-		html->print(temp_buffer);
-
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td>SAT:</td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"background: #ffffff;text-align: left;\">%d</td>\n", gps.satellites.value());
-		html->print(temp_buffer);
-
-		html->print("</tr>\n");
-		html->print("</table>\n");
-	}
-	html->print("<script>\n");
-	html->print("$(window).trigger('resize');\n");
-	html->print("</script>\n");
-
+	html->print(html_str);
 	html->addHeader("Sidebar", "content");
 	html->addHeader("Cache-Control", "no-cache");
 	request->send(html);
 }
 
+// LU6JMF - Marcelo Ferreira: fase 6 - template embutido no firmware (ver about).
+// Loop de linhas/colunas virou {{#each}} aninhado (tables -> rows -> cells);
+// a quebra de linha a cada 16 colunas e' feita em C++ ao montar o JSON (o
+// motor nao tem aritmetica de modulo na sintaxe do template, entao a divisao
+// em linhas continua sendo decidida no C++, so a impressao virou declarativa).
+static const char *SYMBOL_TEMPLATE =
+	"{{#each tables}}"
+	"<table border=\"1\" align=\"center\">\n"
+	"<tr><th colspan=\"16\">{{title}}</th></tr>\n"
+	"{{#each rows}}"
+	"<tr>\n"
+	"{{#each this}}<td><img onclick=\"{{onclick}}\" src=\"http://aprs.nakhonthai.net/symbols/icons/{{icon}}\"></td>{{/each}}"
+	"</tr>\n"
+	"{{/each}}"
+	"</table>\n<br />"
+	"{{/each}}";
+
 void handle_symbol(AsyncWebServerRequest *request)
 {
-	int i;
 	int sel = -1;
-	for (i = 0; i < request->args(); i++)
+	for (int i = 0; i < request->args(); i++)
 	{
 		if (request->argName(i) == "sel")
 		{
-			if (request->arg(i) != "")
+			if (request->arg(i) != "" && isValidNumber(request->arg(i)))
 			{
-				if (isValidNumber(request->arg(i)))
-				{
-					sel = request->arg(i).toInt();
-				}
+				sel = request->arg(i).toInt();
 			}
 		}
 	}
 
-	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-	AsyncResponseStream *web = request->beginResponseStream("text/html", 26000);
-	if (web)
+	JsonDocument data;
+	JsonArray tables = data["tables"].to<JsonArray>();
+	char buf[64];
+	for (int suffix = 1; suffix <= 2; suffix++)
 	{
-		web->print("<table border=\"1\" align=\"center\">\n");
-		web->print("<tr><th colspan=\"16\">Table '/'</th></tr>\n");
-		web->print("<tr>\n");
-		char lnk[200];
-		for (i = 33; i < 129; i++)
+		JsonObject table = tables.add<JsonObject>();
+		table["title"] = (suffix == 1) ? "Table '/'" : "Table '\\'";
+		JsonArray rows = table["rows"].to<JsonArray>();
+		JsonArray row = rows.add<JsonArray>();
+		for (int i = 33; i < 129; i++)
 		{
-			memset(lnk, 0, sizeof(lnk));
-			//<td><img onclick="window.opener.setValue(113,2);" src="http://aprs.nakhonthai.net/symbols/icons/113-2.png"></td>
+			JsonObject cell = row.add<JsonObject>();
 			if (sel == -1)
-				sprintf(lnk, "<td><img onclick=\"window.opener.setValue(%d,1);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-1.png\"></td>", i, i);
+				snprintf(buf, sizeof(buf), "window.opener.setValue(%d,%d);", i, suffix);
 			else
-				sprintf(lnk, "<td><img onclick=\"window.opener.setValue(%d,%d,1);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-1.png\"></td>", sel, i, i);
-			web->print(lnk);
+				snprintf(buf, sizeof(buf), "window.opener.setValue(%d,%d,%d);", sel, i, suffix);
+			cell["onclick"] = buf;
+			snprintf(buf, sizeof(buf), "%d-%d.png", i, suffix);
+			cell["icon"] = buf;
 
 			if (((i % 16) == 0) && (i < 126))
-				web->print("</tr>\n<tr>\n");
+				row = rows.add<JsonArray>();
 		}
-		web->print("</tr>");
-		web->print("</table>\n<br />");
-		web->print("<table border=\"1\" align=\"center\">\n");
-		web->print("<tr><th colspan=\"16\">Table '\\'</th></tr>\n");
-		web->print("<tr>\n");
-		for (i = 33; i < 129; i++)
-		{
-			memset(lnk, 0, sizeof(lnk));
-			if (sel == -1)
-				sprintf(lnk, "<td><img onclick=\"window.opener.setValue(%d,2);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-2.png\"></td>", i, i);
-			else
-				sprintf(lnk, "<td><img onclick=\"window.opener.setValue(%d,%d,2);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-2.png\"></td>", sel, i, i);
-			web->print(lnk);
-			if (((i % 16) == 0) && (i < 126))
-				web->print("</tr>\n<tr>\n");
-		}
-		web->print("</tr>");
-		web->print("</table>\n");
+	}
+
+	String html_str = renderTemplate(SYMBOL_TEMPLATE, data.as<JsonVariant>());
+	AsyncResponseStream *web = request->beginResponseStream("text/html", html_str.length() + 200);
+	if (web)
+	{
+		web->print(html_str);
 		web->addHeader("Symbol", "content");
 		web->addHeader("Cache-Control", "no-cache");
 		request->send(web);
 	}
 }
 
+// LU6JMF - Marcelo Ferreira: fase 6 - template embutido no firmware (ver about).
+static const char *SYSINFO_TEMPLATE =
+	"<table style=\"table-layout: fixed;border-collapse: unset;border-radius: 10px;border-color: #ee800a;border-style: ridge;border-spacing: 1px;border-width: 4px;background: #ee800a;\">\n"
+	"<tr>\n"
+	"<th><span><b>Up Time</b></span></th>\n"
+	"<th><span>RAM(KByte)</span></th>\n"
+	"{{#if psram}}<th><span>PSRAM(KByte)</span></th>\n{{/if}}"
+	"<th><span>SPIFFS(KByte)</span></th>\n"
+	"{{#if vbat}}<th><span>VBat(V)</span></th>\n{{/if}}"
+	"<th><span>CPU(Mhz)</span></th>\n"
+	"<th><span>CPU.Temp(\xc2\xb0" "C)</span></th>\n"
+	"</tr>\n<tr>\n"
+	"<td><b>{{upTime}}</b></td>\n"
+	"<td><b>{{ram}}</b></td>\n"
+	"{{#if psram}}<td><b>{{psram}}</b></td>\n{{/if}}"
+	"<td><b>{{spiffs}}</b></td>\n"
+	"{{#if vbat}}<td><b>{{vbat}}</b></td>\n{{/if}}"
+	"<td><b>{{cpuMhz}}</b></td>\n"
+	"<td><b>{{cpuTemp}}</b></td>\n"
+	"</tr>\n</table>\n";
+
 void handle_sysinfo(AsyncWebServerRequest *request)
 {
-	// Using dynamic memory allocation instead of String
-	char *html = allocateStringMemory(1024); // Initial buffer size, adjust as needed
-	if (!html)
-	{
-		return; // Memory allocation failed
-	}
+	JsonDocument data;
+	char temp_buffer[64];
 
-	strcpy(html, "<table style=\"table-layout: fixed;border-collapse: unset;border-radius: 10px;border-color: #ee800a;border-style: ridge;border-spacing: 1px;border-width: 4px;background: #ee800a;\">\n");
-	strcat(html, "<tr>\n");
-	strcat(html, "<th><span><b>Up Time</b></span></th>\n");
-	strcat(html, "<th><span>RAM(KByte)</span></th>\n");
-#ifdef BOARD_HAS_PSRAM
-	strcat(html, "<th><span>PSRAM(KByte)</span></th>\n");
-#endif
-	strcat(html, "<th><span>SPIFFS(KByte)</span></th>\n");
-	if (VBat_Flag)
-		strcat(html, "<th><span>VBat(V)</span></th>\n");
-	strcat(html, "<th><span>CPU(Mhz)</span></th>\n");
-	strcat(html, "<th><span>CPU.Temp(°C)</span></th>\n");
-
-	strcat(html, "</tr>\n");
-	strcat(html, "<tr>\n");
-	// time_t tn = time(NULL) - systemUptime;
-	//  char* uptime = String(day(tn) - 1, DEC) + "D " + String(hour(tn), DEC) + ":" + String(minute(tn), DEC) + ":" + String(second(tn), DEC);
-	// String uptime = String(day(tn) - 1, DEC) + "D " + String(hour(tn), DEC) + ":" + String(minute(tn), DEC);
 	char strTime[20];
 	convertSecondsToDHMS(strTime, (millis() / 1000) - upTimeStamp);
+	data["upTime"] = strTime;
 
-	char temp_buffer[512];
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td><b>%s</b></td>\n", strTime);
-	strcat(html, temp_buffer);
-
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td><b>%.1f/%.1f</b></td>\n", (float)ESP.getFreeHeap() / 1000, (float)ESP.getHeapSize() / 1000);
-	strcat(html, temp_buffer);
+	snprintf(temp_buffer, sizeof(temp_buffer), "%.1f/%.1f", (float)ESP.getFreeHeap() / 1000, (float)ESP.getHeapSize() / 1000);
+	data["ram"] = temp_buffer;
 
 #ifdef BOARD_HAS_PSRAM
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td><b>%.1f/%.1f</b></td>\n", (float)ESP.getFreePsram() / 1000, (float)ESP.getPsramSize() / 1000);
-	strcat(html, temp_buffer);
+	snprintf(temp_buffer, sizeof(temp_buffer), "%.1f/%.1f", (float)ESP.getFreePsram() / 1000, (float)ESP.getPsramSize() / 1000);
+	data["psram"] = temp_buffer;
 #endif
 
 	unsigned long cardTotal = LITTLEFS.totalBytes();
 	unsigned long cardUsed = LITTLEFS.usedBytes();
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td><b>%.1f/%.1f</b></td>\n", (double)cardUsed / 1024, (double)cardTotal / 1024);
-	strcat(html, temp_buffer);
+	snprintf(temp_buffer, sizeof(temp_buffer), "%.1f/%.1f", (double)cardUsed / 1024, (double)cardTotal / 1024);
+	data["spiffs"] = temp_buffer;
 
 	if (VBat_Flag)
 	{
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td><b>%.2f</b></td>\n", VBat);
-		strcat(html, temp_buffer);
+		snprintf(temp_buffer, sizeof(temp_buffer), "%.2f", VBat);
+		data["vbat"] = temp_buffer;
 	}
 
-	snprintf(temp_buffer, sizeof(temp_buffer), "<td><b>%d</b></td>\n", ESP.getCpuFreqMHz());
-	strcat(html, temp_buffer);
+	data["cpuMhz"] = ESP.getCpuFreqMHz();
 
 	// CPU temp dashboard fix - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
 	// The ESPCPUTemp lib refuses classic ESP32 (D0WD/D0WD-V3) outright ("not found" - unsupported
@@ -1218,23 +1145,19 @@ void handle_sysinfo(AsyncWebServerRequest *request)
 	float cpuTempC = temperatureRead();
 	if (!isnan(cpuTempC) && cpuTempC > -40.0f && cpuTempC < 125.0f)
 	{
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td><b>%.1f</b></td>\n", cpuTempC);
-		strcat(html, temp_buffer);
+		snprintf(temp_buffer, sizeof(temp_buffer), "%.1f", cpuTempC);
+		data["cpuTemp"] = temp_buffer;
 	}
 	else
 	{
-		strcat(html, "<td><b>N/A</b></td>\n");
+		data["cpuTemp"] = "N/A";
 	}
-	// html += "<td style=\"background: #f00\"><b>" + String(ESP.getCycleCount()) + "</b></td>\n";
-	strcat(html, "</tr>\n");
-	strcat(html, "</table>\n");
 
-	// request->send(200, "text/html", html); // send to someones browser when asked
-	AsyncWebServerResponse *response = request->beginResponse(200, "text/html", (const char *)html);
+	String html_str = renderTemplate(SYSINFO_TEMPLATE, data.as<JsonVariant>());
+	AsyncWebServerResponse *response = request->beginResponse(200, "text/html", html_str);
 	response->addHeader("Sysinfo", "content");
 	response->addHeader("Cache-Control", "no-cache");
 	request->send(response);
-	free(html); // Free the allocated memory
 }
 
 // Copy src into dest escaping characters that would break JSON string syntax
@@ -1564,42 +1487,43 @@ String event_chatMessage(bool gethtml)
 
 	struct tm tmstruct, tmNow;
 
-	// Using dynamic memory allocation instead of String
-	char *html = allocateStringMemory(4096); // Initial buffer size, adjust as needed
-	if (!html)
-	{
-		return String(""); // Memory allocation failed
-	}
+	// LU6JMF fix (Set/2026): the old fixed 4096-byte char* buffer + strcat()
+	// loop had no bounds checking. With PKGLISTSIZE=20 and long messages,
+	// the accumulated HTML could exceed 4096 bytes and overflow the heap
+	// buffer, corrupting adjacent memory (same class of bug as the earlier
+	// IGATE block_trim_free heap-corruption incident). Switched to a String
+	// that grows as needed - no fixed cap, no overflow.
+	String html;
+	html.reserve(2048);
 
 	time_t timen = time(NULL);
 	localtime_r(&timen, &tmNow);
 
-	strcpy(html, "<tr>\n");
-	strcat(html, "<th style=\"width:60pt\"><span><b>Time (");
+	html += "<tr>\n";
+	html += "<th style=\"width:60pt\"><span><b>Time (";
 	if (config.timeZone >= 0)
-		strcat(html, "+");
+		html += "+";
 
 	// Convert timezone to string
 	char temp_buffer[64];
 	if (config.timeZone == (int)config.timeZone)
 	{
 		snprintf(temp_buffer, sizeof(temp_buffer), "%d", (int)config.timeZone);
-		strcat(html, temp_buffer);
-		strcat(html, ")</b></span></th>\n");
+		html += temp_buffer;
+		html += ")</b></span></th>\n";
 	}
 	else
 	{
 		snprintf(temp_buffer, sizeof(temp_buffer), "%.1f", config.timeZone);
-		strcat(html, temp_buffer);
-		strcat(html, ")</b></span></th>\n");
+		html += temp_buffer;
+		html += ")</b></span></th>\n";
 	}
-	// strcat(html, "<th style=\"min-width:16px\">ICON</th>\n");
 
-	strcat(html, "<th style=\"width:70pt\">Callsign</th>\n");
-	strcat(html, "<th>Message</th>\n");
-	strcat(html, "<th style=\"width:10pt\">ACK</th>\n");
-	strcat(html, "<th style=\"width:20pt\">msgID</th>\n");
-	strcat(html, "</tr>\n");
+	html += "<th style=\"width:70pt\">Callsign</th>\n";
+	html += "<th>Message</th>\n";
+	html += "<th style=\"width:10pt\">ACK</th>\n";
+	html += "<th style=\"width:20pt\">msgID</th>\n";
+	html += "</tr>\n";
 
 	pkgMsgSort(msgQueue);
 	for (int i = 0; i < PKGLISTSIZE; i++)
@@ -1609,95 +1533,167 @@ String event_chatMessage(bool gethtml)
 		msgType pkg = getMsgList(i);
 		if (pkg.time > 0)
 		{
-			// String line = String(pkg.text); // Not needed anymore
-
 			pkg.callsign[10] = 0;
-			// time_t tm = pkg.time;
 			localtime_r(&pkg.time, &tmstruct);
 			char strTime[10];
-			// sprintf(strTime, "%02d:%02d:%02d", tmstruct.tm_hour, tmstruct.tm_min, tmstruct.tm_sec);
 			if (tmNow.tm_mday == tmstruct.tm_mday)
 				sprintf(strTime, "%02d:%02d:%02d", tmstruct.tm_hour, tmstruct.tm_min, tmstruct.tm_sec);
 			else
 				sprintf(strTime, "%dd %02d:%02d", tmstruct.tm_mday, tmstruct.tm_hour, tmstruct.tm_min);
-			// String str = String(tmstruct.tm_hour, DEC) + ":" + String(tmstruct.tm_min, DEC) + ":" + String(tmstruct.tm_sec, DEC);
 
 			if (pkg.ack > 0)
 			{
-				strcat(html, "<tr style=\"background-color: #f1697dff;\">\n");
+				html += "<tr style=\"background-color: #f1697dff;\">\n";
 			}
 			else if (pkg.ack == -1)
 			{
-				strcat(html, "<tr style=\"background-color: #7ff1c5ff;\">\n");
+				html += "<tr style=\"background-color: #7ff1c5ff;\">\n";
 			}
 			else if (pkg.ack == -2)
 			{
-				strcat(html, "<tr style=\"background-color: #73caf0ff;\">\n");
+				html += "<tr style=\"background-color: #73caf0ff;\">\n";
 			}
 			else
 			{
-				strcat(html, "<tr style=\"background-color: #f55353ff;\">\n");
+				html += "<tr style=\"background-color: #f55353ff;\">\n";
 			}
 
-			strcat(html, "<td>");
-			strcat(html, strTime);
-			strcat(html, "</td>");
+			html += "<td>";
+			html += strTime;
+			html += "</td>";
 
-			strcat(html, "<td>");
-			strcat(html, pkg.callsign);
-			strcat(html, "</td>");
+			html += "<td>";
+			html += pkg.callsign;
+			html += "</td>";
 
-			strcat(html, "<td style=\"text-align: left;\">");
-			strcat(html, pkg.text);
-			strcat(html, "</td>");
+			html += "<td style=\"text-align: left;\">";
+			html += pkg.text;
+			html += "</td>";
 
 			if (pkg.ack > 0)
 			{
 				snprintf(temp_buffer, sizeof(temp_buffer), "<td>%d/%d</td>", pkg.ack, config.msg_retry);
-				strcat(html, temp_buffer);
+				html += temp_buffer;
 			}
 			else if (pkg.ack == -1)
 			{
-				strcat(html, "<td>RX</td>");
+				html += "<td>RX</td>";
 			}
 			else if (pkg.ack == -2)
 			{
-				strcat(html, "<td>TX</td>");
+				html += "<td>TX</td>";
 			}
 			else
 			{
-				strcat(html, "<td>TF</td>");
+				html += "<td>TF</td>";
 			}
 
 			snprintf(temp_buffer, sizeof(temp_buffer), "<td>%d</td></tr>\n", pkg.msgID);
-			strcat(html, temp_buffer);
+			html += temp_buffer;
 		}
 	}
 
-	size_t html_len = strlen(html);
-	log_d("HTML Length=%d Byte gethtml:%d event_cnt:%d", html_len, gethtml, message_events.count());
+	log_d("HTML Length=%d Byte gethtml:%d event_cnt:%d", html.length(), gethtml, message_events.count());
 
 	if (gethtml)
 	{
-		String result = String(html); // Convert back to String for return
-		free(html);					  // Free the allocated memory
-		return result;
+		return html;
 	}
 
 	if (message_events.count() > 0)
 	{
-		char *info = (char *)calloc(html_len + 1, sizeof(char)); // +1 for null terminator
-		if (info)
-		{
-			strcpy(info, html);
-			message_events.send(info, "chatMsg", time(NULL), 5000);
-			free(info);
-		}
+		message_events.send(html.c_str(), "chatMsg", time(NULL), 5000);
 	}
 
-	free(html); // Free the allocated memory
 	return String("");
 }
+
+// LU6JMF - Marcelo Ferreira: fase 6 - template embutido no firmware (ver about).
+static const char *STORAGE_TEMPLATE =
+	"<script type=\"text/javascript\">\n"
+	"function sub(obj){"
+	"var fileName = obj.value.split('\\\\');"
+	"document.getElementById('file-input').innerHTML = '   '+ fileName[fileName.length-1];"
+	"}\n"
+	"$('form').submit(function(e){"
+	"e.preventDefault();"
+	"if(e.currentTarget.id === 'formDownload'){"
+	"var fd = new FormData(e.currentTarget);"
+	"window.open('/download?FILE=' + encodeURIComponent(fd.get('FILE')), '_blank');"
+	"return;"
+	"}"
+	"var data = new FormData(e.currentTarget);\n"
+	"if(e.currentTarget.id === 'upload_form'){ document.getElementById('upload_sumbit').disabled = true;"
+	"var formUp = $('#upload_form')[0];"
+	"var dataUp = new FormData(formUp);"
+	"$.ajax({"
+	"url: '/upload',"
+	"type: 'POST',"
+	"data: dataUp,"
+	"contentType: false,"
+	"processData:false,"
+	"xhr: function() {"
+	"var xhr = new window.XMLHttpRequest();"
+	"xhr.upload.addEventListener('progress', function(evt) {"
+	"if (evt.lengthComputable) {"
+	"var per = evt.loaded / evt.total;"
+	"$('#prg').html(Math.round(per*100) + '%');"
+	"$('#bar').css('width',Math.round(per*100) + '%');"
+	"}"
+	"}, false);"
+	"return xhr;"
+	"},"
+	"success:function(d, s) {"
+	"alert('Upload Success');"
+	"$(\"#contentmain\").load(\"/storage\");\n"
+	"},"
+	"error: function (a, b, c) {"
+	"}"
+	"});"
+	"}else{"
+	"$.ajax({"
+	"url: '/storage',"
+	"type: 'POST',"
+	"data: data,"
+	"contentType: false,"
+	"processData:false,"
+	"success:function(d, s) {"
+	"if(e.currentTarget.id===\"formDelete\") $(\"#contentmain\").load(\"/storage\");\n"
+	"},"
+	"error: function (a, b, c) {"
+	"}"
+	"});"
+	"}"
+	"});"
+	"</script>"
+	"<div style=\"font-size: 8pt;text-align:left;\">"
+	"<b>Total space: </b>{{totalStr}} ,"
+	"<b>Used space: </b>{{usedStr}}"
+	"</br>Listing directory: </b>{{dirname}}</div>\n"
+	"{{#if openFailed}}Failed to open directory\n{{/if}}"
+	"{{#if notDir}}Not a directory{{/if}}"
+	"<table border=\"1\"><tr align=\"center\" bgcolor=\"#03DDFC\"><th width=\"100\"><b>DIRECTORY</b></th><th><b>FILE NAME</b></th><th width=\"100\"><b>SIZE(Byte)</b></th><th width=\"170\"><b>DATE TIME</b></th><th width=\"50\"><b>DELETE</b></th><th width=\"100\"><b>DOWNLOAD</b></th></tr>"
+	"{{#each entries}}"
+	"{{#if isDir}}"
+	"<tr><td>{{name}}</td><td></td><td></td><td align=\"right\">{{dateStr}}</td><td></td></tr>\n"
+	"{{#each subfiles}}"
+	"<tr><td>{{dirName}}</td><td align=\"left\">{{name}}</td><td align=\"right\">{{size}}</td><td align=\"center\">{{dateStr}}</td><td></td><td></td></tr>\n"
+	"{{/each}}"
+	"{{else}}"
+	"<tr><td>/</td><td align=\"left\"><a href=\"/download?FILE={{name}}\" target=\"_blank\">{{name}}</a></td><td align=\"right\">{{size}}</td><td align=\"center\">{{dateStr}}</td>"
+	"{{#if deletable}}"
+	"<td align=\"center\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formDelete\" method=\"post\"><input name=\"delete\" type=\"hidden\" /><input name=\"FILE\" type=\"hidden\" value=\"{{name}}\" /><button name=\"commit\" id=\"btnDelete\" type=\"submit\" style=\"background-color:red;color:white\">X</button></form></td>\n"
+	"{{else}}<td></td>{{/if}}"
+	"<td align=\"center\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formDownload\" method=\"post\"><input name=\"download\" type=\"hidden\" /><input name=\"FILE\" type=\"hidden\" value=\"{{name}}\" /><button name=\"commit\" id=\"btnDownload\" type=\"submit\" style=\"background-color:green;color:white\">DOWNLOAD</button></form></td></tr>\n"
+	"{{/if}}"
+	"{{/each}}"
+	"</table>\n"
+	"<br><form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"upload_form\" method=\"post\" enctype=\"multipart/form-data\">\n"
+	"<table border=\"1\" style=\"margin-top:10px;width:100%;\">\n"
+	"<tr align=\"center\" bgcolor=\"#03DDFC\"><th colspan=\"3\"><b>UPLOAD FILE</b></th></tr>\n"
+	"<tr align=\"center\"><td width=\"60\" align=\"right\"><b>File:</b></td><td align=\"left\"><input type=\"file\" name=\"data\" required></td><td width=\"120\"><button class=\"button\" type='submit' id='upload_sumbit'>UPLOAD</button></td></tr>\n"
+	"</table>\n</form><br/>\n"
+	"</body>\n</html>\n";
 
 void handle_storage(AsyncWebServerRequest *request)
 {
@@ -1828,183 +1824,104 @@ void handle_storage(AsyncWebServerRequest *request)
 		}
 	}
 
-	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-	AsyncResponseStream *webString = request->beginResponseStream("text/html", 20000);
+	JsonDocument data;
+
+	if (cardTotal > 1000000)
+	{
+		char buf[32];
+		snprintf(buf, sizeof(buf), "%.2f MByte", (double)cardTotal / 1048576);
+		data["totalStr"] = buf;
+	}
+	else
+	{
+		char buf[32];
+		snprintf(buf, sizeof(buf), "%.2f KByte", (double)cardTotal / 1024);
+		data["totalStr"] = buf;
+	}
+	{
+		char buf[32];
+		snprintf(buf, sizeof(buf), "%.2f KByte", (double)cardUsed / 1024);
+		data["usedStr"] = buf;
+	}
+	data["dirname"] = dirname;
+
+	JsonArray entries = data["entries"].to<JsonArray>();
+
+	File root = LITTLEFS.open(dirname);
+	bool openFailed = !root;
+	bool notDir = root && !root.isDirectory();
+
+	if (root && root.isDirectory())
+	{
+		File file = root.openNextFile();
+		while (file)
+		{
+			JsonObject entry = entries.add<JsonObject>();
+			char buf[64];
+			if (file.isDirectory())
+			{
+				entry["isDir"] = true;
+				entry["name"] = file.name();
+				time_t t = file.getLastWrite();
+				struct tm *tmstruct = localtime(&t);
+				snprintf(buf, sizeof(buf), "%d-%02d-%02d %02d:%02d:%02d", (tmstruct->tm_year) + 1900, (tmstruct->tm_mon) + 1, tmstruct->tm_mday, tmstruct->tm_hour, tmstruct->tm_min, tmstruct->tm_sec);
+				entry["dateStr"] = buf;
+
+				// LU6JMF - Marcelo Ferreira:
+				// This listing only ever showed root-level files, so a file saved
+				// under a subfolder (like /templates/main_shell.html) was invisible
+				// here even though it was really on the filesystem - made it look
+				// like uploads into subfolders silently failed when they hadn't.
+				// List one level into the subfolder too (read-only, no
+				// delete/download - just enough to see what's really there).
+				JsonArray subfiles = entry["subfiles"].to<JsonArray>();
+				String subDirName = String(file.name());
+				File sub = LITTLEFS.open(subDirName);
+				if (sub && sub.isDirectory())
+				{
+					File subFile = sub.openNextFile();
+					while (subFile)
+					{
+						if (!subFile.isDirectory())
+						{
+							JsonObject se = subfiles.add<JsonObject>();
+							se["dirName"] = subDirName;
+							se["name"] = subFile.name();
+							se["size"] = subFile.size();
+							time_t st = subFile.getLastWrite();
+							struct tm *stmstruct = localtime(&st);
+							snprintf(buf, sizeof(buf), "%d-%02d-%02d %02d:%02d:%02d", (stmstruct->tm_year) + 1900, (stmstruct->tm_mon) + 1, stmstruct->tm_mday, stmstruct->tm_hour, stmstruct->tm_min, stmstruct->tm_sec);
+							se["dateStr"] = buf;
+						}
+						subFile = sub.openNextFile();
+					}
+				}
+			}
+			else
+			{
+				entry["isDir"] = false;
+				const char *fName = file.name();
+				entry["name"] = fName;
+				entry["size"] = file.size();
+				time_t t = file.getLastWrite();
+				struct tm *tmstruct = localtime(&t);
+				snprintf(buf, sizeof(buf), "%d-%02d-%02d %02d:%02d:%02d", (tmstruct->tm_year) + 1900, (tmstruct->tm_mon) + 1, tmstruct->tm_mday, tmstruct->tm_hour, tmstruct->tm_min, tmstruct->tm_sec);
+				entry["dateStr"] = buf;
+				entry["deletable"] = (strcmp(fName, "fsversion.txt") != 0);
+			}
+			file = root.openNextFile();
+		}
+	}
+	data["openFailed"] = openFailed;
+	data["notDir"] = notDir;
+
+	String html_str = renderTemplate(STORAGE_TEMPLATE, data.as<JsonVariant>());
+	AsyncResponseStream *webString = request->beginResponseStream("text/html", html_str.length() + 200);
 	if (!webString)
 	{
 		return; // Memory allocation failed
 	}
-
-		webString->print("<script type=\"text/javascript\">\n"
-					  "function sub(obj){"
-					  "var fileName = obj.value.split('\\\\');"
-					  "document.getElementById('file-input').innerHTML = '   '+ fileName[fileName.length-1];"
-					  "}\n"
-					  //"var form = document.getElementById('upload_form');"
-					  "$('form').submit(function(e){"
-					  "e.preventDefault();"
-					  "if(e.currentTarget.id === 'formDownload'){"
-					  "var fd = new FormData(e.currentTarget);"
-					  "window.open('/download?FILE=' + encodeURIComponent(fd.get('FILE')), '_blank');"
-					  "return;"
-					  "}"
-					  "var data = new FormData(e.currentTarget);\n"
-					  
-					  "if(e.currentTarget.id === 'upload_form'){ document.getElementById('upload_sumbit').disabled = true;"
-					  "var formUp = $('#upload_form')[0];"
-					  "var dataUp = new FormData(formUp);"					  
-					  //"document.getElementById('upload_sumbit').disabled = true;"
-					  "$.ajax({"
-					  "url: '/upload',"
-					  "type: 'POST',"
-					  "data: dataUp,"
-					  "contentType: false,"
-					  "processData:false,"
-					  "xhr: function() {"
-					  "var xhr = new window.XMLHttpRequest();"
-					  "xhr.upload.addEventListener('progress', function(evt) {"
-					  "if (evt.lengthComputable) {"
-					  "var per = evt.loaded / evt.total;"
-					  "$('#prg').html(Math.round(per*100) + '%');"
-					  "$('#bar').css('width',Math.round(per*100) + '%');"
-					  "}"
-					  "}, false);"
-					  "return xhr;"
-					  "},"
-					  "success:function(d, s) {"
-					  "alert('Upload Success');"
-					  "$(\"#contentmain\").load(\"/storage\");\n"
-					  "},"
-					  "error: function (a, b, c) {"
-					  "}"
-					  "});"
-					  //"});"
-					  "}else{"					  
-					  "$.ajax({"
-					  "url: '/storage',"
-					  "type: 'POST',"
-					  "data: data,"
-					  "contentType: false,"
-					  "processData:false,"					  
-					  "success:function(d, s) {"
-					  //"alert('Upload Success');"
-					  "if(e.currentTarget.id===\"formDelete\") $(\"#contentmain\").load(\"/storage\");\n"
-					  "},"
-					  "error: function (a, b, c) {"
-					  "}"
-					  "});"
-					  //"});"
-					  "}"
-					  "});"
-					  "</script>");
-
-	webString->print("<div style=\"font-size: 8pt;text-align:left;\">");
-	webString->print("<b>Total space: </b>");
-
-	char temp_buffer[512];
-	if (cardTotal > 1000000)
-	{
-		snprintf(temp_buffer, sizeof(temp_buffer), "%.2f MByte ,", (double)cardTotal / 1048576);
-		webString->print(temp_buffer);
-	}
-	else
-	{
-		snprintf(temp_buffer, sizeof(temp_buffer), "%.2f KByte ,", (double)cardTotal / 1024);
-		webString->print(temp_buffer);
-	}
-
-	webString->print("<b>Used space: </b>");
-	snprintf(temp_buffer, sizeof(temp_buffer), "%.2f KByte", (double)cardUsed / 1024);
-	webString->print(temp_buffer);
-
-	snprintf(temp_buffer, sizeof(temp_buffer), "</br>Listing directory: </b>%s</div>\n", dirname);
-	webString->print(temp_buffer);
-
-	File root = LITTLEFS.open(dirname);
-	if (!root)
-	{
-		webString->print("Failed to open directory\n");
-		// return;
-	}
-	if (!root.isDirectory())
-	{
-		webString->print("Not a directory");
-		// return;
-	}
-
-	File file = root.openNextFile();
-	webString->print("<table border=\"1\"><tr align=\"center\" bgcolor=\"#03DDFC\"><th width=\"100\"><b>DIRECTORY</b></th><th><b>FILE NAME</b></th><th width=\"100\"><b>SIZE(Byte)</b></th><th width=\"170\"><b>DATE TIME</b></th><th width=\"50\"><b>DELETE</b></th><th width=\"100\"><b>DOWNLOAD</b></th></tr>");
-	while (file)
-	{
-		if (file.isDirectory())
-		{
-			// webString += "<tr><td>DIR : ");
-			snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td>%s</td>", file.name());
-			webString->print(temp_buffer);
-			time_t t = file.getLastWrite();
-			struct tm *tmstruct = localtime(&t);
-			sprintf(strTime, "<td></td><td></td><td align=\"right\">%d-%02d-%02d %02d:%02d:%02d</td>", (tmstruct->tm_year) + 1900, (tmstruct->tm_mon) + 1, tmstruct->tm_mday, tmstruct->tm_hour, tmstruct->tm_min, tmstruct->tm_sec);
-			webString->print(strTime);
-			// if (levels) {
-			//	listDir(fs, file.name(), levels - 1);
-			// }
-			webString->print("<td></td></tr>\n");
-		}
-		else
-		{
-			/*Serial.print("  FILE: ");
-			Serial.print(file.name());*/
-			// char *fName = String(file.name()).substring(1).c_str(); // Not needed for full path
-			const char *fName = file.name();
-			snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td>/</td><td align=\"left\"><a href=\"/download?FILE=%s\" target=\"_blank\">%s</a></td>", fName, fName);
-			webString->print(temp_buffer);
-			// Serial.print("  SIZE: ");
-			snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"right\">%d</td>", file.size());
-			webString->print(temp_buffer);
-			time_t t = file.getLastWrite();
-			struct tm *tmstruct = localtime(&t);
-			sprintf(strTime, "<td align=\"center\">%d-%02d-%02d %02d:%02d:%02d</td>", (tmstruct->tm_year) + 1900, (tmstruct->tm_mon) + 1, tmstruct->tm_mday, tmstruct->tm_hour, tmstruct->tm_min, tmstruct->tm_sec);
-			webString->print(strTime);
-			if (strcmp(fName, "fsversion.txt") == 0)
-			{
-				webString->print("<td></td>");
-			}
-			else
-			{
-				snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formDelete\" method=\"post\"><input name=\"delete\" type=\"hidden\" /><input name=\"FILE\" type=\"hidden\" value=\"%s\" /><button name=\"commit\" id=\"btnDelete\" type=\"submit\" style=\"background-color:red;color:white\">X</button></form></td>\n", fName);
-				webString->print(temp_buffer);
-			}
-			snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formDownload\" method=\"post\"><input name=\"download\" type=\"hidden\" /><input name=\"FILE\" type=\"hidden\" value=\"%s\" /><button name=\"commit\" id=\"btnDownload\" type=\"submit\" style=\"background-color:green;color:white\">DOWNLOAD</button></form></td></tr>\n", fName);
-			webString->print(temp_buffer);
-		}
-		file = root.openNextFile();
-	}
-	webString->print("</table>\n");
-	// webString->print("<form accept-charset=\"UTF-8\" action=\"/format\" class=\"form-horizontal\" id=\"format_form\" method=\"post\">\n");
-	// webString->print("<br><div><button class=\"button\" type='submit' id='format_form_sumbit'  name=\"commit\"> FORMAT </button></div>\n");
-	// webString->print("</form><br/>\n");
-
-	// UPLOAD CONFIGURATION FILE
-	webString->print("<br><form accept-charset=\"UTF-8\" action=\"#\" "
-					  "class=\"form-horizontal\" id=\"upload_form\" method=\"post\" "
-					  "enctype=\"multipart/form-data\">\n");
-
-	webString->print("<table border=\"1\" style=\"margin-top:10px;width:100%;\">\n");
-	webString->print("<tr align=\"center\" bgcolor=\"#03DDFC\">"
-					  "<th colspan=\"3\"><b>UPLOAD FILE</b></th>"
-					  "</tr>\n");
-
-	webString->print("<tr align=\"center\">"
-					  "<td width=\"60\" align=\"right\"><b>File:</b></td>"
-					  "<td align=\"left\"><input type=\"file\" name=\"data\" required></td>"
-					  "<td width=\"120\"><button class=\"button\" type='submit' id='upload_sumbit'>UPLOAD</button></td>"
-					  "</tr>\n");
-
-	webString->print("</table>\n");
-	webString->print("</form><br/>\n");
-
-	webString->print("</body>\n</html>\n");
-
+	webString->print(html_str);
 	webString->addHeader("Sensor", "content");
 	webString->addHeader("Cache-Control", "no-cache");
 	request->send(webString);
@@ -2167,6 +2084,175 @@ void handle_format(AsyncWebServerRequest *request)
 
 	request->send(200, "text/html", html); // send to someones browser when asked
 }
+
+static const char *RADIO_TEMPLATE =
+	"<script type=\"text/javascript\">\n"
+	"var sliderVol = document.getElementById(\"sliderVolume\");\n"
+	"var outputVol = document.getElementById(\"volShow\");\n"
+	"var sliderSql = document.getElementById(\"sliderSql\");\n"
+	"var outputSql = document.getElementById(\"sqlShow\");\n"
+	"outputVol.innerHTML = sliderVol.value;\n"
+	"outputSql.innerHTML = sliderSql.value;\n"
+	"\n"
+	"sliderVol.oninput = function () {\n"
+	"outputVol.innerHTML = this.value;\n"
+	"}\n"
+	"sliderSql.oninput = function () {\n"
+	"outputSql.innerHTML = this.value;\n"
+	"}\n"
+	"\n"
+	"$('form').submit(function (e) {\n"
+	"e.preventDefault();\n"
+	"var data = new FormData(e.currentTarget);\n"
+	"if(e.currentTarget.id===\"formRadio\") document.getElementById(\"submitRadio\").disabled=true;\n"
+	"if(e.currentTarget.id===\"formTNC\") document.getElementById(\"submitTNC\").disabled=true;\n"
+	"$.ajax({\n"
+	"url: '/radio',\n"
+	"type: 'POST',\n"
+	"data: data,\n"
+	"contentType: false,\n"
+	"processData: false,\n"
+	"success: function (data) {\n"
+	"alert(\"Submited Successfully\");\n"
+	"},\n"
+	"error: function (data) {\n"
+	"alert(\"An error occurred.\");\n"
+	"}\n"
+	"});\n"
+	"});\n"
+	"function rfType(){\n"
+	"var type = document.getElementById(\"rf_type\").value;\n"
+	"if(type==1||type==4||type==7){document.getElementById(\"tx_freq\").setAttribute(\"max\",174);document.getElementById(\"rx_freq\").setAttribute(\"max\",174);};\n"
+	"if(type==1){document.getElementById(\"tx_freq\").setAttribute(\"min\",134);document.getElementById(\"rx_freq\").setAttribute(\"min\",134);};\n"
+	"if(type==4||type==7){document.getElementById(\"tx_freq\").setAttribute(\"min\",136);document.getElementById(\"rx_freq\").setAttribute(\"min\",136);};\n"
+	"if(type==2||type==5||type==8){document.getElementById(\"tx_freq\").setAttribute(\"max\",470);document.getElementById(\"rx_freq\").setAttribute(\"max\",470);};\n"
+	"if(type==2||type==5||type==8){document.getElementById(\"tx_freq\").setAttribute(\"min\",400);document.getElementById(\"rx_freq\").setAttribute(\"min\",400);};\n"
+	"if(type==3){document.getElementById(\"tx_freq\").setAttribute(\"min\",320);document.getElementById(\"rx_freq\").setAttribute(\"min\",320);};\n"
+	"if(type==3){document.getElementById(\"tx_freq\").setAttribute(\"max\",400);document.getElementById(\"rx_freq\").setAttribute(\"max\",400);};\n"
+	"if(type==6){document.getElementById(\"tx_freq\").setAttribute(\"min\",350);document.getElementById(\"rx_freq\").setAttribute(\"min\",350);};\n"
+	"if(type==6){document.getElementById(\"tx_freq\").setAttribute(\"max\",390);document.getElementById(\"rx_freq\").setAttribute(\"max\",390);};\n"
+	"if(type==1||type==4||type==7){document.getElementById(\"tx_freq\").setAttribute(\"value\",144.390);document.getElementById(\"rx_freq\").setAttribute(\"value\",144.390);};\n"
+	"if(type==2||type==5||type==8){document.getElementById(\"tx_freq\").setAttribute(\"value\",432.5);document.getElementById(\"rx_freq\").setAttribute(\"value\",432.5);};\n"
+	"\n"
+	"}\n"
+	"</script>\n"
+	"<form id='formRadio' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>RF Analog Module</b></span></th>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Enable:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"radioEnable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Module Type:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"rf_type\" id=\"rf_type\" onchange=\"rfType()\">\n"
+	"{{#each rfTypeOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select>\n"
+	"</td>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>TX Frequency:</b></td>\n"
+	"<td style=\"text-align: left;\"><input type=\"number\" id=\"tx_freq\" name=\"tx_freq\" min=\"{{freqMin}}\" max=\"{{freqMax}}\"\n"
+	"step=\"0.0001\" value=\"{{txFreq}}\" /> MHz</td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>RX Frequency:</b></td>\n"
+	"<td style=\"text-align: left;\"><input type=\"number\" id=\"rx_freq\" name=\"rx_freq\" min=\"{{freqMin}}\" max=\"{{freqMax}}\"\n"
+	"step=\"0.0001\" value=\"{{rxFreq}}\" /> Mhz</td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>TX CTCSS:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"tx_ctcss\" id=\"tx_ctcss\">\n"
+	"{{#each txCtcssOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select> Hz\n"
+	"</td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>RX CTCSS:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"rx_ctcss\" id=\"rx_ctcss\">\n"
+	"<option value=\"0\" selected>0.0</option>\n"
+	"{{#each rxCtcssOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select> Hz\n"
+	"</td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Narrow/Wide:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"nw_band\" id=\"nw_band\">\n"
+	"<option value=\"0\" {{#if band}}{{else}}selected{{/if}}>12.5KHz</option>\n"
+	"<option value=\"1\" {{#if band}}selected{{/if}}>25.0KHz</option>\n"
+	"</select>\n"
+	"</td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>TX Power:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"rf_power\" id=\"rf_power\">\n"
+	"<option value=\"1\" {{#if rfPower}}selected{{/if}}>HIGH</option>\n"
+	"<option value=\"0\" {{#if rfPower}}{{else}}selected{{/if}}>LOW</option>\n"
+	"</select>\n"
+	"</td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>VOLUME:</b></td>\n"
+	"<td style=\"text-align: left;\"><input id=\"sliderVolume\" name=\"volume\" type=\"range\"\nmin=\"1\" max=\"8\" value=\"{{volume}}\" /><b><span style=\"font-size: 14pt;\" id=\"volShow\">{{volume}}</span></b></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>SQL Level:</b></td>\n"
+	"<td style=\"text-align: left;\"><input id=\"sliderSql\" name=\"sql_level\" type=\"range\"\nmin=\"0\" max=\"8\" value=\"{{sqlLevel}}\" /><b><span style=\"font-size: 14pt;\" id=\"sqlShow\">{{sqlLevel}}</span></b></td>\n"
+	"</tr>\n"
+	"<tr><td colspan=\"2\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitRadio'  name=\"commitRadio\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitRadio\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form>"
+	"<form id='formTNC' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>AFSK/TNC Configuration</b></span></th>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Modem Type:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"modem_type\" id=\"modem_type\" \">\n"
+	"{{#each modemOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select>\n"
+	"</td>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>FX.25 Mode:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"fx25_mode\" id=\"fx25_mode\" \">\n"
+	"{{#each fx25Options}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select>  (FX.25 = AX.25 + FEC)\n"
+	"</td>\n"
+	"<tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Deemphasis Audio:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"LPF\" value=\"OK\" {{#if lpfEnabled}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Audio low pass filter 1hz-2.5KHz</i></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>TX Time Slot:</b></td>\n"
+	"<td style=\"text-align: left;\"><input type=\"number\" name=\"timeSlot\" min=\"0\" max=\"99999\"\nstep=\"100\" value=\"{{timeSlot}}\" /> mSec.</td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Preamble:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"preamble\">\n"
+	"{{#each preambleOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select> mSec.\n"
+	"</td>\n"
+	"</tr>\n"
+	"<tr><td colspan=\"2\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitTNC'  name=\"commitTNC\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitTNC\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form>";
 
 void handle_radio(AsyncWebServerRequest *request)
 {
@@ -2395,101 +2481,18 @@ void handle_radio(AsyncWebServerRequest *request)
 	}
 	else
 	{
-		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", 20000);
-		if (!html)
-		{
-			return; // Memory allocation failed
-		}
+		JsonDocument data;
+		data["enabled"] = config.rf_en;
 
-		html->print("<script type=\"text/javascript\">\n");
-		html->print("var sliderVol = document.getElementById(\"sliderVolume\");\n");
-		html->print("var outputVol = document.getElementById(\"volShow\");\n");
-		html->print("var sliderSql = document.getElementById(\"sliderSql\");\n");
-		html->print("var outputSql = document.getElementById(\"sqlShow\");\n");
-		html->print("outputVol.innerHTML = sliderVol.value;\n");
-		html->print("outputSql.innerHTML = sliderSql.value;\n");
-		html->print("\n");
-		html->print("sliderVol.oninput = function () {\n");
-		html->print("outputVol.innerHTML = this.value;\n");
-		html->print("}\n");
-		html->print("sliderSql.oninput = function () {\n");
-		html->print("outputSql.innerHTML = this.value;\n");
-		html->print("}\n");
-		html->print("\n");
-		html->print("$('form').submit(function (e) {\n");
-		html->print("e.preventDefault();\n");
-		html->print("var data = new FormData(e.currentTarget);\n");
-		html->print("if(e.currentTarget.id===\"formRadio\") document.getElementById(\"submitRadio\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formTNC\") document.getElementById(\"submitTNC\").disabled=true;\n");
-		html->print("$.ajax({\n");
-		html->print("url: '/radio',\n");
-		html->print("type: 'POST',\n");
-		html->print("data: data,\n");
-		html->print("contentType: false,\n");
-		html->print("processData: false,\n");
-		html->print("success: function (data) {\n");
-		html->print("alert(\"Submited Successfully\");\n");
-		html->print("},\n");
-		html->print("error: function (data) {\n");
-		html->print("alert(\"An error occurred.\");\n");
-		html->print("}\n");
-		html->print("});\n");
-		html->print("});\n");
-		html->print("function rfType(){\n");
-		html->print("var type = document.getElementById(\"rf_type\").value;\n");
-		html->print("if(type==1||type==4||type==7){document.getElementById(\"tx_freq\").setAttribute(\"max\",174);document.getElementById(\"rx_freq\").setAttribute(\"max\",174);};\n");
-		html->print("if(type==1){document.getElementById(\"tx_freq\").setAttribute(\"min\",134);document.getElementById(\"rx_freq\").setAttribute(\"min\",134);};\n");
-		html->print("if(type==4||type==7){document.getElementById(\"tx_freq\").setAttribute(\"min\",136);document.getElementById(\"rx_freq\").setAttribute(\"min\",136);};\n");
-		html->print("if(type==2||type==5||type==8){document.getElementById(\"tx_freq\").setAttribute(\"max\",470);document.getElementById(\"rx_freq\").setAttribute(\"max\",470);};\n");
-		html->print("if(type==2||type==5||type==8){document.getElementById(\"tx_freq\").setAttribute(\"min\",400);document.getElementById(\"rx_freq\").setAttribute(\"min\",400);};\n");
-		html->print("if(type==3){document.getElementById(\"tx_freq\").setAttribute(\"min\",320);document.getElementById(\"rx_freq\").setAttribute(\"min\",320);};\n");
-		html->print("if(type==3){document.getElementById(\"tx_freq\").setAttribute(\"max\",400);document.getElementById(\"rx_freq\").setAttribute(\"max\",400);};\n");
-		html->print("if(type==6){document.getElementById(\"tx_freq\").setAttribute(\"min\",350);document.getElementById(\"rx_freq\").setAttribute(\"min\",350);};\n");
-		html->print("if(type==6){document.getElementById(\"tx_freq\").setAttribute(\"max\",390);document.getElementById(\"rx_freq\").setAttribute(\"max\",390);};\n");
-		html->print("if(type==1||type==4||type==7){document.getElementById(\"tx_freq\").setAttribute(\"value\",144.390);document.getElementById(\"rx_freq\").setAttribute(\"value\",144.390);};\n");
-		html->print("if(type==2||type==5||type==8){document.getElementById(\"tx_freq\").setAttribute(\"value\",432.5);document.getElementById(\"rx_freq\").setAttribute(\"value\",432.5);};\n");
-		html->print("\n");
-		html->print("}\n");
-		html->print("</script>\n");
-		html->print("<form id='formRadio' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>RF Analog Module</b></span></th>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Enable:</b></td>\n");
-
-		// Handle radio enable flag
-		char temp_buffer[256];
-		if (config.rf_en)
-		{
-			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"radioEnable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n");
-		}
-		else
-		{
-			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"radioEnable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n");
-		}
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Module Type:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"rf_type\" id=\"rf_type\" onchange=\"rfType()\">\n");
+		JsonArray rfTypeOptions = data["rfTypeOptions"].to<JsonArray>();
 		for (int i = 0; i < 9; i++)
 		{
-			snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" ", i);
-			html->print(temp_buffer);
-			if (config.rf_type == i)
-			{
-				html->print("selected>");
-			}
-			else
-			{
-				html->print(">");
-			}
-			snprintf(temp_buffer, sizeof(temp_buffer), "%s</option>\n", RF_TYPE[i]);
-			html->print(temp_buffer);
+			JsonObject o = rfTypeOptions.add<JsonObject>();
+			o["value"] = i;
+			o["label"] = RF_TYPE[i];
+			o["selected"] = (config.rf_type == i);
 		}
-		html->print("</select>\n");
-		html->print("</td>\n");
+
 		float freqMin = 0;
 		float freqMax = 0;
 		switch (config.rf_type)
@@ -2522,234 +2525,169 @@ void handle_radio(AsyncWebServerRequest *request)
 			freqMax = 500.0F;
 			break;
 		}
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>TX Frequency:</b></td>\n");
+		char buf[24];
+		snprintf(buf, sizeof(buf), "%.4f", freqMin);
+		data["freqMin"] = buf;
+		snprintf(buf, sizeof(buf), "%.4f", freqMax);
+		data["freqMax"] = buf;
+		snprintf(buf, sizeof(buf), "%.4f", config.freq_tx);
+		data["txFreq"] = buf;
+		snprintf(buf, sizeof(buf), "%.4f", config.freq_rx);
+		data["rxFreq"] = buf;
 
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input type=\"number\" id=\"tx_freq\" name=\"tx_freq\" min=\"%.4f\" max=\"%.4f\"\n", freqMin, freqMax);
-		html->print(temp_buffer);
-		snprintf(temp_buffer, sizeof(temp_buffer), "step=\"0.0001\" value=\"%.4f\" /> MHz</td>\n", config.freq_tx);
-		html->print(temp_buffer);
-
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>RX Frequency:</b></td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input type=\"number\" id=\"rx_freq\" name=\"rx_freq\" min=\"%.4f\" max=\"%.4f\"\n", freqMin, freqMax);
-		html->print(temp_buffer);
-		snprintf(temp_buffer, sizeof(temp_buffer), "step=\"0.0001\" value=\"%.4f\" /> Mhz</td>\n", config.freq_rx);
-		html->print(temp_buffer);
-
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>TX CTCSS:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"tx_ctcss\" id=\"tx_ctcss\">\n");
+		JsonArray txCtcssOptions = data["txCtcssOptions"].to<JsonArray>();
+		JsonArray rxCtcssOptions = data["rxCtcssOptions"].to<JsonArray>();
 		for (int i = 0; i < 39; i++)
 		{
-			snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" ", i);
-			html->print(temp_buffer);
-			if (config.tone_tx == i)
-			{
-				html->print("selected>");
-			}
-			else
-			{
-				html->print(">");
-			}
-			snprintf(temp_buffer, sizeof(temp_buffer), "%.1f</option>\n", ctcss[i]);
-			html->print(temp_buffer);
+			char label[8];
+			snprintf(label, sizeof(label), "%.1f", ctcss[i]);
+
+			JsonObject ot = txCtcssOptions.add<JsonObject>();
+			ot["value"] = i;
+			ot["label"] = label;
+			ot["selected"] = (config.tone_tx == i);
+
+			JsonObject orr = rxCtcssOptions.add<JsonObject>();
+			orr["value"] = i;
+			orr["label"] = label;
+			orr["selected"] = (config.tone_rx == i);
 		}
-		html->print("</select> Hz\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>RX CTCSS:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"rx_ctcss\" id=\"rx_ctcss\">\n");
-		html->print("<option value=\"0\" selected>0.0</option>\n");
-		for (int i = 0; i < 39; i++)
+
+		data["band"] = (bool)config.band;
+		data["rfPower"] = (bool)config.rf_power;
+		data["volume"] = config.volume;
+		data["sqlLevel"] = config.sql_level;
+
+		JsonArray modemOptions = data["modemOptions"].to<JsonArray>();
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+		int modemCount = 4;
+#else
+		int modemCount = 3;
+#endif
+		for (int i = 0; i < modemCount; i++)
 		{
-			snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" ", i);
-			html->print(temp_buffer);
-			if (config.tone_rx == i)
-			{
-				html->print("selected>");
-			}
-			else
-			{
-				html->print(">");
-			}
-			snprintf(temp_buffer, sizeof(temp_buffer), "%.1f</option>\n", ctcss[i]);
-			html->print(temp_buffer);
+			JsonObject o = modemOptions.add<JsonObject>();
+			o["value"] = i;
+			o["label"] = MODEM_TYPE[i];
+			o["selected"] = (config.modem_type == i);
 		}
-		html->print("</select> Hz\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Narrow/Wide:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"nw_band\" id=\"nw_band\">\n");
 
-		if (config.band)
-		{
-			html->print("<option value=\"0\" >12.5KHz</option>\n");
-			html->print("<option value=\"1\" selected>25.0KHz</option>\n");
-		}
-		else
-		{
-			html->print("<option value=\"0\" selected>12.5KHz</option>\n");
-			html->print("<option value=\"1\" >25.0KHz</option>\n");
-		}
-		html->print("</select>\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>TX Power:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"rf_power\" id=\"rf_power\">\n");
-
-		if (config.rf_power)
-		{
-			html->print("<option value=\"1\" selected>HIGH</option>\n");
-			html->print("<option value=\"0\" >LOW</option>\n");
-		}
-		else
-		{
-			html->print("<option value=\"1\" >HIGH</option>\n");
-			html->print("<option value=\"0\" selected>LOW</option>\n");
-		}
-		html->print("</select>\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>VOLUME:</b></td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input id=\"sliderVolume\" name=\"volume\" type=\"range\"\nmin=\"1\" max=\"8\" value=\"%d\" /><b><span style=\"font-size: 14pt;\" id=\"volShow\">%d</span></b></td>\n", config.volume, config.volume);
-		html->print(temp_buffer);
-
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>SQL Level:</b></td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input id=\"sliderSql\" name=\"sql_level\" type=\"range\"\nmin=\"0\" max=\"8\" value=\"%d\" /><b><span style=\"font-size: 14pt;\" id=\"sqlShow\">%d</span></b></td>\n", config.sql_level, config.sql_level);
-		html->print(temp_buffer);
-
-		html->print("</tr>\n");
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitRadio'  name=\"commitRadio\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitRadio\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form>");
-
-		// AFSK,TNC Configuration
-		html->print("<form id='formTNC' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>AFSK/TNC Configuration</b></span></th>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Modem Type:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"modem_type\" id=\"modem_type\" \">\n");
-		#ifdef CONFIG_IDF_TARGET_ESP32S3
-		for (int i = 0; i < 4; i++)
-		#else 
-		for (int i = 0; i < 3; i++)
-		#endif
-		{
-			snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" ", i);
-			html->print(temp_buffer);
-			if (config.modem_type == i)
-			{
-				html->print("selected>");
-			}
-			else
-			{
-				html->print(">");
-			}
-			snprintf(temp_buffer, sizeof(temp_buffer), "%s</option>\n", MODEM_TYPE[i]);
-			html->print(temp_buffer);
-		}
-		html->print("</select>\n");
-		html->print("</td>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>FX.25 Mode:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"fx25_mode\" id=\"fx25_mode\" \">\n");
+		JsonArray fx25Options = data["fx25Options"].to<JsonArray>();
 		for (int i = 0; i < 3; i++)
 		{
-			snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" ", i);
-			html->print(temp_buffer);
-			if (config.fx25_mode == i)
-			{
-				html->print("selected>");
-			}
-			else
-			{
-				html->print(">");
-			}
-			snprintf(temp_buffer, sizeof(temp_buffer), "%s</option>\n", FX25_MODE[i]);
-			html->print(temp_buffer);
+			JsonObject o = fx25Options.add<JsonObject>();
+			o["value"] = i;
+			o["label"] = FX25_MODE[i];
+			o["selected"] = (config.fx25_mode == i);
 		}
-		html->print("</select>  (FX.25 = AX.25 + FEC)\n");
-		html->print("</td>\n");
-		html->print("<tr>\n");
-		// html->print("<td align=\"right\"><b>Audio HPF:</b></td>\n");
-		// char strFlag[32] = "";
-		// if (config.audio_hpf)
-		// 	strcpy(strFlag, "checked");
-		// snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"HPF\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Audio high pass filter >1KHz cutoff 10Khz</i></label></td>\n", strFlag);
-		// html->print(temp_buffer);
-		// html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Deemphasis Audio:</b></td>\n");
-		if (config.audio_lpf)
-		{
-			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"LPF\" value=\"OK\" checked><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Audio low pass filter 1hz-2.5KHz</i></label></td>\n");
-		}
-		else
-		{
-			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"LPF\" value=\"OK\" ><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Audio low pass filter 1hz-2.5KHz</i></label></td>\n");
-		}
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>TX Time Slot:</b></td>\n");
 
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input type=\"number\" name=\"timeSlot\" min=\"0\" max=\"99999\"\nstep=\"100\" value=\"%d\" /> mSec.</td>\n", config.tx_timeslot);
-		html->print(temp_buffer);
+		data["lpfEnabled"] = config.audio_lpf;
+		data["timeSlot"] = config.tx_timeslot;
 
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Preamble:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"preamble\">\n");
+		JsonArray preambleOptions = data["preambleOptions"].to<JsonArray>();
 		for (int i = 1; i < 11; i++)
 		{
-			snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" ", i);
-			html->print(temp_buffer);
-			if (config.preamble == i)
-			{
-				html->print("selected>");
-			}
-			else
-			{
-				html->print(">");
-			}
-			snprintf(temp_buffer, sizeof(temp_buffer), "%d</option>\n", i * 100);
-			html->print(temp_buffer);
+			JsonObject o = preambleOptions.add<JsonObject>();
+			o["value"] = i;
+			o["label"] = i * 100;
+			o["selected"] = (config.preamble == i);
 		}
-		html->print("</select> mSec.\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitTNC'  name=\"commitTNC\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitTNC\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form>");
 
+		esp_task_wdt_reset();
+		String html_str = renderTemplate(RADIO_TEMPLATE, data.as<JsonVariant>());
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
+		if (!html)
+		{
+			return; // Memory allocation failed
+		}
+		html->print(html_str);
 		html->addHeader("Sysinfo", "content");
 		html->addHeader("Cache-Control", "no-cache");
 		request->send(html);
 	}
 }
+
+// LU6JMF - Marcelo Ferreira: fase 6 - template embutido no firmware (ver about).
+static const char *VPN_TEMPLATE =
+	"<script type=\"text/javascript\">\n"
+	"$('form').submit(function (e) {\n"
+	"e.preventDefault();\n"
+	"var data = new FormData(e.currentTarget);\n"
+	"if(e.currentTarget.id===\"formVPN\") document.getElementById(\"submitVPN\").disabled=true;\n"
+	"$.ajax({\n"
+	"url: '/vpn',\n"
+	"type: 'POST',\n"
+	"data: data,\n"
+	"contentType: false,\n"
+	"processData: false,\n"
+	"success: function (data) {\n"
+	"alert(\"Submited Successfully\");\n"
+	"},\n"
+	"error: function (data) {\n"
+	"alert(\"An error occurred.\");\n"
+	"}\n"
+	"});\n"
+	"});\n"
+	"function loadVPNConfig() {\n"
+	"const url = \"http://hs1.hs5tqa.ampr.org:81/wg/create\";\n"
+	"const espID = {'name': '{{espId}}'};\n"
+	"fetch(url,{\n"
+	"method: 'POST',\n"
+	"body: JSON.stringify(espID),\n"
+	"headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Origin': '*','Access-Control-Allow-Methods': 'POST,GET,OPTIONS'}\n"
+	"})\n"
+	".then(response => response.json())\n"
+	".then(data => {\n"
+	"console.log(\"VPN Data:\", data);\n"
+	"document.getElementById(\"wg_enable\").checked = true;\n"
+	"document.getElementById(\"wg_peer_address\").value = data.Enpoint.split(\":\")[0];\n"
+	"document.getElementById(\"wg_port\").value = data.Enpoint.split(\":\")[1];\n"
+	"document.getElementById(\"wg_local_address\").value = data.Address;\n"
+	"document.getElementById(\"wg_netmask_address\").value = \"255.255.255.0\";\n"
+	"document.getElementById(\"wg_gw_address\").value = data.Gateway;\n"
+	"document.getElementById(\"wg_public_key\").value = data.PublicKey;\n"
+	"document.getElementById(\"wg_private_key\").value = data.PrivateKey;\n"
+	"})\n"
+	".catch(err => console.error(\"VPN API Error:\", err));\n}\n"
+	"</script>\n"
+	"<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromVPN\" method=\"post\">\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>Wireguard Configuration</b></span></th>\n"
+	"<tr>"
+	"<td align=\"right\"><b>Enable</b></td>\n"
+	"{{#if vpnEnabled}}"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"wg_enable\" name=\"vpnEnable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n"
+	"{{else}}"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"wg_enable\" name=\"vpnEnable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n"
+	"{{/if}}"
+	"</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Server Address</b></td>\n<td style=\"text-align: left;\"><input  size=\"20\" maxlength=\"32\" id=\"wg_peer_address\" name=\"wg_peer_address\" type=\"text\" value=\"{{peerAddress}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Server Port</b></td>\n<td style=\"text-align: left;\"><input id=\"wg_port\" size=\"5\" name=\"wg_port\" type=\"number\" value=\"{{port}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Local Address</b></td>\n<td style=\"text-align: left;\"><input id=\"wg_local_address\" name=\"wg_local_address\" type=\"text\" value=\"{{localAddress}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Netmask</b></td>\n<td style=\"text-align: left;\"><input id=\"wg_netmask_address\" name=\"wg_netmask_address\" type=\"text\" value=\"{{netmask}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Gateway</b></td>\n<td style=\"text-align: left;\"><input id=\"wg_gw_address\" name=\"wg_gw_address\" type=\"text\" value=\"{{gateway}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Public Server Key</b></td>\n<td style=\"text-align: left;\"><input size=\"50\" maxlength=\"44\" id=\"wg_public_key\" name=\"wg_public_key\" type=\"text\" value=\"{{publicKey}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Private Client Key</b></td>\n<td style=\"text-align: left;\"><input size=\"50\" maxlength=\"44\" id=\"wg_private_key\" name=\"wg_private_key\" type=\"text\" value=\"{{privateKey}}\" /></td>\n</tr>\n"
+	"<tr><td colspan=\"2\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitVPN'  name=\"commitVPN\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitVPN\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form><br /><br />"
+	"<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromGetVPN\" method=\"post\">\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>Helper: Free VPN Wireguard for Web Service</b></span></th>\n"
+	"<tr><td align=\"left\">1. Click New Register button to get VPN config from web service.</td></tr>\n"
+	"<tr><td align=\"left\">2. The VPN config will fill in the form automatically.</td></tr>\n"
+	"<tr><td align=\"left\">3. Click Apply Change and reboot again.</td></tr>\n"
+	"<tr><td align=\"left\">4. Enjoy your free VPN service!</td></tr>\n"
+	"{{#if amprUrl}}"
+	"<tr><td>Your External by AMPR URL: <a href=\"{{amprUrl}}\" target=\"_blank\">{{amprUrl}}</a></td></tr>\n"
+	"<tr><td>Fast Direct URL: <a href=\"{{directUrl}}\" target=\"_blank\">{{directUrl}}</a></td></tr>\n"
+	"{{/if}}"
+	"<tr><td><button type=\"button\" onclick=\"loadVPNConfig()\">New Register</button></td></tr>\n"
+	"</table><br />\n"
+	"</form>";
 
 void handle_vpn(AsyncWebServerRequest *request)
 {
@@ -2851,178 +2789,36 @@ void handle_vpn(AsyncWebServerRequest *request)
 	}
 	else
 	{
-		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", 16000);
-		if (!html)
-		{
-			return; // Memory allocation failed
-		}
-
-		html->print("<script type=\"text/javascript\">\n");
-		html->print("$('form').submit(function (e) {\n");
-		html->print("e.preventDefault();\n");
-		html->print("var data = new FormData(e.currentTarget);\n");
-		html->print("if(e.currentTarget.id===\"formVPN\") document.getElementById(\"submitVPN\").disabled=true;\n");
-		html->print("$.ajax({\n");
-		html->print("url: '/vpn',\n");
-		html->print("type: 'POST',\n");
-		html->print("data: data,\n");
-		html->print("contentType: false,\n");
-		html->print("processData: false,\n");
-		html->print("success: function (data) {\n");
-		html->print("alert(\"Submited Successfully\");\n");
-		html->print("},\n");
-		html->print("error: function (data) {\n");
-		html->print("alert(\"An error occurred.\");\n");
-		html->print("}\n");
-		html->print("});\n");
-		html->print("});\n");
-
-		// Get MAC address and remove colons
+		JsonDocument data;
 		String ESP32_ID = WiFi.macAddress();
 		ESP32_ID.replace(":", "");
-		char temp_buffer[512];
-		snprintf(temp_buffer, sizeof(temp_buffer), "function loadVPNConfig() {\nconst url = \"http://hs1.hs5tqa.ampr.org:81/wg/create\";\nconst espID = {'name': '%s'};\n", ESP32_ID.c_str());
-		html->print(temp_buffer);
-		html->print("fetch(url,{\n");
-		html->print("method: 'POST',\n");
-		html->print("body: JSON.stringify(espID),\n");
-		html->print("headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Origin': '*','Access-Control-Allow-Methods': 'POST,GET,OPTIONS'}\n");
-		html->print("})\n");
-		html->print(".then(response => response.json())\n");
-		html->print(".then(data => {\n");
-		html->print("console.log(\"VPN Data:\", data);\n");
-		html->print("document.getElementById(\"wg_enable\").checked = true;\n");
-		html->print("document.getElementById(\"wg_peer_address\").value = data.Enpoint.split(\":\")[0];\n");
-		html->print("document.getElementById(\"wg_port\").value = data.Enpoint.split(\":\")[1];\n");
-		html->print("document.getElementById(\"wg_local_address\").value = data.Address;\n");
-		html->print("document.getElementById(\"wg_netmask_address\").value = \"255.255.255.0\";\n");
-		html->print("document.getElementById(\"wg_gw_address\").value = data.Gateway;\n");
-		html->print("document.getElementById(\"wg_public_key\").value = data.PublicKey;\n");
-		html->print("document.getElementById(\"wg_private_key\").value = data.PrivateKey;\n");
-		html->print("})\n");
-		html->print(".catch(err => console.error(\"VPN API Error:\", err));\n}\n");
-		html->print("</script>\n");
-		// ===== JavaScript AJAX =====
-		// html->print("<script>\n");
-		// html->print("function loadVPNConfig() {\n");
-		// html->print("  $.ajax({\n");
-		// html->print("    url: '/api/vpnreq',\n");
-		// html->print("    method: 'GET',\n");
-		// html->print("    dataType: 'json',\n");
-		// html->print("    success: function(data) {\n");
-		// html->print("       console.log(data);\n");
-		// html->print("       let ep = data.Enpoint.split(':');\n");
-		// html->print("       $('#wg_peer_address').val(ep[0]);\n");
-		// html->print("       $('#wg_port').val(ep[1]);\n");
-		// html->print("       $('#wg_local_address').val(data.Address);\n");
-		// html->print("       $('#wg_public_key').val(data.PublicKey);\n");
-		// html->print("       $('#wg_private_key').val(data.PrivateKey);\n");
-		// html->print("    },\n");
-		// html->print("    error: function(e) {\n");
-		// html->print("       alert('โหลดข้อมูล VPN ไม่สำเร็จ');\n");
-		// html->print("       console.log(e);\n");
-		// html->print("    }\n");
-		// html->print("  });\n");
-		// html->print("}\n");
-		// html->print("</script>");
-
-		// html->print("<h2>System Setting</h2>\n");
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromVPN\" method=\"post\">\n");
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>Wireguard Configuration</b></span></th>\n");
-		html->print("<tr>");
-
-		// Handle sync flag
-		if (config.vpn)
-		{
-			html->print("<td align=\"right\"><b>Enable</b></td>\n");
-			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"wg_enable\" name=\"vpnEnable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n");
-		}
-		else
-		{
-			html->print("<td align=\"right\"><b>Enable</b></td>\n");
-			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"wg_enable\" name=\"vpnEnable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n");
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Server Address</b></td>\n");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input  size=\"20\" maxlength=\"32\" id=\"wg_peer_address\" name=\"wg_peer_address\" type=\"text\" value=\"%s\" /></td>\n", config.wg_peer_address);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Server Port</b></td>\n");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input id=\"wg_port\" size=\"5\" name=\"wg_port\" type=\"number\" value=\"%d\" /></td>\n", config.wg_port);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Local Address</b></td>\n");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input id=\"wg_local_address\" name=\"wg_local_address\" type=\"text\" value=\"%s\" /></td>\n", config.wg_local_address);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Netmask</b></td>\n");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input id=\"wg_netmask_address\" name=\"wg_netmask_address\" type=\"text\" value=\"%s\" /></td>\n", config.wg_netmask_address);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Gateway</b></td>\n");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input id=\"wg_gw_address\" name=\"wg_gw_address\" type=\"text\" value=\"%s\" /></td>\n", config.wg_gw_address);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Public Server Key</b></td>\n");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input size=\"50\" maxlength=\"44\" id=\"wg_public_key\" name=\"wg_public_key\" type=\"text\" value=\"%s\" /></td>\n", config.wg_public_key);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Private Client Key</b></td>\n");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input size=\"50\" maxlength=\"44\" id=\"wg_private_key\" name=\"wg_private_key\" type=\"text\" value=\"%s\" /></td>\n", config.wg_private_key);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitVPN'  name=\"commitVPN\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitVPN\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form><br /><br />");
-
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromGetVPN\" method=\"post\">\n");
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>Helper: Free VPN Wireguard for Web Service</b></span></th>\n");
-		html->print("<tr><td align=\"left\">1. Click New Register button to get VPN config from web service.</td></tr>\n");
-		html->print("<tr><td align=\"left\">2. The VPN config will fill in the form automatically.</td></tr>\n");
-		html->print("<tr><td align=\"left\">3. Click Apply Change and reboot again.</td></tr>\n");
-		html->print("<tr><td align=\"left\">4. Enjoy your free VPN service!</td></tr>\n");
+		data["espId"] = ESP32_ID;
+		data["vpnEnabled"] = config.vpn;
+		data["peerAddress"] = config.wg_peer_address;
+		data["port"] = config.wg_port;
+		data["localAddress"] = config.wg_local_address;
+		data["netmask"] = config.wg_netmask_address;
+		data["gateway"] = config.wg_gw_address;
+		data["publicKey"] = config.wg_public_key;
+		data["privateKey"] = config.wg_private_key;
 
 		// Check if local address starts with "10.44."
 		String wg_local_addr = String(config.wg_local_address);
 		if (wg_local_addr.startsWith("10.44."))
 		{
 			int lastoct = wg_local_addr.substring(wg_local_addr.lastIndexOf('.') + 1).toInt();
-			// String url="http://"+String(config.wg_peer_address)+":"+String(8000+lastoct);
-			// html->print("<tr><td>Your External Host IP: <a href=\"");
-			// snprintf(temp_buffer, sizeof(temp_buffer), "%s\">%s</a></td></tr>\n", url.c_str(), url.c_str());
-			// html->print(temp_buffer);
 			int thirdoct = wg_local_addr.substring(wg_local_addr.indexOf('.', wg_local_addr.indexOf('.') + 1) + 1, wg_local_addr.lastIndexOf('.')).toInt();
-			String url_base = "http://hs" + String(thirdoct) + ".hs5tqa.ampr.org:" + String((thirdoct * 10000) + 8000 + lastoct);
-			snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td>Your External by AMPR URL: <a href=\"%s\" target=\"_blank\">%s</a></td></tr>\n", url_base.c_str(), url_base.c_str());
-			html->print(temp_buffer);
-			url_base = "http://vpn.nakhonthai.net:" + String((thirdoct * 10000) + 8000 + lastoct);
-			snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td>Fast Direct URL: <a href=\"%s\" target=\"_blank\">%s</a></td></tr>\n", url_base.c_str(), url_base.c_str());
-			html->print(temp_buffer);
+			data["amprUrl"] = "http://hs" + String(thirdoct) + ".hs5tqa.ampr.org:" + String((thirdoct * 10000) + 8000 + lastoct);
+			data["directUrl"] = "http://vpn.nakhonthai.net:" + String((thirdoct * 10000) + 8000 + lastoct);
 		}
-		html->print("<tr><td><button type=\"button\" onclick=\"loadVPNConfig()\">New Register</button></td></tr>\n");
-		html->print("</table><br />\n");
-		html->print("</form>");
 
+		String html_str = renderTemplate(VPN_TEMPLATE, data.as<JsonVariant>());
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
+		if (!html)
+		{
+			return; // Memory allocation failed
+		}
+		html->print(html_str);
 		html->addHeader("VPN", "content");
 		html->addHeader("Cache-Control", "no-cache");
 		request->send(html);
@@ -3030,6 +2826,70 @@ void handle_vpn(AsyncWebServerRequest *request)
 }
 
 #ifdef MQTT
+// LU6JMF - Marcelo Ferreira: fase 6 - template embutido no firmware (ver about).
+static const char *MQTT_TEMPLATE =
+	"<script type=\"text/javascript\">\n"
+	"$('form').submit(function (e) {\n"
+	"e.preventDefault();\n"
+	"var data = new FormData(e.currentTarget);\n"
+	"if(e.currentTarget.id===\"formVPN\") document.getElementById(\"submitMQTT\").disabled=true;\n"
+	"$.ajax({\n"
+	"url: '/mqtt',\n"
+	"type: 'POST',\n"
+	"data: data,\n"
+	"contentType: false,\n"
+	"processData: false,\n"
+	"success: function (data) {\n"
+	"alert(\"Submited Successfully\");\n"
+	"},\n"
+	"error: function (data) {\n"
+	"alert(\"An error occurred.\");\n"
+	"}\n"
+	"});\n"
+	"});\n"
+	"</script>\n"
+	"<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromMQTT\" method=\"post\">\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>MQTT Configuration</b></span></th>\n"
+	"<tr>"
+	"<td align=\"right\"><b>Enable</b></td>\n"
+	"{{#if enabled}}"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n"
+	"{{else}}"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n"
+	"{{/if}}"
+	"</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Server Address:</b></td>\n<td style=\"text-align: left;\"><input  size=\"30\" maxlength=\"32\" name=\"host\" type=\"text\" value=\"{{host}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Server Port:</b></td>\n<td style=\"text-align: left;\"><input size=\"5\"  maxlength=\"5\"  name=\"port\" type=\"number\" value=\"{{port}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>User:</b></td>\n<td style=\"text-align: left;\"><input maxlength=\"32\" name=\"user\" type=\"text\" value=\"{{user}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Password:</b></td>\n<td style=\"text-align: left;\"><input size=\"40\" maxlength=\"63\" name=\"pass\" type=\"password\" value=\"{{pass}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Topic:</b></td>\n<td style=\"text-align: left;\"><input size=\"50\" maxlength=\"32\" id=\"topic\" name=\"topic\" type=\"text\" value=\"{{topic}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Topic Flag:</b></td>\n"
+	"<td align=\"center\">\n<fieldset id=\"TopicGrp\">\n"
+	"<legend>Topic Flags Send out MQTT</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">"
+	"<tr style=\"background:unset;\">"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicTNC\" type=\"checkbox\" value=\"OK\" {{#if topicTNC}}checked{{/if}}/>TNC</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicSts\" type=\"checkbox\" value=\"OK\" {{#if topicSts}}checked{{/if}}/>Status</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicTlm\" type=\"checkbox\" value=\"OK\" {{#if topicTlm}}checked{{/if}}/>Telemetry</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicWX\" type=\"checkbox\" value=\"OK\" {{#if topicWX}}checked{{/if}}/>Weather</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicSensor\" type=\"checkbox\" value=\"OK\" {{#if topicSensor}}checked{{/if}}/>Sensor</td>\n"
+	"<td style=\"border:unset;\"></td>"
+	"</tr></table></fieldset>\n</td></tr>\n"
+	"<tr>\n<td align=\"right\"><b>Subscription:</b></td>\n<td style=\"text-align: left;\"><input size=\"50\" maxlength=\"32\" name=\"subscribe\" type=\"text\" value=\"{{subscribe}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Subscription Flag:</b></td>\n"
+	"<td align=\"center\">\n<fieldset id=\"SubGrp\">\n"
+	"<legend>Subscription Flags Receive</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">"
+	"<tr style=\"background:unset;\">"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subCMD\" type=\"checkbox\" value=\"OK\" {{#if subCMD}}checked{{/if}}/>AT-Command</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subTNC\" type=\"checkbox\" value=\"OK\" {{#if subTNC}}checked{{/if}}/>TNC</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subMsg\" type=\"checkbox\" value=\"OK\" {{#if subMsg}}checked{{/if}}/>Message</td>\n"
+	"<td style=\"border:unset;\"></td>"
+	"</tr></table></fieldset>\n</td></tr>\n"
+	"</table><br />\n"
+	"<td><input class=\"button\" id=\"submitMQTT\" name=\"commitMQTT\" type=\"submit\" value=\"Save Config\" maxlength=\"80\"/></td>\n"
+	"<input type=\"hidden\" name=\"commitMQTT\"/>\n"
+	"</form>\n";
+
 void handle_mqtt(AsyncWebServerRequest *request)
 {
 	if (!request->authenticate(config.http_username, config.http_password))
@@ -3185,193 +3045,30 @@ void handle_mqtt(AsyncWebServerRequest *request)
 	}
 	else
 	{
-		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", 17000);
+		JsonDocument data;
+		data["enabled"] = config.en_mqtt;
+		data["host"] = config.mqtt_host;
+		data["port"] = config.mqtt_port;
+		data["user"] = config.mqtt_user;
+		data["pass"] = config.mqtt_pass;
+		data["topic"] = config.mqtt_topic;
+		data["subscribe"] = config.mqtt_subscribe;
+		data["topicTNC"] = (bool)(config.mqtt_topic_flag & MQTT_TOPIC_TNC);
+		data["topicSts"] = (bool)(config.mqtt_topic_flag & MQTT_TOPIC_STATUS);
+		data["topicTlm"] = (bool)(config.mqtt_topic_flag & MQTT_TOPIC_TELEMETRY);
+		data["topicWX"] = (bool)(config.mqtt_topic_flag & MQTT_TOPIC_WX);
+		data["topicSensor"] = (bool)(config.mqtt_topic_flag & MQTT_TOPIC_SENSOR);
+		data["subCMD"] = (bool)(config.mqtt_subscribe_flag & MQTT_SUBSCRIBE_CMD);
+		data["subTNC"] = (bool)(config.mqtt_subscribe_flag & MQTT_SUBSCRIBE_TNC);
+		data["subMsg"] = (bool)(config.mqtt_subscribe_flag & MQTT_SUBSCRIBE_MESSAGE);
+
+		String html_str = renderTemplate(MQTT_TEMPLATE, data.as<JsonVariant>());
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
 		if (!html)
 		{
 			return; // Memory allocation failed
 		}
-
-		html->print("<script type=\"text/javascript\">\n");
-		html->print("$('form').submit(function (e) {\n");
-		html->print("e.preventDefault();\n");
-		html->print("var data = new FormData(e.currentTarget);\n");
-		html->print("if(e.currentTarget.id===\"formVPN\") document.getElementById(\"submitMQTT\").disabled=true;\n");
-		html->print("$.ajax({\n");
-		html->print("url: '/mqtt',\n");
-		html->print("type: 'POST',\n");
-		html->print("data: data,\n");
-		html->print("contentType: false,\n");
-		html->print("processData: false,\n");
-		html->print("success: function (data) {\n");
-		html->print("alert(\"Submited Successfully\");\n");
-		html->print("},\n");
-		html->print("error: function (data) {\n");
-		html->print("alert(\"An error occurred.\");\n");
-		html->print("}\n");
-		html->print("});\n");
-		html->print("});\n");
-		html->print("</script>\n");
-
-		// html->print("<h2>System Setting</h2>\n");
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromMQTT\" method=\"post\">\n");
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>MQTT Configuration</b></span></th>\n");
-		html->print("<tr>");
-
-		// Handle sync flag
-		if (config.en_mqtt)
-		{
-			html->print("<td align=\"right\"><b>Enable</b></td>\n");
-			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n");
-		}
-		else
-		{
-			html->print("<td align=\"right\"><b>Enable</b></td>\n");
-			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n");
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Server Address:</b></td>\n");
-		char temp_buffer[512];
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input  size=\"30\" maxlength=\"32\" name=\"host\" type=\"text\" value=\"%s\" /></td>\n", config.mqtt_host);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Server Port:</b></td>\n");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input size=\"5\"  maxlength=\"5\"  name=\"port\" type=\"number\" value=\"%d\" /></td>\n", config.mqtt_port);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>User:</b></td>\n");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input maxlength=\"32\" name=\"user\" type=\"text\" value=\"%s\" /></td>\n", config.mqtt_user);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Password:</b></td>\n");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input size=\"40\" maxlength=\"63\" name=\"pass\" type=\"password\" value=\"%s\" /></td>\n", config.mqtt_pass);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Topic:</b></td>\n");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input size=\"50\" maxlength=\"32\" id=\"topic\" name=\"topic\" type=\"text\" value=\"%s\" /></td>\n", config.mqtt_topic);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Topic Flag:</b></td>\n");
-
-		html->print("<td align=\"center\">\n");
-		html->print("<fieldset id=\"TopicGrp\">\n");
-		html->print("<legend>Topic Flags Send out MQTT</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">");
-		html->print("<tr style=\"background:unset;\">");
-
-		// Handle topic flags
-		if (config.mqtt_topic_flag & MQTT_TOPIC_TNC)
-		{
-			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicTNC\" type=\"checkbox\" value=\"OK\" checked/>TNC</td>\n");
-		}
-		else
-		{
-			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicTNC\" type=\"checkbox\" value=\"OK\" />TNC</td>\n");
-		}
-
-		if (config.mqtt_topic_flag & MQTT_TOPIC_STATUS)
-		{
-			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicSts\" type=\"checkbox\" value=\"OK\" checked/>Status</td>\n");
-		}
-		else
-		{
-			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicSts\" type=\"checkbox\" value=\"OK\" />Status</td>\n");
-		}
-
-		if (config.mqtt_topic_flag & MQTT_TOPIC_TELEMETRY)
-		{
-			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicTlm\" type=\"checkbox\" value=\"OK\" checked/>Telemetry</td>\n");
-		}
-		else
-		{
-			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicTlm\" type=\"checkbox\" value=\"OK\" />Telemetry</td>\n");
-		}
-
-		if (config.mqtt_topic_flag & MQTT_TOPIC_WX)
-		{
-			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicWX\" type=\"checkbox\" value=\"OK\" checked/>Weather</td>\n");
-		}
-		else
-		{
-			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicWX\" type=\"checkbox\" value=\"OK\" />Weather</td>\n");
-		}
-
-		if (config.mqtt_topic_flag & MQTT_TOPIC_SENSOR)
-		{
-			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicSensor\" type=\"checkbox\" value=\"OK\" checked/>Sensor</td>\n");
-		}
-		else
-		{
-			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicSensor\" type=\"checkbox\" value=\"OK\" />Sensor</td>\n");
-		}
-
-		html->print("<td style=\"border:unset;\"></td>");
-		html->print("</tr></table></fieldset>\n");
-		html->print("</td></tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Subscription:</b></td>\n");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input size=\"50\" maxlength=\"32\" name=\"subscribe\" type=\"text\" value=\"%s\" /></td>\n", config.mqtt_subscribe);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Subscription Flag:</b></td>\n");
-
-		html->print("<td align=\"center\">\n");
-		html->print("<fieldset id=\"SubGrp\">\n");
-		html->print("<legend>Subscription Flags Receive</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">");
-		html->print("<tr style=\"background:unset;\">");
-
-		// Handle subscription flags
-		if (config.mqtt_subscribe_flag & MQTT_SUBSCRIBE_CMD)
-		{
-			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subCMD\" type=\"checkbox\" value=\"OK\" checked/>AT-Command</td>\n");
-		}
-		else
-		{
-			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subCMD\" type=\"checkbox\" value=\"OK\" />AT-Command</td>\n");
-		}
-
-		if (config.mqtt_subscribe_flag & MQTT_SUBSCRIBE_TNC)
-		{
-			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subTNC\" type=\"checkbox\" value=\"OK\" checked/>TNC</td>\n");
-		}
-		else
-		{
-			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subTNC\" type=\"checkbox\" value=\"OK\" />TNC</td>\n");
-		}
-
-		if (config.mqtt_subscribe_flag & MQTT_SUBSCRIBE_MESSAGE)
-		{
-			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subMsg\" type=\"checkbox\" value=\"OK\" checked/>Message</td>\n");
-		}
-		else
-		{
-			html->print("<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"subMsg\" type=\"checkbox\" value=\"OK\" />Message</td>\n");
-		}
-
-		html->print("<td style=\"border:unset;\"></td>");
-		html->print("</tr></table></fieldset>\n");
-		html->print("</td></tr>\n");
-
-		html->print("</table><br />\n");
-		html->print("<td><input class=\"button\" id=\"submitMQTT\" name=\"commitMQTT\" type=\"submit\" value=\"Save Config\" maxlength=\"80\"/></td>\n");
-		html->print("<input type=\"hidden\" name=\"commitMQTT\"/>\n");
-		html->print("</form>\n");
-
+		html->print(html_str);
 		html->addHeader("MQTT", "content");
 		html->addHeader("Cache-Control", "no-cache");
 		request->send(html);
@@ -3428,7 +3125,204 @@ static void buildNewsSchedulePreview(char *buf, size_t bufSize, uint16_t baseTMi
 	strlcat(buf, " -> ...", bufSize);
 }
 
-void handle_msg(AsyncWebServerRequest *request)
+static const char *MSG_TEMPLATE =
+	"<script type=\"text/javascript\">\n"
+	"$('form').submit(function (e) {\n"
+	"e.preventDefault();\n"
+	"var data = new FormData(e.currentTarget);\n"
+	"if(e.currentTarget.id===\"formMSG\") document.getElementById(\"submitMSG\").disabled=true;\n"
+	"if(e.currentTarget.id===\"formBLN\") document.getElementById(\"submitBLN\").disabled=true;\n"
+	"if(e.currentTarget.id===\"formChat\") document.getElementById(\"submitChat\").disabled=true;\n"
+	"$.ajax({\n"
+	"url: '/msg',\n"
+	"type: 'POST',\n"
+	"data: data,\n"
+	"contentType: false,\n"
+	"processData: false,\n"
+	"success: function (data) {\n"
+	"if(e.currentTarget.id===\"formMSG\") alert(\"Submited Successfully\");\n"
+	"if(e.currentTarget.id===\"formBLN\") alert(\"Submited Successfully\");\n"
+	"if(e.currentTarget.id===\"formChat\") { document.getElementById(\"submitChat\").disabled=false; document.getElementById(\"msg\").value=\"\"; }\n"
+	"},\n"
+	"error: function (data) {\n"
+	"if(e.currentTarget.id===\"formMSG\") alert(\"An error occurred.\");\n"
+	"if(e.currentTarget.id===\"formBLN\") alert(\"An error occurred.\");\n"
+	"if(e.currentTarget.id===\"formChat\") { alert(\"An error occurred.\"); document.getElementById(\"submitChat\").disabled=false; }\n"
+	"}\n"
+	"});\n"
+	"});\n"
+	"</script>\n"
+	"<div style=\"text-align:right;color:#999;font-size:7pt;padding:2px 4px;\">{{buildInfo}}</div>\n"
+	"<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formMSG\" method=\"post\">\n"
+	"<table width=\"90%\">\n"
+	"<th colspan=\"2\"><span><b>Message Configuration</b></span></th>\n"
+	"<tr>"
+	"<td align=\"right\"><b>Enable</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" {{#if msgEnabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>My Callsign:</b></td>\n"
+	"<td style=\"text-align: left;\"><input  size=\"20\" maxlength=\"9\" name=\"mycall\" type=\"text\" value=\"{{myCall}}\" /> *<i>Callsign with SSID (Ex. HS5TQA-12)</i></td>\n"
+	"</tr>\n"
+	"<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"msgRf\" value=\"OK\" {{#if msgRf}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"msgInet\" value=\"OK\" {{#if msgInet}}checked{{/if}}/>Internet </td></tr>\n"
+	"<tr>"
+	"<td align=\"right\"><b>Encryption</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"encrypt\" value=\"OK\" {{#if msgEncrypt}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>AES Key:</b></td>\n"
+	"<td style=\"text-align: left;\"><input  size=\"40\" maxlength=\"33\" name=\"key\" type=\"text\" value=\"{{key}}\" /> *<i>ASCII HEX 16Byte</i></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Send Retry:</b></td>\n"
+	"<td style=\"text-align: left;\"><input  min=\"0\" max=\"99\"   name=\"retry\" type=\"number\" value=\"{{retry}}\" /></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Send Timeout:</b></td>\n"
+	"<td style=\"text-align: left;\"><input  min=\"1\" max=\"9999\"   name=\"timeout\" type=\"number\" value=\"{{timeout}}\" /> Sec.</td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>PATH:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"path\" id=\"path\">\n"
+	"{{#each pathOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"<tr><td colspan=\"2\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitMSG'  name=\"commitMSG\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitMSG\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form><br /><br />"
+	"<table width=\"90%\">\n"
+	"<th style=\"background-color: #070ac2;\">CHAT MESSAGE</th>\n"
+	"<tr><td>\n"
+	"<table id=\"chatMsg\">\n"
+	"{{chatMessageHtml}}"
+	"</table>\n"
+	"</td></tr><tr><td colspan=\"5\">"
+	"<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formChat\" method=\"post\">\n"
+	"<table>\n"
+	"<tr>\n"
+	"<td align=\"left\"><b>TO:</b><input size=\"10\" name=\"toCall\" id=\"toCall\" type=\"text\" value=\"\" oninput=\"this.value=this.value.toUpperCase();\" /> <b>MSG:</b><input size=\"80\" name=\"msg\" id=\"msg\" type=\"text\" value=\"\" /></td>\n"
+	"<td align=\"right\">\n"
+	"<input class=\"button\" id=\"submitChat\" name=\"commitChat\" type=\"submit\" value=\"Send\"/>\n"
+	"<input type=\"hidden\" name=\"commitChat\"/>\n"
+	"</td></tr></table>\n"
+	"</form><br />\n"
+	"</td></tr></table><br />\n"
+	"<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formBLN\" method=\"post\">\n"
+	"<table width=\"90%\" style=\"table-layout:fixed;border-collapse:collapse;\">\n"
+	"<th colspan=\"7\" style=\"background-color: #070ac2;\"><span><b>Bulletins: BLN1-BLN4 Alerts, NEWS5-NEWS9</b></span></th>\n"
+	"<tr><td colspan=\"7\"><i>Uses the same TX Channel/PATH as Message Configuration above.</i></td></tr>\n"
+	"<tr>"
+	"<td align=\"center\" style=\"width:6%;\"><b>#</b></td>"
+	"<td align=\"center\" style=\"width:8%;\"><b>Enable</b></td>"
+	"<td align=\"center\" style=\"width:38%;\"><b>Text</b></td>"
+	"<td align=\"center\" style=\"width:14%;\"><b>Interval</b></td>"
+	"<td align=\"center\" style=\"width:12%;\"><b>Limit</b><br /><i style=\"font-weight:normal;font-size:8pt;\">0 = unlimited</i></td>"
+	"<td align=\"center\" style=\"width:14%;\"><b>Active for</b></td>"
+	"<td align=\"center\" style=\"width:8%;\"><b>Sent</b></td>"
+	"</tr>\n"
+	"{{#each blnRows}}<tr>\n"
+	"{{#if isNews}}<td align=\"center\"><b>NEWS{{num}}</b></td>\n"
+	"{{else}}<td align=\"center\"><b>BLN{{num}}</b></td>\n"
+	"{{/if}}"
+	"<td align=\"center\"><label class=\"switch\"><input type=\"checkbox\" name=\"blnEn{{num}}\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td style=\"text-align: left;\"><input id=\"blnTxt{{num}}\" style=\"width:96%;box-sizing:border-box;\" maxlength=\"{{maxLen}}\" name=\"blnText{{num}}\" type=\"text\" value=\"{{text}}\" oninput=\"var n=this.maxLength-this.value.length;var c=document.getElementById('blnCnt{{num}}');c.textContent=n+' left';c.style.color=(n<0)?'red':'#2e7d32';\" /><br />"
+	"<span id=\"blnCnt{{num}}\" style=\"font-size:8pt;color:{{charsLeftColor}};\">{{charsLeft}} left</span></td>\n"
+	"<td style=\"text-align: left;\"><select style=\"width:96%;box-sizing:border-box;\" name=\"blnInv{{num}}\">{{#each intervalOptions}}<option value=\"{{value}}\"{{#if selected}} selected{{/if}}>{{label}}</option>{{/each}}</select></td>\n"
+	"<td style=\"text-align: left;\"><input style=\"width:90%;box-sizing:border-box;\" min=\"0\" max=\"65535\" name=\"blnLim{{num}}\" type=\"number\" value=\"{{limit}}\" /></td>\n"
+	"<td style=\"text-align: left;\"><select style=\"width:96%;box-sizing:border-box;\" name=\"blnDur{{num}}\">{{#each durationOptions}}<option value=\"{{value}}\"{{#if selected}} selected{{/if}}>{{label}}</option>{{/each}}</select></td>\n"
+	"<td align=\"center\">{{sentCount}}</td>\n"
+	"</tr>\n"
+	"{{#if isNews}}<tr><td colspan=\"2\"></td><td colspan=\"5\" style=\"text-align:left;font-size:7pt;color:#555;padding-top:0;padding-bottom:4px;\">sends: {{schedPreview}}</td></tr>\n"
+	"{{/if}}"
+	"{{/each}}"
+	"<tr><td colspan=\"7\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitBLN' name=\"commitBLN\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitBLN\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form><br />\n"
+	"<div style=\"margin:8px 0;padding:6px;background:#fff3cd;border:1px solid #ffe69c;font-size:9pt;\">Objects (Object1-Object4) moved to their own page - see the <b>OBJ</b> tab. They use the same TX Channel/PATH configured above in Message Configuration.</div>\n";
+
+// LU6JMF - Marcelo Ferreira (Set/2026): Objects split out of the MSG page into
+// its own page/tab. Same fields, same commitObj POST contract, just no longer
+// competing with BLN/News/Chat for space on one already-huge page.
+static const char *OBJECT_TEMPLATE = R"OBJHTML(<script type="text/javascript">
+$('form').submit(function (e) {
+e.preventDefault();
+var data = new FormData(e.currentTarget);
+document.getElementById("submitObj").disabled=true;
+$.ajax({
+url: '/object',
+type: 'POST',
+data: data,
+contentType: false,
+processData: false,
+success: function (data) {
+alert("Submited Successfully");
+document.getElementById("submitObj").disabled=false;
+},
+error: function (data) {
+alert("An error occurred.");
+document.getElementById("submitObj").disabled=false;
+}
+});
+});
+</script>
+<form accept-charset="UTF-8" action="#" class="form-horizontal" id="formObj" method="post">
+<table width="90%" style="border-collapse:collapse;">
+<th colspan="2" style="background-color: #070ac2;"><span><b>Objects: Object1-Object4</b></span></th>
+<tr><td colspan="2"><i>Uses the same TX Channel/PATH as Message Configuration (MSG tab).</i></td></tr>
+{{#each objRows}}<tr><td colspan="2" style="background-color:#eef0f4;"><b>Object{{num}}</b></td></tr>
+<tr><td align="right"><b>Enable:</b></td><td align="left"><label class="switch"><input type="checkbox" name="objEn{{num}}" value="OK"{{#if enabled}} checked{{/if}}><span class="slider round"></span></label></td></tr>
+<tr><td align="right"><b>Item/Obj Name:</b></td><td align="left"><input maxlength="9" name="objName{{num}}" type="text" value="{{name}}" />{{#if firstRow}} <i>3-9 character</i>{{/if}}</td></tr>
+<tr><td align="right"><b>Latitude / Longitude:</b></td><td align="left"><input style="width:120px;" step="any" name="objLat{{num}}" type="number" value="{{lat}}" /> <input style="width:120px;" step="any" name="objLon{{num}}" type="number" value="{{lon}}" />{{#if firstRow}} <i>independent of the digi's own position</i>{{/if}}</td></tr>
+<tr><td align="right"><b>Symbol:</b></td><td align="left">Table:<input maxlength="1" size="1" id="obj{{num}}Table" name="obj{{num}}Table" type="text" value="{{symTable}}" style="background-color: rgb(97, 239, 170);" oninput="objSymRefresh({{idx}});" /> Symbol:<input maxlength="1" size="1" id="obj{{num}}Symbol" name="obj{{num}}Symbol" type="text" value="{{symSymbol}}" style="background-color: rgb(97, 239, 170);" oninput="objSymRefresh({{idx}});" /> <img border="1" style="vertical-align: middle;" id="obj{{num}}ImgSymbol" onclick="openWindowSymbolObj({{idx}});" src="http://aprs.nakhonthai.net/symbols/icons/{{symImgNum}}-{{symImgTable}}.png">{{#if firstRow}} <i>*Click icon or type Table/Symbol directly</i>{{/if}}</td></tr>
+<tr><td align="right"><b>Text/Comment:</b></td><td align="left"><input style="width:96%;box-sizing:border-box;" maxlength="{{maxLen}}" name="objText{{num}}" type="text" value="{{text}}" oninput="var n=this.maxLength-this.value.length;var c=document.getElementById('objCnt{{num}}');c.textContent=n+' left';c.style.color=(n<0)?'red':'#2e7d32';" /><br /><span id="objCnt{{num}}" style="font-size:8pt;color:{{charsLeftColor}};">{{charsLeft}} left</span>{{#if firstRow}} <i style="font-size:8pt;">(own buffer, not shared)</i>{{/if}}</td></tr>
+<tr><td align="right"><b>Interval:</b></td><td align="left"><input type="radio" name="objMode{{num}}" value="0"{{#if fixedMode}} checked{{/if}}> Fixed: <select name="objInv{{num}}">{{#each intervalOptions}}<option value="{{value}}"{{#if selected}} selected{{/if}}>{{label}}</option>{{/each}}</select> + max sends <input style="width:60px;" min="0" max="65535" name="objLim{{num}}" type="number" value="{{limit}}" /><br /><input type="radio" name="objMode{{num}}" value="1"{{#if fixedMode}}{{else}} checked{{/if}}> Active for: <select name="objActFor{{num}}">{{#each afOptions}}<option value="{{value}}"{{#if selected}} selected{{/if}}>{{label}}</option>{{/each}}{{#if firstRow}}</select><br /><i>either mode (Permanent off): never exceeds 72h total send time</i></td></tr>
+{{else}}</select></td></tr>
+{{/if}}
+<tr><td align="right"><b>Permanent / Never disable:</b></td><td align="left"><label class="switch"><input type="checkbox" name="objPerm{{num}}" value="OK"{{#if permanent}} checked{{/if}}><span class="slider round"></span></label>{{#if firstRow}} <i>if checked, ignores Interval and the 72h cap entirely</i>{{/if}}</td></tr>
+{{#if firstRow}}<tr><td align="right"><b>Timestamp:</b></td><td align="left"><i>always UTC (zulu), automatic - not user configurable</i></td></tr>
+{{else}}<tr><td align="right"><b>Timestamp:</b></td><td align="left"><i>always UTC, automatic</i></td></tr>
+{{/if}}
+{{/each}}
+<tr><td colspan="2" align="right">
+<div><button class="button" type='submit' id='submitObj' name="commitObj"> Apply Change </button></div>
+<input type="hidden" name="commitObj"/>
+</td></tr></table><br />
+</form><br />
+<script type="text/javascript">
+function openWindowSymbolObj(sel) {
+window.open("/symbol?sel="+sel.toString(), null, "height=400,width=400,status=no,toolbar=no,menubar=no,location=no");
+}
+function setValue(sel,symbol,table) {
+var txtsymbol=document.getElementById('obj'+(sel+1)+'Symbol');
+var txttable=document.getElementById('obj'+(sel+1)+'Table');
+var imgicon=document.getElementById('obj'+(sel+1)+'ImgSymbol');
+txtsymbol.value = String.fromCharCode(symbol);
+if(table==1){
+ txttable.value='/';
+}else if(table==2){
+ txttable.value='\\';
+}
+imgicon.src = "http://aprs.nakhonthai.net/symbols/icons/"+symbol.toString()+'-'+table.toString()+'.png';
+}
+function objSymRefresh(sel) {
+var txtsymbol=document.getElementById('obj'+(sel+1)+'Symbol');
+var txttable=document.getElementById('obj'+(sel+1)+'Table');
+var imgicon=document.getElementById('obj'+(sel+1)+'ImgSymbol');
+var sym=txtsymbol.value.charCodeAt(0);
+var tbl=(txttable.value=='\\')?2:1;
+if(!isNaN(sym)&&sym>0){
+ imgicon.src = "http://aprs.nakhonthai.net/symbols/icons/"+sym.toString()+'-'+tbl.toString()+'.png';
+}
+}
+</script>
+)OBJHTML";
+
+void handle_object(AsyncWebServerRequest *request)
 {
 	if (!request->authenticate(config.http_username, config.http_password))
 	{
@@ -3436,43 +3330,7 @@ void handle_msg(AsyncWebServerRequest *request)
 	}
 	StandByTick = millis() + (config.pwr_stanby_delay * 1000);
 
-	if (request->hasArg("commitChat"))
-	{
-		// Using char arrays instead of String
-		char toCall[10];
-		char msg[256];
-		memset(toCall, 0, sizeof(toCall));
-		memset(msg, 0, sizeof(msg));
-
-		for (uint8_t i = 0; i < request->args(); i++)
-		{
-			if (request->argName(i) == "toCall")
-			{
-				if (request->arg(i) != "")
-				{
-					strncpy(toCall, request->arg(i).c_str(), sizeof(toCall) - 1);
-				}
-			}
-			if (request->argName(i) == "msg")
-			{
-				if (request->arg(i) != "")
-				{
-					strncpy(msg, request->arg(i).c_str(), sizeof(msg) - 1);
-				}
-			}
-		}
-		log_d("Chat to %s | msg %s", toCall, msg);
-		sendAPRSMessage(String(toCall), String(msg), config.msg_encrypt);
-		// Using dynamic memory allocation instead of String
-		char *html = allocateStringMemory(64); // Small buffer for "Send completed"
-		if (html)
-		{
-			strcpy(html, "Send completed");
-			request->send(200, "text/html", html); // send to someones browser when asked
-			free(html);							   // Free the allocated memory
-		}
-	}
-	else if (request->hasArg("commitObj"))
+	if (request->hasArg("commitObj"))
 	{
 		// v2.1-lu6jmf: Object1-Object4
 		bool objEn[4] = {false};
@@ -3583,13 +3441,168 @@ void handle_msg(AsyncWebServerRequest *request)
 			free(html);
 		}
 	}
+	else
+	{
+		esp_task_wdt_reset();
+		JsonDocument data;
+
+		static const uint16_t objIvlOpts[3] = {900, 1800, 3600};
+		static const char *objIvlLabels[3] = {"15 min", "30 min", "60 min"};
+		static const uint8_t objAfOpts[4] = {24, 36, 48, 72};
+
+		JsonArray objRows = data["objRows"].to<JsonArray>();
+		for (uint8_t oi = 0; oi < 4; oi++)
+		{
+			JsonObject o = objRows.add<JsonObject>();
+			o["num"] = oi + 1;
+			o["idx"] = oi;
+			o["firstRow"] = (oi == 0);
+			o["enabled"] = config.obj_en[oi];
+			o["name"] = config.obj_name[oi];
+
+			char buf[32];
+			snprintf(buf, sizeof(buf), "%.6f", config.obj_lat[oi]);
+			o["lat"] = buf;
+			snprintf(buf, sizeof(buf), "%.6f", config.obj_lon[oi]);
+			o["lon"] = buf;
+
+			char objTableCh = config.obj_symbol[oi][0] ? config.obj_symbol[oi][0] : '/';
+			char objSymCh = config.obj_symbol[oi][1] ? config.obj_symbol[oi][1] : 'r';
+			int objTableNum = (objTableCh == '\\') ? 2 : 1;
+			char cbuf[2];
+			cbuf[0] = objTableCh;
+			cbuf[1] = 0;
+			o["symTable"] = cbuf;
+			cbuf[0] = objSymCh;
+			cbuf[1] = 0;
+			o["symSymbol"] = cbuf;
+			o["symImgNum"] = (int)objSymCh;
+			o["symImgTable"] = objTableNum;
+
+			int objCharsLeft = (int)(STATUS_SIZE - 1) - (int)strlen(config.obj_text[oi]);
+			o["text"] = config.obj_text[oi];
+			o["maxLen"] = STATUS_SIZE - 1;
+			o["charsLeftColor"] = (objCharsLeft < 0) ? "red" : "#2e7d32";
+			o["charsLeft"] = objCharsLeft;
+
+			bool fixedMode = (config.obj_mode[oi] == 0);
+			o["fixedMode"] = fixedMode;
+
+			JsonArray intervalOptions = o["intervalOptions"].to<JsonArray>();
+			for (uint8_t k = 0; k < 3; k++)
+			{
+				JsonObject io = intervalOptions.add<JsonObject>();
+				io["value"] = objIvlOpts[k];
+				io["label"] = objIvlLabels[k];
+				io["selected"] = (config.obj_interval[oi] == objIvlOpts[k]);
+			}
+
+			o["limit"] = config.obj_limit[oi];
+
+			JsonArray afOptions = o["afOptions"].to<JsonArray>();
+			for (uint8_t k = 0; k < 4; k++)
+			{
+				JsonObject ao = afOptions.add<JsonObject>();
+				ao["value"] = objAfOpts[k];
+				ao["label"] = String(objAfOpts[k]) + "h";
+				ao["selected"] = (config.obj_activefor[oi] == objAfOpts[k]);
+			}
+
+			o["permanent"] = config.obj_permanent[oi];
+		}
+
+		String html_str = renderTemplate(OBJECT_TEMPLATE, data.as<JsonVariant>());
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
+		if (!html)
+		{
+			request->send(500, "text/html", "Memory allocation failed");
+			return;
+		}
+		html->print(html_str);
+		html->addHeader("Object", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
+	}
+}
+
+void handle_msg(AsyncWebServerRequest *request)
+{
+	if (!request->authenticate(config.http_username, config.http_password))
+	{
+		return request->requestAuthentication();
+	}
+	StandByTick = millis() + (config.pwr_stanby_delay * 1000);
+
+	if (request->hasArg("commitChat"))
+	{
+		// Using char arrays instead of String
+		char toCall[10];
+		char msg[256];
+		memset(toCall, 0, sizeof(toCall));
+		memset(msg, 0, sizeof(msg));
+
+		for (uint8_t i = 0; i < request->args(); i++)
+		{
+			if (request->argName(i) == "toCall")
+			{
+				if (request->arg(i) != "")
+				{
+					strncpy(toCall, request->arg(i).c_str(), sizeof(toCall) - 1);
+				}
+			}
+			if (request->argName(i) == "msg")
+			{
+				if (request->arg(i) != "")
+				{
+					strncpy(msg, request->arg(i).c_str(), sizeof(msg) - 1);
+				}
+			}
+		}
+		log_d("Chat to %s | msg %s", toCall, msg);
+
+		// LU6JMF - Marcelo Ferreira:
+		// Server-side duplicate guard. The client-side disabled-button fix only
+		// covers one click's own AJAX round-trip; it does not catch the browser
+		// firing two POSTs for what the user experienced as a single click/enter
+		// (seen live: two independent sendAPRSMessage() calls, same toCall+text,
+		// about a second apart). Ignore an identical toCall+msg repeated within
+		// a few seconds instead of sending it again.
+		static char lastChatTo[10] = {0};
+		static char lastChatMsg[256] = {0};
+		static unsigned long lastChatMillis = 0;
+		bool isDuplicate = (millis() - lastChatMillis < 5000) &&
+							(strcmp(toCall, lastChatTo) == 0) &&
+							(strcmp(msg, lastChatMsg) == 0) &&
+							(lastChatMillis != 0);
+
+		if (!isDuplicate)
+		{
+			sendAPRSMessage(String(toCall), String(msg), config.msg_encrypt);
+			strncpy(lastChatTo, toCall, sizeof(lastChatTo) - 1);
+			strncpy(lastChatMsg, msg, sizeof(lastChatMsg) - 1);
+			lastChatMillis = millis();
+		}
+		else
+		{
+			log_d("Chat duplicate ignored (same toCall+msg within 5s)");
+		}
+
+		// Using dynamic memory allocation instead of String
+		char *html = allocateStringMemory(64); // Small buffer for "Send completed"
+		if (html)
+		{
+			strcpy(html, isDuplicate ? "Duplicate ignored" : "Send completed");
+			request->send(200, "text/html", html); // send to someones browser when asked
+			free(html);							   // Free the allocated memory
+		}
+	}
 	else if (request->hasArg("commitBLN"))
 	{
 		bool blnEn[9] = {false};
 		char blnText[9][STATUS_SIZE];
 		uint16_t blnInterval[9];
 		uint16_t blnLimit[9];
-		uint8_t blnActiveFor[9]; // v2.1-lu6jmf: 0=default (72/24h), else 24/36/48/72
+		uint8_t blnDuration[9]; // LU6JMF - Marcelo Ferreira: 24/36/48/72h campaign lifetime (replaces bln_activefor)
 		for (uint8_t bi = 0; bi < 9; bi++)
 		{
 			// LU6JMF fix (Set/2026): pre-seed text from the current config, same as
@@ -3604,7 +3617,7 @@ void handle_msg(AsyncWebServerRequest *request)
 			strlcpy(blnText[bi], config.bln_text[bi], sizeof(blnText[bi]));
 			blnInterval[bi] = config.bln_interval[bi];
 			blnLimit[bi] = config.bln_limit[bi];
-			blnActiveFor[bi] = config.bln_activefor[bi];
+			blnDuration[bi] = config.bln_duration[bi];
 		}
 
 		for (uint8_t i = 0; i < request->args(); i++)
@@ -3612,12 +3625,12 @@ void handle_msg(AsyncWebServerRequest *request)
 			String argName = request->argName(i);
 			for (uint8_t bi = 0; bi < 9; bi++)
 			{
-				char fieldEn[10], fieldText[10], fieldInt[12], fieldLimit[12], fieldActFor[14];
+				char fieldEn[10], fieldText[10], fieldInt[12], fieldLimit[12], fieldDuration[12];
 				snprintf(fieldEn, sizeof(fieldEn), "blnEn%d", bi + 1);
 				snprintf(fieldText, sizeof(fieldText), "blnText%d", bi + 1);
 				snprintf(fieldInt, sizeof(fieldInt), "blnInv%d", bi + 1);
 				snprintf(fieldLimit, sizeof(fieldLimit), "blnLim%d", bi + 1);
-				snprintf(fieldActFor, sizeof(fieldActFor), "blnActFor%d", bi + 1);
+				snprintf(fieldDuration, sizeof(fieldDuration), "blnDur%d", bi + 1);
 
 				if (argName == fieldEn)
 				{
@@ -3630,8 +3643,7 @@ void handle_msg(AsyncWebServerRequest *request)
 				}
 				if (argName == fieldInt)
 				{
-					// v2.1.4-lu6jmf: Alerts and News share the same preset dropdown now (seconds),
-					// so both branches read the same way - no more *60 for News.
+					// LU6JMF - Marcelo Ferreira: interval now stored in minutes.
 					if (isValidNumber(request->arg(i)))
 						blnInterval[bi] = request->arg(i).toInt();
 				}
@@ -3643,29 +3655,73 @@ void handle_msg(AsyncWebServerRequest *request)
 					else
 						blnLimit[bi] = 0;
 				}
-				if (argName == fieldActFor)
+				if (argName == fieldDuration)
 				{
-					// Blank/0 = default (72h Alerts / 24h News); else 24/36/48/72
 					if (isValidNumber(request->arg(i)))
-						blnActiveFor[bi] = request->arg(i).toInt();
-					else
-						blnActiveFor[bi] = 0;
+						blnDuration[bi] = request->arg(i).toInt();
 				}
 			}
 		}
 
 		for (uint8_t bi = 0; bi < 9; bi++)
 		{
-			// Enable was OFF and is now being turned ON: start a fresh send count
-			if (!config.bln_en[bi] && blnEn[bi])
+			const bool wasEnabled = config.bln_en[bi];
+			const bool turningOn = (!wasEnabled && blnEn[bi]);
+
+			// LU6JMF - Marcelo Ferreira:
+			// Normalize user input before comparing/persisting campaign settings.
+			uint16_t normalizedInterval = blnInterval[bi];
+			if (normalizedInterval == 0)
+				normalizedInterval = 30;
+			if (normalizedInterval > 1440)
+				normalizedInterval = 1440;
+
+			uint8_t normalizedDuration = blnDuration[bi];
+			if (normalizedDuration != 24 &&
+			    normalizedDuration != 36 &&
+			    normalizedDuration != 48 &&
+			    normalizedDuration != 72)
 			{
-				blnSentCount[bi] = 0;
+				normalizedDuration = 72;
 			}
+
+			const bool textChanged =
+				(strncmp(config.bln_text[bi], blnText[bi], sizeof(config.bln_text[bi])) != 0);
+			const bool intervalChanged = (config.bln_interval[bi] != normalizedInterval);
+			const bool limitChanged = (config.bln_limit[bi] != blnLimit[bi]);
+			const bool durationChanged = (config.bln_duration[bi] != normalizedDuration);
+
+			const bool restartCampaign =
+				blnEn[bi] &&
+				(turningOn || textChanged || intervalChanged || limitChanged || durationChanged);
+
 			config.bln_en[bi] = blnEn[bi];
 			strlcpy(config.bln_text[bi], blnText[bi], sizeof(config.bln_text[bi]));
-			config.bln_interval[bi] = blnInterval[bi];
+			config.bln_interval[bi] = normalizedInterval;
 			config.bln_limit[bi] = blnLimit[bi];
-			config.bln_activefor[bi] = blnActiveFor[bi];
+			config.bln_duration[bi] = normalizedDuration;
+
+			if (!blnEn[bi])
+			{
+				// Disabled means there is no active campaign.
+				config.bln_started_at[bi] = 0;
+				config.bln_sent_total[bi] = 0;
+				blnSentCount[bi] = 0;
+				blnRestartPending[bi] = false;
+			}
+			else if (restartCampaign)
+			{
+				// taskAPRS owns the exact calendar start and immediate TX1.
+				config.bln_started_at[bi] = 0;
+				config.bln_sent_total[bi] = 0;
+				blnSentCount[bi] = 0;
+				blnRestartPending[bi] = true;
+			}
+			else
+			{
+				// Keep web display synchronized with persistent campaign state.
+				blnSentCount[bi] = config.bln_sent_total[bi];
+			}
 		}
 
 		char *html = allocateStringMemory(256);
@@ -3791,446 +3847,407 @@ void handle_msg(AsyncWebServerRequest *request)
 	}
 	else
 	{
-		// AsyncResponseStream grows its internal cbuf incrementally (small chunks).
-		// v2.1.3-lu6jmf: bumped 28000->36000 - BLN Active-for/schedule-preview rows and the
-		// Objects section pushed real content past 28000, forcing a mid-stream realloc that
-		// could fail under heap fragmentation and truncate the page (seen live: cut off
-		// partway through Object4, Apply button + <script> with setValue() never sent).
-		AsyncResponseStream *html = request->beginResponseStream("text/html", 36000);
-		if (!html)
-		{
-			return; // Memory allocation failed
-		}
+		esp_task_wdt_reset(); // feed watchdog: handle_msg runs on the async_tcp task itself,
+		// and this is the largest page in the firmware (BLN/News x9, Objects x4, chat table) -
+		// can take long enough under heap pressure to trip the TWDT if never fed.
+		JsonDocument data;
 
-		html->print("<script type=\"text/javascript\">\n");
-		html->print("$('form').submit(function (e) {\n");
-		html->print("e.preventDefault();\n");
-		html->print("var data = new FormData(e.currentTarget);\n");
-		html->print("if(e.currentTarget.id===\"formMSG\") document.getElementById(\"submitMSG\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formBLN\") document.getElementById(\"submitBLN\").disabled=true;\n");
-		// v2.1.4-lu6jmf: formObj was missing from every branch below, so its Apply Change
-		// button never showed the confirmation popup even though the save worked fine.
-		html->print("if(e.currentTarget.id===\"formObj\") document.getElementById(\"submitObj\").disabled=true;\n");
-		// html->print("if(e.currentTarget.id===\"formChat\") document.getElementById(\"submitI2C0\").disabled=true;\n");
-		html->print("$.ajax({\n");
-		html->print("url: '/msg',\n");
-		html->print("type: 'POST',\n");
-		html->print("data: data,\n");
-		html->print("contentType: false,\n");
-		html->print("processData: false,\n");
-		html->print("success: function (data) {\n");
-		html->print("if(e.currentTarget.id===\"formMSG\") alert(\"Submited Successfully\");\n");
-		html->print("if(e.currentTarget.id===\"formBLN\") alert(\"Submited Successfully\");\n");
-		html->print("if(e.currentTarget.id===\"formObj\") { alert(\"Submited Successfully\"); document.getElementById(\"submitObj\").disabled=false; }\n");
-		html->print("},\n");
-		html->print("error: function (data) {\n");
-		html->print("if(e.currentTarget.id===\"formMSG\") alert(\"An error occurred.\");\n");
-		html->print("if(e.currentTarget.id===\"formBLN\") alert(\"An error occurred.\");\n");
-		html->print("if(e.currentTarget.id===\"formObj\") { alert(\"An error occurred.\"); document.getElementById(\"submitObj\").disabled=false; }\n");
-		html->print("}\n");
-		html->print("});\n");
-		html->print("});\n");
-
-		// html->print("if (!!window.EventSource) {";
-		// strcat(html, "var source = new EventSource('/eventMsg');");
-
-		// html->print("source.addEventListener('open', function(e) {";
-		// strcat(html, "console.log(\"Events MSG Connected\");";
-		// html->print("}, false);";
-		// html->print("source.addEventListener('error', function(e) {";
-		// strcat(html, "if (e.target.readyState != EventSource.OPEN) {";
-		// strcat(html, "console.log(\"Events MSG Disconnected\");";
-		// html->print("}\n}, false);";
-		// html->print("source.addEventListener('chatMsg', function(e) {";
-		// // strcat(html, "console.log(\"lastHeard\", e.data);";
-		// html->print("var lh=document.getElementById(\"chatMsg\");";
-		// html->print("if(lh != null) {lh.innerHTML = e.data;}";
-		// strcat(html, "}, false);\n}";
-		html->print("</script>\n");
-
-		// html->print("<h2>System Setting</h2>\n");
 		// v2.1.2-lu6jmf: discreet build marker so it is unmistakable in the browser whether a
 		// given reflash actually took. Also carries the last reset reason here (not on the
 		// main DashBoard) so it doesn't alarm non-technical users with terms like PANIC/WDT/
 		// BROWNOUT - stays available for troubleshooting without being front-and-center.
 		char buildInfo[160];
-		snprintf(buildInfo, sizeof(buildInfo), "<div style=\"text-align:right;color:#999;font-size:7pt;padding:2px 4px;\">build " __DATE__ " " __TIME__ " | reset: %s</div>\n", lastResetReasonStr);
-		html->print(buildInfo);
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formMSG\" method=\"post\">\n");
-		html->print("<table width=\"90%\">\n");
-		html->print("<th colspan=\"2\"><span><b>Message Configuration</b></span></th>\n");
-		html->print("<tr>");
+		snprintf(buildInfo, sizeof(buildInfo), "build " __DATE__ " " __TIME__ " | reset: %s", lastResetReasonStr);
+		data["buildInfo"] = buildInfo;
 
-		// Handle sync flag
-		if (config.msg_enable)
-		{
-			html->print("<td align=\"right\"><b>Enable</b></td>\n");
-			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n");
-		}
-		else
-		{
-			html->print("<td align=\"right\"><b>Enable</b></td>\n");
-			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n");
-		}
-		html->print("</tr>\n");
+		data["msgEnabled"] = config.msg_enable;
+		data["myCall"] = config.msg_mycall;
+		data["msgRf"] = config.msg_rf;
+		data["msgInet"] = config.msg_inet;
+		data["msgEncrypt"] = config.msg_encrypt;
+		data["key"] = config.msg_key;
+		data["retry"] = config.msg_retry;
+		data["timeout"] = config.msg_interval;
 
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>My Callsign:</b></td>\n");
-		char temp_buffer[1200]; // v2.1.1-lu6jmf: bumped from 512 - the Objects Interval/Symbol rows are longer than that
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input  size=\"20\" maxlength=\"9\" name=\"mycall\" type=\"text\" value=\"%s\" /> *<i>Callsign with SSID (Ex. HS5TQA-12)</i></td>\n", config.msg_mycall);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		// Handle RF and Internet flags
-		if (config.msg_rf && config.msg_inet)
-		{
-			html->print("<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"msgRf\" value=\"OK\" checked/>RF <input type=\"checkbox\" name=\"msgInet\" value=\"OK\" checked/>Internet </td></tr>\n");
-		}
-		else if (config.msg_rf)
-		{
-			html->print("<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"msgRf\" value=\"OK\" checked/>RF <input type=\"checkbox\" name=\"msgInet\" value=\"OK\" />Internet </td></tr>\n");
-		}
-		else if (config.msg_inet)
-		{
-			html->print("<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"msgRf\" value=\"OK\" />RF <input type=\"checkbox\" name=\"msgInet\" value=\"OK\" checked/>Internet </td></tr>\n");
-		}
-		else
-		{
-			html->print("<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"msgRf\" value=\"OK\" />RF <input type=\"checkbox\" name=\"msgInet\" value=\"OK\" />Internet </td></tr>\n");
-		}
-
-		html->print("<tr>");
-		if (config.msg_encrypt)
-		{
-			html->print("<td align=\"right\"><b>Encryption</b></td>\n");
-			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"encrypt\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n");
-		}
-		else
-		{
-			html->print("<td align=\"right\"><b>Encryption</b></td>\n");
-			html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"encrypt\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n");
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>AES Key:</b></td>\n");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input  size=\"40\" maxlength=\"33\" name=\"key\" type=\"text\" value=\"%s\" /> *<i>ASCII HEX 16Byte</i></td>\n", config.msg_key);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Send Retry:</b></td>\n");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input  min=\"0\" max=\"99\"   name=\"retry\" type=\"number\" value=\"%d\" /></td>\n", config.msg_retry);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Send Timeout:</b></td>\n");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input  min=\"1\" max=\"9999\"   name=\"timeout\" type=\"number\" value=\"%d\" /> Sec.</td>\n", config.msg_interval);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PATH:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"path\" id=\"path\">\n");
+		JsonArray pathOptions = data["pathOptions"].to<JsonArray>();
 		for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
 		{
-			snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" ", pthIdx);
-			html->print(temp_buffer);
-			if (config.msg_path == pthIdx)
-			{
-				html->print("selected>");
-			}
-			else
-			{
-				html->print(">");
-			}
-			snprintf(temp_buffer, sizeof(temp_buffer), "%s</option>\n", PATH_NAME[pthIdx]);
-			html->print(temp_buffer);
+			JsonObject o = pathOptions.add<JsonObject>();
+			o["value"] = pthIdx;
+			o["label"] = PATH_NAME[pthIdx];
+			o["selected"] = (config.msg_path == pthIdx);
 		}
-		html->print("</select></td>\n");
 
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitMSG'  name=\"commitMSG\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitMSG\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form><br /><br />");
+		data["chatMessageHtml"] = event_chatMessage(true);
+		esp_task_wdt_reset();
 
-		html->print("<table width=\"90%\">\n");
-		html->print("<th style=\"background-color: #070ac2;\">CHAT MESSAGE</th>\n");
+		static const uint16_t blnIntervalOpts[5] = {5, 10, 15, 30, 60};
+		static const char *blnIntervalLabels[5] = {"5 min", "10 min", "15 min", "30 min", "60 min"};
+		static const uint8_t blnDurOpts[4] = {24, 36, 48, 72};
 
-		html->print("<tr><td>\n");
-		html->print("<table id=\"chatMsg\">\n");
-		html->print(event_chatMessage(true).c_str());
-		html->print("</table>\n");
-
-		html->print("</td></tr><tr><td colspan=\"5\">");
-
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formChat\" method=\"post\">\n");
-		html->print("<table>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"left\"><b>TO:</b><input size=\"10\" name=\"toCall\" id=\"toCall\" type=\"text\" value=\"\" oninput=\"this.value=this.value.toUpperCase();\" /> <b>MSG:</b><input size=\"80\" name=\"msg\" id=\"msg\" type=\"text\" value=\"\" /></td>\n");
-		html->print("<td align=\"right\">\n");
-		html->print("<input class=\"button\" id=\"submitChat\" name=\"commitChat\" type=\"submit\" value=\"Send\"/>\n");
-		html->print("<input type=\"hidden\" name=\"commitChat\"/>\n");
-		html->print("</td></tr></table>\n");
-		html->print("</form><br />\n");
-
-		html->print("</td></tr></table><br />\n");
-
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formBLN\" method=\"post\">\n");
-		html->print("<table width=\"90%\" style=\"table-layout:fixed;border-collapse:collapse;\">\n");
-		// Bulletins BLN1-BLN9 UI - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
-		// v2.1.4-lu6jmf: BLN1-BLN4 = Alerts, NEWS5-NEWS9 = News. Numbers now match the real
-		// on-air BLN digit (BLN5NEWS..BLN9NEWS) so the UI label and the raw packet correlate 1:1.
-	html->print("<th colspan=\"7\" style=\"background-color: #070ac2;\"><span><b>Bulletins: BLN1-BLN4 Alerts, NEWS5-NEWS9</b></span></th>\n");
-		html->print("<tr><td colspan=\"7\"><i>Uses the same TX Channel/PATH as Message Configuration above.</i></td></tr>\n");
-		html->print("<tr>");
-		html->print("<td align=\"center\" style=\"width:6%;\"><b>#</b></td>");
-		html->print("<td align=\"center\" style=\"width:8%;\"><b>Enable</b></td>");
-		html->print("<td align=\"center\" style=\"width:38%;\"><b>Text</b></td>");
-		html->print("<td align=\"center\" style=\"width:14%;\"><b>Interval</b></td>");
-		html->print("<td align=\"center\" style=\"width:12%;\"><b>Limit</b><br /><i style=\"font-weight:normal;font-size:8pt;\">0 = unlimited</i></td>");
-		html->print("<td align=\"center\" style=\"width:14%;\"><b>Active for</b></td>");
-		html->print("<td align=\"center\" style=\"width:8%;\"><b>Sent</b></td>");
-		html->print("</tr>\n");
+		JsonArray blnRows = data["blnRows"].to<JsonArray>();
 		for (uint8_t bi = 0; bi < 9; bi++)
 		{
-			char schedPreview[220];
-			schedPreview[0] = 0; // v2.1.3-lu6jmf: filled for News rows, printed as its own full-width row below
-			html->print("<tr>\n");
-			if (bi < 4)
-				snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><b>BLN%d</b></td>\n", bi + 1);
-			else
-				snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><b>NEWS%d</b></td>\n", bi + 1); // v2.1.4-lu6jmf: matches the on-air BLN digit (BLN5NEWS..BLN9NEWS)
-			html->print(temp_buffer);
+			JsonObject r = blnRows.add<JsonObject>();
+			r["num"] = bi + 1;
+			r["isNews"] = (bi >= 4);
+			r["enabled"] = config.bln_en[bi];
+			r["text"] = config.bln_text[bi];
+			r["maxLen"] = STATUS_SIZE - 1;
 
-			if (config.bln_en[bi])
-			{
-				snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><label class=\"switch\"><input type=\"checkbox\" name=\"blnEn%d\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n", bi + 1);
-			}
-			else
-			{
-				snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\"><label class=\"switch\"><input type=\"checkbox\" name=\"blnEn%d\" value=\"OK\"><span class=\"slider round\"></span></label></td>\n", bi + 1);
-			}
-			html->print(temp_buffer);
+			int blnCharsLeft = (int)(STATUS_SIZE - 1) - (int)strlen(config.bln_text[bi]);
+			r["charsLeftColor"] = (blnCharsLeft < 0) ? "red" : "#2e7d32";
+			r["charsLeft"] = blnCharsLeft;
 
+			JsonArray intervalOptions = r["intervalOptions"].to<JsonArray>();
+			for (uint8_t k = 0; k < 5; k++)
 			{
-				// v2.1-lu6jmf: live 'characters left' counter (maxlength already enforced server-side too)
-				int blnCharsLeft = (int)(STATUS_SIZE - 1) - (int)strlen(config.bln_text[bi]);
-				snprintf(temp_buffer, sizeof(temp_buffer),
-					"<td style=\"text-align: left;\"><input id=\"blnTxt%d\" style=\"width:96%%;box-sizing:border-box;\" maxlength=\"%d\" name=\"blnText%d\" type=\"text\" value=\"%s\" "
-					"oninput=\"var n=this.maxLength-this.value.length;var c=document.getElementById('blnCnt%d');c.textContent=n+' left';c.style.color=(n<0)?'red':'#2e7d32';\" /><br />"
-					"<span id=\"blnCnt%d\" style=\"font-size:8pt;color:%s;\">%d left</span></td>\n",
-					bi + 1, STATUS_SIZE - 1, bi + 1, config.bln_text[bi], bi + 1, bi + 1,
-					(blnCharsLeft < 0) ? "red" : "#2e7d32", blnCharsLeft);
-				html->print(temp_buffer);
+				JsonObject o = intervalOptions.add<JsonObject>();
+				o["value"] = blnIntervalOpts[k];
+				o["label"] = blnIntervalLabels[k];
+				o["selected"] = (config.bln_interval[bi] == blnIntervalOpts[k]);
 			}
 
-			{
-				// v2.1.4-lu6jmf: Alerts and News now share the exact same closed dropdown -
-				// 5/10/15/30/60 min (300/600/900/1800/3600s). For News this is just the base T;
-				// the growing-gap math (below) still makes the real gaps grow from there.
-				static const uint16_t intervalOpts[5] = {300, 600, 900, 1800, 3600};
-				static const char *intervalLabels[5] = {"5 min", "10 min", "15 min", "30 min", "60 min"};
-				char sel[600];
-				snprintf(sel, sizeof(sel), "<td style=\"text-align: left;\"><select style=\"width:96%%;box-sizing:border-box;\" name=\"blnInv%d\">", bi + 1);
-				html->print(sel);
-				for (uint8_t k = 0; k < 5; k++)
-				{
-					snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\"%s>%s</option>",
-						intervalOpts[k], (config.bln_interval[bi] == intervalOpts[k]) ? " selected" : "", intervalLabels[k]);
-					html->print(temp_buffer);
-				}
-				html->print("</select></td>\n");
+			r["limit"] = config.bln_limit[bi];
 
-				if (bi >= 4)
-				{
-					// NEWS1-NEWS5: base T is now always one of the same 5 preset values, in seconds
-					uint16_t baseTMin = config.bln_interval[bi] / 60;
-					if (baseTMin < 5)
-						baseTMin = 5; // floor: 5 min minimum, in case of an old saved value below that
-					buildNewsSchedulePreview(schedPreview, sizeof(schedPreview), baseTMin);
-				}
+			JsonArray durationOptions = r["durationOptions"].to<JsonArray>();
+			for (uint8_t k = 0; k < 4; k++)
+			{
+				JsonObject o = durationOptions.add<JsonObject>();
+				o["value"] = blnDurOpts[k];
+				o["label"] = String(blnDurOpts[k]) + "h";
+				o["selected"] = (config.bln_duration[bi] == blnDurOpts[k]);
 			}
 
-			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input style=\"width:90%%;box-sizing:border-box;\" min=\"0\" max=\"65535\" name=\"blnLim%d\" type=\"number\" value=\"%d\" /></td>\n", bi + 1, config.bln_limit[bi]);
-			html->print(temp_buffer);
-
-			{
-				// v2.1-lu6jmf: Active for - 0 = default (72h Alerts / 24h News), else 24/36/48/72
-				static const uint8_t afOpts[5] = {0, 24, 36, 48, 72};
-				char afSel[500];
-				snprintf(afSel, sizeof(afSel), "<td style=\"text-align: left;\"><select style=\"width:96%%;box-sizing:border-box;\" name=\"blnActFor%d\">", bi + 1);
-				html->print(afSel);
-				for (uint8_t k = 0; k < 5; k++)
-				{
-					if (afOpts[k] == 0)
-						snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"0\"%s>Default (%dh)</option>",
-							(config.bln_activefor[bi] == 0) ? " selected" : "", 24);
-					else
-						snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\"%s>%dh</option>",
-							afOpts[k], (config.bln_activefor[bi] == afOpts[k]) ? " selected" : "", afOpts[k]);
-					html->print(temp_buffer);
-				}
-				html->print("</select></td>\n");
-			}
-
-			snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"center\">%u</td>\n", blnSentCount[bi]);
-			html->print(temp_buffer);
-
-			html->print("</tr>\n");
+			r["sentCount"] = blnSentCount[bi];
 
 			if (bi >= 4)
 			{
-				// v2.1.3-lu6jmf: schedule preview gets its own full-width row - the Interval
-				// column is too narrow (14%) to show it inline without getting cut off
-				snprintf(temp_buffer, sizeof(temp_buffer),
-					"<tr><td colspan=\"2\"></td><td colspan=\"5\" style=\"text-align:left;font-size:7pt;color:#555;padding-top:0;padding-bottom:4px;\">sends: %s</td></tr>\n",
-					schedPreview);
-				html->print(temp_buffer);
+				uint16_t baseTMin = config.bln_interval[bi];
+				if (baseTMin < 5)
+					baseTMin = 5;
+				char schedPreview[220];
+				buildNewsSchedulePreview(schedPreview, sizeof(schedPreview), baseTMin);
+				r["schedPreview"] = schedPreview;
 			}
 		}
-		html->print("<tr><td colspan=\"7\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitBLN' name=\"commitBLN\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitBLN\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form><br />\n");
 
-		// --- v2.1-lu6jmf: Objects (Object1-Object4) ---
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formObj\" method=\"post\">\n");
-		html->print("<table width=\"90%\" style=\"border-collapse:collapse;\">\n");
-		html->print("<th colspan=\"2\" style=\"background-color: #070ac2;\"><span><b>Objects: Object1-Object4</b></span></th>\n");
-		html->print("<tr><td colspan=\"2\"><i>Uses the same TX Channel/PATH as Message Configuration above.</i></td></tr>\n");
-		for (uint8_t oi = 0; oi < 4; oi++)
+		esp_task_wdt_reset();
+		String html_str = renderTemplate(MSG_TEMPLATE, data.as<JsonVariant>());
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks).
+		// v2.1.3-lu6jmf: bumped 28000->36000 - BLN Active-for/schedule-preview rows and the
+		// Objects section pushed real content past 28000, forcing a mid-stream realloc that
+		// could fail under heap fragmentation and truncate the page (seen live: cut off
+		// partway through Object4, Apply button + <script> with setValue() never sent).
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
+		if (!html)
 		{
-			snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td colspan=\"2\" style=\"background-color:#eef0f4;\"><b>Object%d</b></td></tr>\n", oi + 1);
-			html->print(temp_buffer);
-
-			snprintf(temp_buffer, sizeof(temp_buffer),
-				"<tr><td align=\"right\"><b>Enable:</b></td><td align=\"left\"><label class=\"switch\"><input type=\"checkbox\" name=\"objEn%d\" value=\"OK\"%s><span class=\"slider round\"></span></label></td></tr>\n",
-				oi + 1, config.obj_en[oi] ? " checked" : "");
-			html->print(temp_buffer);
-
-			snprintf(temp_buffer, sizeof(temp_buffer),
-				"<tr><td align=\"right\"><b>Item/Obj Name:</b></td><td align=\"left\"><input maxlength=\"9\" name=\"objName%d\" type=\"text\" value=\"%s\" />%s</td></tr>\n",
-				oi + 1, config.obj_name[oi], (oi == 0) ? " <i>3-9 character</i>" : "");
-			html->print(temp_buffer);
-
-			snprintf(temp_buffer, sizeof(temp_buffer),
-				"<tr><td align=\"right\"><b>Latitude / Longitude:</b></td><td align=\"left\">"
-				// v2.1.4-lu6jmf: step="any" - "0.00001" rejected 6-decimal GPS coords pasted straight
-				// from a phone/map (e.g. -32.474722), since that isn't an exact multiple of 0.00001
-				"<input style=\"width:120px;\" step=\"any\" name=\"objLat%d\" type=\"number\" value=\"%.6f\" /> "
-				"<input style=\"width:120px;\" step=\"any\" name=\"objLon%d\" type=\"number\" value=\"%.6f\" />%s</td></tr>\n",
-				oi + 1, config.obj_lat[oi], oi + 1, config.obj_lon[oi], (oi == 0) ? " <i>independent of the digi's own position</i>" : "");
-			html->print(temp_buffer);
-
-			{
-				// Symbol picker: same widget/pattern as Station Symbol (IGATE/DIGI/Tracker), generalized
-				// via /symbol?sel=N + setValue(sel,symbol,table) - Object1-4 use sel 0-3 in this page's own script.
-				char objTableCh = config.obj_symbol[oi][0] ? config.obj_symbol[oi][0] : '/';
-				char objSymCh = config.obj_symbol[oi][1] ? config.obj_symbol[oi][1] : 'r';
-				int objTableNum = (objTableCh == '\\') ? 2 : 1;
-				snprintf(temp_buffer, sizeof(temp_buffer),
-					"<tr><td align=\"right\"><b>Symbol:</b></td><td align=\"left\">Table:"
-					"<input maxlength=\"1\" size=\"1\" id=\"obj%dTable\" name=\"obj%dTable\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" oninput=\"objSymRefresh(%d);\" /> Symbol:"
-					"<input maxlength=\"1\" size=\"1\" id=\"obj%dSymbol\" name=\"obj%dSymbol\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" oninput=\"objSymRefresh(%d);\" /> "
-					"<img border=\"1\" style=\"vertical-align: middle;\" id=\"obj%dImgSymbol\" onclick=\"openWindowSymbolObj(%d);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-%d.png\">%s</td></tr>\n",
-					oi + 1, oi + 1, objTableCh, oi, oi + 1, oi + 1, objSymCh, oi, oi + 1, oi, (int)objSymCh, objTableNum,
-					(oi == 0) ? " <i>*Click icon or type Table/Symbol directly</i>" : "");
-				html->print(temp_buffer);
-			}
-
-			{
-				int objCharsLeft = (int)(STATUS_SIZE - 1) - (int)strlen(config.obj_text[oi]);
-				snprintf(temp_buffer, sizeof(temp_buffer),
-					"<tr><td align=\"right\"><b>Text/Comment:</b></td><td align=\"left\"><input style=\"width:96%%;box-sizing:border-box;\" maxlength=\"%d\" name=\"objText%d\" type=\"text\" value=\"%s\" "
-					"oninput=\"var n=this.maxLength-this.value.length;var c=document.getElementById('objCnt%d');c.textContent=n+' left';c.style.color=(n<0)?'red':'#2e7d32';\" /><br />"
-					"<span id=\"objCnt%d\" style=\"font-size:8pt;color:%s;\">%d left</span>%s</td></tr>\n",
-					STATUS_SIZE - 1, oi + 1, config.obj_text[oi], oi + 1, oi + 1, (objCharsLeft < 0) ? "red" : "#2e7d32", objCharsLeft,
-					(oi == 0) ? " <i style=\"font-size:8pt;\">(own buffer, not shared)</i>" : "");
-				html->print(temp_buffer);
-			}
-
-			{
-				bool fixedMode = (config.obj_mode[oi] == 0);
-				static const uint16_t objIvlOpts[3] = {900, 1800, 3600};
-				static const char *objIvlLabels[3] = {"15 min", "30 min", "60 min"};
-				static const uint8_t objAfOpts[4] = {24, 36, 48, 72};
-				snprintf(temp_buffer, sizeof(temp_buffer),
-					"<tr><td align=\"right\"><b>Interval:</b></td><td align=\"left\">"
-					"<input type=\"radio\" name=\"objMode%d\" value=\"0\"%s> Fixed: <select name=\"objInv%d\">",
-					oi + 1, fixedMode ? " checked" : "", oi + 1);
-				html->print(temp_buffer);
-				for (uint8_t k = 0; k < 3; k++)
-				{
-					snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\"%s>%s</option>",
-						objIvlOpts[k], (config.obj_interval[oi] == objIvlOpts[k]) ? " selected" : "", objIvlLabels[k]);
-					html->print(temp_buffer);
-				}
-				snprintf(temp_buffer, sizeof(temp_buffer),
-					"</select> + max sends <input style=\"width:60px;\" min=\"0\" max=\"65535\" name=\"objLim%d\" type=\"number\" value=\"%d\" /><br />"
-					"<input type=\"radio\" name=\"objMode%d\" value=\"1\"%s> Active for: <select name=\"objActFor%d\">",
-					oi + 1, config.obj_limit[oi], oi + 1, fixedMode ? "" : " checked", oi + 1);
-				html->print(temp_buffer);
-				for (uint8_t k = 0; k < 4; k++)
-				{
-					snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\"%s>%dh</option>",
-						objAfOpts[k], (config.obj_activefor[oi] == objAfOpts[k]) ? " selected" : "", objAfOpts[k]);
-					html->print(temp_buffer);
-				}
-				if (oi == 0)
-					html->print("</select><br /><i>either mode (Permanent off): never exceeds 72h total send time</i></td></tr>\n");
-				else
-					html->print("</select></td></tr>\n");
-			}
-
-			snprintf(temp_buffer, sizeof(temp_buffer),
-				"<tr><td align=\"right\"><b>Permanent / Never disable:</b></td><td align=\"left\"><label class=\"switch\"><input type=\"checkbox\" name=\"objPerm%d\" value=\"OK\"%s><span class=\"slider round\"></span></label>%s</td></tr>\n",
-				oi + 1, config.obj_permanent[oi] ? " checked" : "", (oi == 0) ? " <i>if checked, ignores Interval and the 72h cap entirely</i>" : "");
-			html->print(temp_buffer);
-
-			html->print((oi == 0)
-				? "<tr><td align=\"right\"><b>Timestamp:</b></td><td align=\"left\"><i>always UTC (zulu), automatic - not user configurable</i></td></tr>\n"
-				: "<tr><td align=\"right\"><b>Timestamp:</b></td><td align=\"left\"><i>always UTC, automatic</i></td></tr>\n");
+			return; // Memory allocation failed
 		}
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitObj' name=\"commitObj\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitObj\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form><br />\n");
-
-		html->print("<script type=\"text/javascript\">\n");
-		html->print("function openWindowSymbolObj(sel) {\n");
-		html->print("window.open(\"/symbol?sel=\"+sel.toString(), null, \"height=400,width=400,status=no,toolbar=no,menubar=no,location=no\");\n");
-		html->print("}\n");
-		html->print("function setValue(sel,symbol,table) {\n");
-		html->print("var txtsymbol=document.getElementById('obj'+(sel+1)+'Symbol');\n");
-		html->print("var txttable=document.getElementById('obj'+(sel+1)+'Table');\n");
-		html->print("var imgicon=document.getElementById('obj'+(sel+1)+'ImgSymbol');\n");
-		html->print("txtsymbol.value = String.fromCharCode(symbol);\n");
-		html->print("if(table==1){\n txttable.value='/';\n");
-		html->print("}else if(table==2){\n txttable.value='\\\\';\n}\n");
-		html->print("imgicon.src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n");
-		html->print("}\n");
-		html->print("function objSymRefresh(sel) {\n");
-		html->print("var txtsymbol=document.getElementById('obj'+(sel+1)+'Symbol');\n");
-		html->print("var txttable=document.getElementById('obj'+(sel+1)+'Table');\n");
-		html->print("var imgicon=document.getElementById('obj'+(sel+1)+'ImgSymbol');\n");
-		html->print("var sym=txtsymbol.value.charCodeAt(0);\n");
-		html->print("var tbl=(txttable.value=='\\\\')?2:1;\n");
-		html->print("if(!isNaN(sym)&&sym>0){\n imgicon.src = \"http://aprs.nakhonthai.net/symbols/icons/\"+sym.toString()+'-'+tbl.toString()+'.png';\n}\n");
-		html->print("}\n");
-		html->print("</script>\n");
-
+		html->print(html_str);
 		html->addHeader("MSG", "content");
 		html->addHeader("Cache-Control", "no-cache");
 		request->send(html);
 	}
 }
+
+static const char *MOD_TEMPLATE = R"MODHTML(<script type="text/javascript">
+$('form').submit(function (e) {
+e.preventDefault();
+var data = new FormData(e.currentTarget);
+if(e.currentTarget.id==="formUART0") document.getElementById("submitURAT0").disabled=true;
+if(e.currentTarget.id==="formUART1") document.getElementById("submitURAT1").disabled=true;
+if(e.currentTarget.id==="formUART1") document.getElementById("submitURAT1").disabled=true;
+if(e.currentTarget.id==="formGNSS") document.getElementById("submitGNSS").disabled=true;
+if(e.currentTarget.id==="formMODBUS") document.getElementById("submitMODBUS").disabled=true;
+if(e.currentTarget.id==="formTNC") document.getElementById("submitTNC").disabled=true;
+if(e.currentTarget.id==="formRF") document.getElementById("submitRF").disabled=true;
+if(e.currentTarget.id==="formI2C0") document.getElementById("submitI2C0").disabled=true;
+if(e.currentTarget.id==="formI2C1") document.getElementById("submitI2C1").disabled=true;
+if(e.currentTarget.id==="formCOUNT0") document.getElementById("submitCOUNT0").disabled=true;
+if(e.currentTarget.id==="formCOUNT1") document.getElementById("submitCOUNT1").disabled=true;
+{{#if pppos}}if(e.currentTarget.id==="formPPPoS") document.getElementById("submitPPPoS").disabled=true;
+{{/if}}$.ajax({
+url: '/mod',
+type: 'POST',
+data: data,
+contentType: false,
+processData: false,
+success: function (data) {
+alert("Submited Successfully\nRequire hardware REBOOT!");
+},
+error: function (data) {
+alert("An error occurred.");
+}
+});
+});
+</script>
+<table style="text-align:unset;border-width:0px;background:unset"><tr style="background:unset;vertical-align:top"><td width="32%" style="border:unset;">
+<form accept-charset="UTF-8" action="#" class="form-horizontal" id="fromUART0" method="post">
+<table>
+<th colspan="2"><span><b>UART0 Modify</b></span></th>
+<tr>
+<td align="right"><b>Enable</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if uart0En}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td align="right"><b>RX GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="rx" type="number" value="{{uart0Rx}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>TX GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="tx" type="number" value="{{uart0Tx}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>RTS/DE GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}"  name="rts" type="number" value="{{uart0Rts}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>Baudrate:</b></td>
+<td style="text-align: left;">
+<select name="baudrate" id="baudrate">
+{{#each uart0Baud}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}} </option>
+{{/each}}</select> bps
+</td>
+</tr>
+<tr><td colspan="2" align="right">
+<input class="button" id="submitUART0" name="commitUART0" type="submit" value="Apply" maxlength="80"/>
+<input type="hidden" name="commitUART0"/>
+</td></tr></table>
+</form><br />
+</td><td width="32%" style="border:unset;">
+<form accept-charset="UTF-8" action="#" class="form-horizontal" id="fromUART1" method="post">
+<table>
+<th colspan="2"><span><b>UART1 Modify</b></span></th>
+<tr>
+<td align="right"><b>Enable</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if uart1En}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td align="right"><b>RX GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="rx" type="number" value="{{uart1Rx}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>TX GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="tx" type="number" value="{{uart1Tx}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>RTS/DE GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}"  name="rts" type="number" value="{{uart1Rts}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>Baudrate:</b></td>
+<td style="text-align: left;">
+<select name="baudrate" id="baudrate">
+{{#each uart1Baud}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}} </option>
+{{/each}}</select> bps
+</td>
+</tr>
+<tr><td colspan="2" align="right">
+<input class="button" id="submitUART1" name="commitUART1" type="submit" value="Apply" maxlength="80"/>
+<input type="hidden" name="commitUART1"/>
+</td></tr></table>
+</form><br />
+</td></tr></table>
+<table style="text-align:unset;border-width:0px;background:unset"><tr style="background:unset;vertical-align:top"><td width="50%" style="border:unset;vertical-align:top">
+<form accept-charset="UTF-8" action="#" class="form-horizontal" id="fromRF" method="post">
+<table>
+<th colspan="2"><span><b>RF GPIO Modify</b></span></th>
+<tr>
+<tr>
+<td align="right"><b>ADC Attenuation:</b></td>
+<td style="text-align: left;">
+<select name="atten" id="atten">
+{{#each attenOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}} </option>
+{{/each}}</select> DC-Offset: {{adcOffset}} mV
+</td>
+</tr>
+<tr>
+<td align="right"><b>UART Baudrate:</b></td>
+<td style="text-align: left;">
+<select name="baudrate" id="baudrate">
+{{#each rfBaud}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}} </option>
+{{/each}}</select> bps
+</td>
+</tr>
+<tr>
+<td align="right"><b>UART RX GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="rx" type="number" value="{{rfRx}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>UART TX GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="tx" type="number" value="{{rfTx}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>PD GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}"  name="pd" type="number" value="{{rfPdGpio}}" /> Active:<input type="radio" name="pd_active" value="0" {{#if rfPdHigh}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="pd_active" value="1" {{#if rfPdHigh}}checked="checked"{{/if}}/>HIGH </td>
+</tr>
+<tr>
+<td align="right"><b>H/L GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}"  name="pwr" type="number" value="{{rfPwrGpio}}" /> Active:<input type="radio" name="pwr_active" value="0" {{#if rfPwrHigh}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="pwr_active" value="1" {{#if rfPwrHigh}}checked="checked"{{/if}}/>HIGH </td>
+</tr>
+<tr>
+<td align="right"><b>SQL GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}"  name="sql" type="number" value="{{rfSqlGpio}}" /> Active:<input type="radio" name="sql_active" value="0" {{#if rfSqlHigh}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="sql_active" value="1" {{#if rfSqlHigh}}checked="checked"{{/if}}/>HIGH </td>
+</tr>
+<tr>
+<td align="right"><b>PTT GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}"  name="ptt" type="number" value="{{rfPttGpio}}" /> Active:<input type="radio" name="ptt_active" value="0" {{#if rfPttHigh}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="ptt_active" value="1" {{#if rfPttHigh}}checked="checked"{{/if}}/>HIGH </td>
+</tr>
+<tr><td colspan="2" align="right">
+<input class="button" id="submitRF" name="commitRF" type="submit" value="Apply" maxlength="80"/>
+<input type="hidden" name="commitRF"/>
+</td></tr></table>
+</form>
+</td></tr></table>
+<br />
+<table style="text-align:unset;border-width:0px;background:unset"><tr style="background:unset;vertical-align:top"><td width="50%" style="border:unset;vertical-align:top">
+<form accept-charset="UTF-8" action="#" class="form-horizontal" id="fromTNC" method="post">
+<table>
+<th colspan="2"><span><b>External TNC Modify</b></span></th>
+<tr>
+<td align="right"><b>Enable</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if tncEn}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td align="right"><b>PORT:</b></td>
+<td style="text-align: left;">
+<select name="channel" id="channel">
+{{#each tncPortOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}} </option>
+{{/each}}</select>
+</td>
+</tr>
+<tr>
+<td align="right"><b>MODE:</b></td>
+<td style="text-align: left;">
+<select name="mode" id="mode">
+{{#each tncModeOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}} </option>
+{{/each}}</select>
+</td>
+</tr>
+<tr><td colspan="2" align="right">
+<input class="button" id="submitTNC" name="commitTNC" type="submit" value="Apply" maxlength="80"/>
+<input type="hidden" name="commitTNC"/>
+</td></tr></table>
+</form>
+<form accept-charset="UTF-8" action="#" class="form-horizontal" id="fromTCPKISS" method="post">
+<table>
+<th colspan="2"><span><b>TCP KISS Server Modify</b></span></th>
+<tr>
+<td align="right"><b>Enable</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if tcpKissEn}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td align="right"><b>PORT 1:</b></td>
+<td style="text-align: left;"><input type="text" name="port1" value="{{tcpKissPort1}}" maxlength="5" size="6"/></td>
+</tr>
+<tr>
+<td align="right"><b>PORT 2:</b></td>
+<td style="text-align: left;"><input type="text" name="port2" value="{{tcpKissPort2}}" maxlength="5" size="6"/></td>
+</tr>
+<tr><td colspan="2" align="center"><b>Status:</b></td></tr>
+<tr><td colspan="2" align="center">{{tcpKissStatus1}}</td></tr>
+<tr><td colspan="2" align="center">{{tcpKissStatus2}}</td></tr>
+<tr><td colspan="2" style="word-wrap:break-word;white-space:normal;"><p style="font-size:9pt;margin:4px 0;">Lets PC software (Xastir, APRSIS32, etc) use this device as a KISS TNC over the local network - no cable needed. No password - anyone on this WiFi network can transmit through the radio via these ports while enabled. Port number changes need a reboot to take effect; the Enable switch does not.</p></td></tr>
+<tr><td colspan="2" align="right">
+<input class="button" id="submitTCPKISS" name="commitTCPKISS" type="submit" value="Apply" maxlength="80"/>
+<input type="hidden" name="commitTCPKISS"/>
+</td></tr></table>
+</form>
+</td></tr></table>
+<br />
+<table style="text-align:unset;border-width:0px;background:unset"><tr style="background:unset;vertical-align:top"><td width="50%" style="border:unset;vertical-align:top">
+<form id='formATCommand' method="POST" action='#' enctype='multipart/form-data'>
+<table>
+<th colspan="2"><span><b>AT-COMMAND CHANNEL</b></span></th>
+<tr>
+<td width="150" align="right"><b>MQTT:</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="mqtt" value="OK" {{#if cmdMqtt}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td align="right"><b>MESSAGE:</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="msg" value="OK" {{#if cmdMsg}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td align="right"><b>BLUETOOTH:</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="bluetooth" value="OK" {{#if cmdBluetooth}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td align="right"><b>UART PORT:</b></td>
+<td style="text-align: left;">
+<select name="uart" id="cmdUart">
+{{#each cmdUartOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}} </option>
+{{/each}}</select>
+</td>
+</tr>
+<tr><td colspan="2" align="right">
+<div><button class="button" type='submit' id='submitCMD'  name="commit"> Apply Change </button></div>
+<input type="hidden" name="commitCMD"/>
+</td></tr></table><br />
+</form><br />
+{{#if pppos}}<br />
+<table style="text-align:unset;border-width:0px;background:unset"><tr style="background:unset;vertical-align:top"><td width="50%" style="border:unset;vertical-align:top">
+<form id='formPPPoS' method="POST" action='#' enctype='multipart/form-data'>
+<table>
+<th colspan="2"><span><b>PPP Over Serial (GSM/4G-LTE)</b></span></th>
+<tr>
+<td align="right"><b>Enable:</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="pppEn" value="OK" {{#if pppEn}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<td align="right"><b>GNSS:</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="pppGnss" value="OK" {{#if pppGnss}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td align="right"><b>NAPT:</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="pppNapt" value="OK" {{#if pppNapt}}checked{{/if}}><span class="slider round"></span></label> *WiFi NAT</td>
+</tr>
+<tr>
+<td align="right"><b>APN:</b></td>
+<td style="text-align: left;"><input maxlength="20" name="pppAPN" type="text" value="{{pppApn}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>PIN:</b></td>
+<td style="text-align: left;"><input min="0" max="999999" name="pppPin" type="number" value="{{pppPin}}" /> <i>*PIN of SIM</i></td>
+</tr>
+<tr>
+<td align="right"><b>RX GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="50" name="rx" type="number" value="{{pppRx}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>TX GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="50" name="tx" type="number" value="{{pppTx}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>RESET GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="50"  name="rst" type="number" value="{{pppRstGpio}}" /> Active:<input type="radio" name="rst_active" value="0" {{#if pppRstHigh}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="rst_active" value="1" {{#if pppRstHigh}}checked="checked"{{/if}}/>HIGH </td>
+</tr>
+<td align="right"><b>RESET DELAY:</b></td>
+<td style="text-align: left;"><input min="0" max="999999" name="rstDly" type="number" value="{{pppRstDelay}}" /> mSec.</td>
+</tr>
+<tr>
+<tr>
+<td align="right"><b>PORT:</b></td>
+<td style="text-align: left;">
+<select name="port" id="port">
+{{#each pppPortOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}} </option>
+{{/each}}</select>
+</td>
+</tr>
+<tr>
+<td align="right"><b>Baudrate:</b></td>
+<td style="text-align: left;">
+<select name="baudrate" id="baudrate">
+{{#each pppBaud}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}} </option>
+{{/each}}</select> bps
+</td>
+</tr>
+<tr><td colspan="2" align="right">
+<div><button class="button" type='submit' id='submitPPPoS'  name="commitPPPoS"> Apply Change </button></div>
+<input type="hidden" name="commitPPPoS"/>
+</td></tr></table><br />
+</form>
+</td></tr></table>
+{{/if}})MODHTML";
 
 void handle_mod(AsyncWebServerRequest *request)
 {
@@ -4812,772 +4829,85 @@ void handle_mod(AsyncWebServerRequest *request)
 #endif
 	else
 	{
-		// Streamed response: avoids a single large calloc() for the whole page
-		// (same fix already applied to handle_igate/wx/sensor/etc after we
-		// confirmed via live heap-integrity diagnostics that the single big
-		// contiguous allocation was the reproducible trigger for a heap
-		// corruption assert under real traffic).
-		AsyncResponseStream *html = request->beginResponseStream("text/html", 55000);
-		if (!html)
-		{
-			request->send(500, "text/html", "Memory allocation failed");
-			return;
-		}
-
-		// Initialize the HTML string with the JavaScript code
-		html->print("<script type=\"text/javascript\">\n");
-		html->print("$('form').submit(function (e) {\n");
-		html->print("e.preventDefault();\n");
-		html->print("var data = new FormData(e.currentTarget);\n");
-		html->print("if(e.currentTarget.id===\"formUART0\") document.getElementById(\"submitURAT0\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formUART1\") document.getElementById(\"submitURAT1\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formUART1\") document.getElementById(\"submitURAT1\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formGNSS\") document.getElementById(\"submitGNSS\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formMODBUS\") document.getElementById(\"submitMODBUS\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formTNC\") document.getElementById(\"submitTNC\").disabled=true;\n");
-		// html->print("if(e.currentTarget.id===\"formONEWIRE\") document.getElementById(\"submitONEWIRE\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formRF\") document.getElementById(\"submitRF\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formI2C0\") document.getElementById(\"submitI2C0\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formI2C1\") document.getElementById(\"submitI2C1\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formCOUNT0\") document.getElementById(\"submitCOUNT0\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formCOUNT1\") document.getElementById(\"submitCOUNT1\").disabled=true;\n");
-#ifdef PPPOS
-		html->print("if(e.currentTarget.id===\"formPPPoS\") document.getElementById(\"submitPPPoS\").disabled=true;\n");
-#endif
-		html->print("$.ajax({\n");
-		html->print("url: '/mod',\n");
-		html->print("type: 'POST',\n");
-		html->print("data: data,\n");
-		html->print("contentType: false,\n");
-		html->print("processData: false,\n");
-		html->print("success: function (data) {\n");
-		html->print("alert(\"Submited Successfully\\nRequire hardware REBOOT!\");\n");
-		html->print("},\n");
-		html->print("error: function (data) {\n");
-		html->print("alert(\"An error occurred.\");\n");
-		html->print("}\n");
-		html->print("});\n");
-		html->print("});\n");
-		html->print("</script>\n");
-
-		html->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"32%\" style=\"border:unset;\">\n");
-		// html->print("<h2>System Setting</h2>\n");
-		/**************UART0(USB) Modify******************/
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromUART0\" method=\"post\">\n");
-		html->print("<table>\n");
 		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
 		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
-		html->print("<th colspan=\"2\"><span><b>UART0 Modify</b></span></th>\n");
-		html->print("<tr>\n");
+		JsonDocument data;
+		int gpioMax = GPIO_NUM_MAX;
+		data["gpioMax"] = gpioMax;
 
-		char enFlage[20] = "";
-		if (config.uart0_enable)
-			strcpy(enFlage, "checked");
-		html->print("<td align=\"right\"><b>Enable</b></td>\n");
-		{
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(enFlage) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", enFlage);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-		}
-		html->print("</tr>\n");
+		data["uart0En"] = config.uart0_enable;
+		data["uart0Rx"] = config.uart0_rx_gpio;
+		data["uart0Tx"] = config.uart0_tx_gpio;
+		data["uart0Rts"] = config.uart0_rts_gpio;
+		data["uart1En"] = config.uart1_enable;
+		data["uart1Rx"] = config.uart1_rx_gpio;
+		data["uart1Tx"] = config.uart1_tx_gpio;
+		data["uart1Rts"] = config.uart1_rts_gpio;
+		data["rfBaudSel"] = config.rf_baudrate;
 
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>RX GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *rx_gpio_str = StringToCharPtr(String(config.uart0_rx_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"rx\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(rx_gpio_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"rx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rx_gpio_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(rx_gpio_str);
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>TX GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *tx_gpio_str = StringToCharPtr(String(config.uart0_tx_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"tx\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(tx_gpio_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"tx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, tx_gpio_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(tx_gpio_str);
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>RTS/DE GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *rts_gpio_str = StringToCharPtr(String(config.uart0_rts_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\"  name=\"rts\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(rts_gpio_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"rts\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rts_gpio_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(rts_gpio_str);
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Baudrate:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"baudrate\" id=\"baudrate\">\n");
+		JsonArray uart0Baud = data["uart0Baud"].to<JsonArray>();
+		JsonArray uart1Baud = data["uart1Baud"].to<JsonArray>();
+		JsonArray rfBaud = data["rfBaud"].to<JsonArray>();
 		for (int i = 0; i < 13; i++)
 		{
-			char *baudrate_str = StringToCharPtr(String(baudrate[i]));
-			if (config.uart0_baudrate == baudrate[i])
-			{
-				char *temp_html = allocateStringMemory(strlen("<option value=\"\" selected>  </option>\n") + 2 * strlen(baudrate_str) + 1);
-				if (temp_html)
-				{
-					sprintf(temp_html, "<option value=\"%s\" selected>%s </option>\n", baudrate_str, baudrate_str);
-					html->print(temp_html);
-					free(temp_html);
-				}
-				else
-				{
-					log_e("MOD page: temp_html allocation failed, skipping field");
-				}
-			}
-			else
-			{
-				char *temp_html = allocateStringMemory(strlen("<option value=\"\" >  </option>\n") + 2 * strlen(baudrate_str) + 1);
-				if (temp_html)
-				{
-					sprintf(temp_html, "<option value=\"%s\" >%s </option>\n", baudrate_str, baudrate_str);
-					html->print(temp_html);
-					free(temp_html);
-				}
-				else
-				{
-					log_e("MOD page: temp_html allocation failed, skipping field");
-				}
-			}
-			free(baudrate_str);
+			JsonObject o0 = uart0Baud.add<JsonObject>();
+			o0["value"] = baudrate[i];
+			o0["selected"] = (config.uart0_baudrate == baudrate[i]);
+			JsonObject o1 = uart1Baud.add<JsonObject>();
+			o1["value"] = baudrate[i];
+			o1["selected"] = (config.uart1_baudrate == baudrate[i]);
+			JsonObject o2 = rfBaud.add<JsonObject>();
+			o2["value"] = baudrate[i];
+			o2["selected"] = (config.rf_baudrate == baudrate[i]);
 		}
-		html->print("</select> bps\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<input class=\"button\" id=\"submitUART0\" name=\"commitUART0\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		html->print("<input type=\"hidden\" name=\"commitUART0\"/>\n");
-		html->print("</td></tr></table>\n");
 
-		html->print("</form><br />\n");
-		html->print("</td><td width=\"32%\" style=\"border:unset;\">");
-
-		/**************UART1 Modify******************/
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromUART1\" method=\"post\">\n");
-		html->print("<table>\n");
-		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
-		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
-		html->print("<th colspan=\"2\"><span><b>UART1 Modify</b></span></th>\n");
-		html->print("<tr>");
-
-		if (config.uart1_enable)
-			strcpy(enFlage, "checked");
-		else
-			strcpy(enFlage, "");
-		html->print("<td align=\"right\"><b>Enable</b></td>\n");
-		{
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(enFlage) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", enFlage);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>RX GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *rx_gpio_str = StringToCharPtr(String(config.uart1_rx_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"rx\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(rx_gpio_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"rx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rx_gpio_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(rx_gpio_str);
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>TX GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *tx_gpio_str = StringToCharPtr(String(config.uart1_tx_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"tx\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(tx_gpio_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"tx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, tx_gpio_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(tx_gpio_str);
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>RTS/DE GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *rts_gpio_str = StringToCharPtr(String(config.uart1_rts_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\"  name=\"rts\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(rts_gpio_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"rts\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rts_gpio_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(rts_gpio_str);
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Baudrate:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"baudrate\" id=\"baudrate\">\n");
-		for (int i = 0; i < 13; i++)
-		{
-			char *baudrate_str = StringToCharPtr(String(baudrate[i]));
-			if (config.uart1_baudrate == baudrate[i])
-			{
-				char *temp_html = allocateStringMemory(strlen("<option value=\"\" selected>  </option>\n") + 2 * strlen(baudrate_str) + 1);
-				if (temp_html)
-				{
-					sprintf(temp_html, "<option value=\"%s\" selected>%s </option>\n", baudrate_str, baudrate_str);
-					html->print(temp_html);
-					free(temp_html);
-				}
-				else
-				{
-					log_e("MOD page: temp_html allocation failed, skipping field");
-				}
-			}
-			else
-			{
-				char *temp_html = allocateStringMemory(strlen("<option value=\"\" >  </option>\n") + 2 * strlen(baudrate_str) + 1);
-				if (temp_html)
-				{
-					sprintf(temp_html, "<option value=\"%s\" >%s </option>\n", baudrate_str, baudrate_str);
-					html->print(temp_html);
-					free(temp_html);
-				}
-				else
-				{
-					log_e("MOD page: temp_html allocation failed, skipping field");
-				}
-			}
-			free(baudrate_str);
-		}
-		html->print("</select> bps\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<input class=\"button\" id=\"submitUART1\" name=\"commitUART1\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		html->print("<input type=\"hidden\" name=\"commitUART1\"/>\n");
-		html->print("</td></tr></table>\n");
-
-		html->print("</form><br />\n");
-		// html->print("</td><td width=\"32%\" style=\"border:unset;\">");
-
-		/**************UART2 Modify******************/
-		// html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromUART2\" method=\"post\">\n");
-		// html += "<table>\n";
-		// html += "<th colspan=\"2\"><span><b>UART2 Modify</b></span></th>\n";
-		// html += "<tr>";
-
-		// enFlage = "";
-		// if (config.uart2_enable)
-		// 	enFlage = "checked";
-		// html += "<td align=\"right\"><b>Enable</b></td>\n";
-		// html += "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" " + enFlage + "><span class=\"slider round\"></span></label></td>\n";
-		// html += "</tr>\n";
-
-		// html += "<tr>\n";
-		// html += "<td align=\"right\"><b>RX GPIO:</b></td>\n";
-		// html += "<td style=\"text-align: left;\"><input min=\"-1\" max=\""+String(GPIO_NUM_MAX)+"\" name=\"rx\" type=\"number\" value=\"" + String(config.uart2_rx_gpio) + "\" /></td>\n";
-		// html += "</tr>\n";
-
-		// html += "<tr>\n";
-		// html += "<td align=\"right\"><b>TX GPIO:</b></td>\n";
-		// html += "<td style=\"text-align: left;\"><input min=\"-1\" max=\""+String(GPIO_NUM_MAX)+"\" name=\"tx\" type=\"number\" value=\"" + String(config.uart2_tx_gpio) + "\" /></td>\n";
-		// html += "</tr>\n";
-
-		// html += "<tr>\n";
-		// html += "<td align=\"right\"><b>RTS/DE GPIO:</b></td>\n";
-		// html += "<td style=\"text-align: left;\"><input min=\"-1\" max=\""+String(GPIO_NUM_MAX)+"\"  name=\"rts\" type=\"number\" value=\"" + String(config.uart2_rts_gpio) + "\" /></td>\n";
-		// html += "</tr>\n";
-
-		// html += "<tr>\n";
-		// html += "<td align=\"right\"><b>Baudrate:</b></td>\n";
-		// html += "<td style=\"text-align: left;\">\n";
-		// html += "<select name=\"baudrate\" id=\"baudrate\">\n";
-		// for (int i = 0; i < 13; i++)
-		// {
-		// 	if (config.uart2_baudrate == baudrate[i])
-		// 		html += "<option value=\"" + String(baudrate[i]) + "\" selected>" + String(baudrate[i]) + " </option>\n";
-		// 	else
-		// 		html += "<option value=\"" + String(baudrate[i]) + "\" >" + String(baudrate[i]) + " </option>\n";
-		// }
-		// html += "</select> bps\n";
-		// html += "</td>\n";
-		// html += "</tr>\n";
-		// html += "<tr><td colspan=\"2\" align=\"right\">\n";
-		// html += "<input class=\"btn btn-primary\" id=\"submitUART2\" name=\"commitUART2\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n";
-		// html += "<input type=\"hidden\" name=\"commitUART2\"/>\n";
-		// html += "</td></tr></table>\n";
-
-		// html += "</form><br />\n";
-		// html += "</td></tr></table>\n";
-
-		html->print("</td></tr></table>\n");
-
-		html->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">");
-		/**************RF GPIO******************/
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromRF\" method=\"post\">\n");
-		html->print("<table>\n");
-		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
-		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
-		html->print("<th colspan=\"2\"><span><b>RF GPIO Modify</b></span></th>\n");
-		html->print("<tr>");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>ADC Attenuation:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"atten\" id=\"atten\">\n");
+		JsonArray attenOptions = data["attenOptions"].to<JsonArray>();
 		for (int i = 0; i < 5; i++)
 		{
-			char *i_str = StringToCharPtr(String(i));
-			char *atten_str = StringToCharPtr(String(ADC_ATTEN[i]));
-			if (config.adc_atten == i)
-			{
-				char *temp_html = allocateStringMemory(strlen("<option value=\"\" selected>  </option>\n") + strlen(i_str) + strlen(atten_str) + 1);
-				if (temp_html)
-				{
-					sprintf(temp_html, "<option value=\"%s\" selected>%s </option>\n", i_str, atten_str);
-					html->print(temp_html);
-					free(temp_html);
-				}
-				else
-				{
-					log_e("MOD page: temp_html allocation failed, skipping field");
-				}
-			}
-			else
-			{
-				char *temp_html = allocateStringMemory(strlen("<option value=\"\" >  </option>\n") + strlen(i_str) + strlen(atten_str) + 1);
-				if (temp_html)
-				{
-					sprintf(temp_html, "<option value=\"%s\" >%s </option>\n", i_str, atten_str);
-					html->print(temp_html);
-					free(temp_html);
-				}
-				else
-				{
-					log_e("MOD page: temp_html allocation failed, skipping field");
-				}
-			}
-			free(i_str);
-			free(atten_str);
+			JsonObject o = attenOptions.add<JsonObject>();
+			o["value"] = i;
+			o["label"] = ADC_ATTEN[i];
+			o["selected"] = (config.adc_atten == i);
 		}
-		{
-			char *offset_str = StringToCharPtr(String(offset));
-			char *temp_html = allocateStringMemory(strlen("</select> DC-Offset:  mV\n") + strlen(offset_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "</select> DC-Offset: %s mV\n", offset_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(offset_str);
-		}
-		html->print("</td>\n");
-		html->print("</tr>\n");
+		data["adcOffset"] = offset;
 
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>UART Baudrate:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"baudrate\" id=\"baudrate\">\n");
-		for (int i = 0; i < 13; i++)
-		{
-			char *baudrate_str = StringToCharPtr(String(baudrate[i]));
-			if (config.rf_baudrate == baudrate[i])
-			{
-				char *temp_html = allocateStringMemory(strlen("<option value=\"\" selected>  </option>\n") + 2 * strlen(baudrate_str) + 1);
-				if (temp_html)
-				{
-					sprintf(temp_html, "<option value=\"%s\" selected>%s </option>\n", baudrate_str, baudrate_str);
-					html->print(temp_html);
-					free(temp_html);
-				}
-				else
-				{
-					log_e("MOD page: temp_html allocation failed, skipping field");
-				}
-			}
-			else
-			{
-				char *temp_html = allocateStringMemory(strlen("<option value=\"\" >  </option>\n") + 2 * strlen(baudrate_str) + 1);
-				if (temp_html)
-				{
-					sprintf(temp_html, "<option value=\"%s\" >%s </option>\n", baudrate_str, baudrate_str);
-					html->print(temp_html);
-					free(temp_html);
-				}
-				else
-				{
-					log_e("MOD page: temp_html allocation failed, skipping field");
-				}
-			}
-			free(baudrate_str);
-		}
-		html->print("</select> bps\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
+		data["rfRx"] = config.rf_rx_gpio;
+		data["rfTx"] = config.rf_tx_gpio;
+		data["rfPdGpio"] = config.rf_pd_gpio;
+		data["rfPdHigh"] = config.rf_pd_active;
+		data["rfPwrGpio"] = config.rf_pwr_gpio;
+		data["rfPwrHigh"] = config.rf_pwr_active;
+		data["rfSqlGpio"] = config.rf_sql_gpio;
+		data["rfSqlHigh"] = config.rf_sql_active;
+		data["rfPttGpio"] = config.rf_ptt_gpio;
+		data["rfPttHigh"] = config.rf_ptt_active;
 
-		// html += "<tr>\n";
-		// html += "<td align=\"right\"><b>ADC DC OFFSET:</b></td>\n";
-		// html += "<td style=\"text-align: left;\"><input min=\"100\" max=\"2500\" name=\"offset\" type=\"number\" value=\"" + String(config.adc_dc_offset) + "\" /> mV     (Current: " + String(offset) + " mV)</td>\n";
-		// html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>UART RX GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *rf_rx_gpio_str = StringToCharPtr(String(config.rf_rx_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"rx\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(rf_rx_gpio_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"rx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rf_rx_gpio_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(rf_rx_gpio_str);
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>UART TX GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *rf_tx_gpio_str = StringToCharPtr(String(config.rf_tx_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"tx\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(rf_tx_gpio_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"tx\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, rf_tx_gpio_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(rf_tx_gpio_str);
-		}
-		html->print("</tr>\n");
-
-		char LowFlag[20] = "", HighFlag[20] = "";
-		strcpy(LowFlag, "");
-		strcpy(HighFlag, "");
-		if (config.rf_pd_active)
-			strcpy(HighFlag, "checked=\"checked\"");
-		else
-			strcpy(LowFlag, "checked=\"checked\"");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PD GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *rf_pd_gpio_str = StringToCharPtr(String(config.rf_pd_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\"  name=\"pd\" type=\"number\" value=\"\" /> Active:<input type=\"radio\" name=\"pd_active\" value=\"0\"  />LOW <input type=\"radio\" name=\"pd_active\" value=\"1\"  />HIGH </td>\n") + strlen(gpio_max_str) + strlen(rf_pd_gpio_str) + strlen(LowFlag) + strlen(HighFlag) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"pd\" type=\"number\" value=\"%s\" /> Active:<input type=\"radio\" name=\"pd_active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"pd_active\" value=\"1\" %s/>HIGH </td>\n", gpio_max_str, rf_pd_gpio_str, LowFlag, HighFlag);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(rf_pd_gpio_str);
-		}
-		html->print("</tr>\n");
-
-		sprintf(LowFlag, "");
-		sprintf(HighFlag, "");
-		if (config.rf_pwr_active)
-			strcpy(HighFlag, "checked=\"checked\"");
-		else
-			strcpy(LowFlag, "checked=\"checked\"");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>H/L GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *rf_pwr_gpio_str = StringToCharPtr(String(config.rf_pwr_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\"  name=\"pwr\" type=\"number\" value=\"\" /> Active:<input type=\"radio\" name=\"pwr_active\" value=\"0\"  />LOW <input type=\"radio\" name=\"pwr_active\" value=\"1\"  />HIGH </td>\n") + strlen(gpio_max_str) + strlen(rf_pwr_gpio_str) + strlen(LowFlag) + strlen(HighFlag) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"pwr\" type=\"number\" value=\"%s\" /> Active:<input type=\"radio\" name=\"pwr_active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"pwr_active\" value=\"1\" %s/>HIGH </td>\n", gpio_max_str, rf_pwr_gpio_str, LowFlag, HighFlag);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(rf_pwr_gpio_str);
-		}
-		html->print("</tr>\n");
-
-		sprintf(LowFlag, "");
-		sprintf(HighFlag, "");
-		if (config.rf_sql_active)
-			strcpy(HighFlag, "checked=\"checked\"");
-		else
-			strcpy(LowFlag, "checked=\"checked\"");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>SQL GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *rf_sql_gpio_str = StringToCharPtr(String(config.rf_sql_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\"  name=\"sql\" type=\"number\" value=\"\" /> Active:<input type=\"radio\" name=\"sql_active\" value=\"0\"  />LOW <input type=\"radio\" name=\"sql_active\" value=\"1\"  />HIGH </td>\n") + strlen(gpio_max_str) + strlen(rf_sql_gpio_str) + strlen(LowFlag) + strlen(HighFlag) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"sql\" type=\"number\" value=\"%s\" /> Active:<input type=\"radio\" name=\"sql_active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"sql_active\" value=\"1\" %s/>HIGH </td>\n", gpio_max_str, rf_sql_gpio_str, LowFlag, HighFlag);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(rf_sql_gpio_str);
-		}
-		html->print("</tr>\n");
-
-		sprintf(LowFlag, "");
-		sprintf(HighFlag, "");
-		if (config.rf_ptt_active)
-			strcpy(HighFlag, "checked=\"checked\"");
-		else
-			strcpy(LowFlag, "checked=\"checked\"");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PTT GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *rf_ptt_gpio_str = StringToCharPtr(String(config.rf_ptt_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\"  name=\"ptt\" type=\"number\" value=\"\" /> Active:<input type=\"radio\" name=\"ptt_active\" value=\"0\"  />LOW <input type=\"radio\" name=\"ptt_active\" value=\"1\"  />HIGH </td>\n") + strlen(gpio_max_str) + strlen(rf_ptt_gpio_str) + strlen(LowFlag) + strlen(HighFlag) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\"  name=\"ptt\" type=\"number\" value=\"%s\" /> Active:<input type=\"radio\" name=\"ptt_active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"ptt_active\" value=\"1\" %s/>HIGH </td>\n", gpio_max_str, rf_ptt_gpio_str, LowFlag, HighFlag);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(rf_ptt_gpio_str);
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<input class=\"button\" id=\"submitRF\" name=\"commitRF\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		html->print("<input type=\"hidden\" name=\"commitRF\"/>\n");
-		html->print("</td></tr></table>\n");
-		html->print("</form>\n");
-
-		html->print("</td></tr></table>\n");
-		html->print("<br />\n");
-
-		html->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">\n");
-
-		/**************External TNC Modify******************/
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromTNC\" method=\"post\">\n");
-		html->print("<table>\n");
-		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
-		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
-		html->print("<th colspan=\"2\"><span><b>External TNC Modify</b></span></th>\n");
-		html->print("<tr>\n");
-
-		strcpy(enFlage, "");
-		if (config.ext_tnc_enable)
-			strcpy(enFlage, "checked");
-		html->print("<td align=\"right\"><b>Enable</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ");
-		html->print(enFlage);
-		html->print("><span class=\"slider round\"></span></label></td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PORT:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"channel\" id=\"channel\">\n");
+		data["tncEn"] = config.ext_tnc_enable;
+		JsonArray tncPortOptions = data["tncPortOptions"].to<JsonArray>();
+		JsonArray cmdUartOptions = data["cmdUartOptions"].to<JsonArray>();
 		for (int i = 0; i < 5; i++)
 		{
-			html->print("<option value=\"");
-			char *iStr4 = intToString(i);
-			html->print(iStr4);
-			html->print("\" ");
-			if (config.ext_tnc_channel == i)
-			{
-				html->print("selected>");
-				html->print(TNC_PORT[i]);
-				html->print(" </option>\n");
-			}
-			else
-			{
-				html->print(">");
-				html->print(TNC_PORT[i]);
-				html->print(" </option>\n");
-			}
-			// Free temporary string
-			free(iStr4);
+			JsonObject o = tncPortOptions.add<JsonObject>();
+			o["value"] = i;
+			o["label"] = TNC_PORT[i];
+			o["selected"] = (config.ext_tnc_channel == i);
+			JsonObject oc = cmdUartOptions.add<JsonObject>();
+			oc["value"] = i;
+			oc["label"] = TNC_PORT[i];
+			oc["selected"] = (config.at_cmd_uart == i);
 		}
-		html->print("</select>\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>MODE:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"mode\" id=\"mode\">\n");
+		JsonArray tncModeOptions = data["tncModeOptions"].to<JsonArray>();
 		for (int i = 0; i < 4; i++)
 		{
-			html->print("<option value=\"");
-			char *iStr5 = intToString(i);
-			html->print(iStr5);
-			html->print("\" ");
-			if (config.ext_tnc_mode == i)
-			{
-				html->print("selected>");
-				html->print(TNC_MODE[i]);
-				html->print(" </option>\n");
-			}
-			else
-			{
-				html->print(">");
-				html->print(TNC_MODE[i]);
-				html->print(" </option>\n");
-			}
-			// Free temporary string
-			free(iStr5);
+			JsonObject o = tncModeOptions.add<JsonObject>();
+			o["value"] = i;
+			o["label"] = TNC_MODE[i];
+			o["selected"] = (config.ext_tnc_mode == i);
 		}
-		html->print("</select>\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
 
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<input class=\"button\" id=\"submitTNC\" name=\"commitTNC\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		html->print("<input type=\"hidden\" name=\"commitTNC\"/>\n");
-		html->print("</td></tr></table>\n");
-		html->print("</form>\n");
-
-		/**************TCP KISS Server Modify******************/
-		// custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromTCPKISS\" method=\"post\">\n");
-		html->print("<table>\n");
-		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
-		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
-		html->print("<th colspan=\"2\"><span><b>TCP KISS Server Modify</b></span></th>\n");
-		html->print("<tr>\n");
-
-		strcpy(enFlage, "");
-		if (config.tcp_kiss_enable)
-			strcpy(enFlage, "checked");
-		html->print("<td align=\"right\"><b>Enable</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ");
-		html->print(enFlage);
-		html->print("><span class=\"slider round\"></span></label></td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PORT 1:</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><input type=\"text\" name=\"port1\" value=\"");
-		html->print(String(config.tcp_kiss_port1).c_str());
-		html->print("\" maxlength=\"5\" size=\"6\"/></td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PORT 2:</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><input type=\"text\" name=\"port2\" value=\"");
-		html->print(String(config.tcp_kiss_port2).c_str());
-		html->print("\" maxlength=\"5\" size=\"6\"/></td>\n");
-		html->print("</tr>\n");
-
+		data["tcpKissEn"] = config.tcp_kiss_enable;
+		data["tcpKissPort1"] = config.tcp_kiss_port1;
+		data["tcpKissPort2"] = config.tcp_kiss_port2;
 		{
 			String tcpKissStatus1 = "Port " + String(config.tcp_kiss_port1) + ": ";
 			if (tcpKissClient1 && tcpKissClient1.connected())
@@ -5589,268 +4919,263 @@ void handle_mod(AsyncWebServerRequest *request)
 				tcpKissStatus2 += "connected (" + tcpKissClient2.remoteIP().toString() + ") RX:" + String(tcpKissRxCount[1]) + " TX:" + String(tcpKissTxCount[1]);
 			else
 				tcpKissStatus2 += "idle";
-			html->print("<tr><td colspan=\"2\" align=\"center\"><b>Status:</b></td></tr>\n");
-			html->print("<tr><td colspan=\"2\" align=\"center\">");
-			html->print(tcpKissStatus1.c_str());
-			html->print("</td></tr>\n");
-			html->print("<tr><td colspan=\"2\" align=\"center\">");
-			html->print(tcpKissStatus2.c_str());
-			html->print("</td></tr>\n");
+			data["tcpKissStatus1"] = tcpKissStatus1;
+			data["tcpKissStatus2"] = tcpKissStatus2;
 		}
 
-		html->print("<tr><td colspan=\"2\" style=\"word-wrap:break-word;white-space:normal;\"><p style=\"font-size:9pt;margin:4px 0;\">Lets PC software (Xastir, APRSIS32, etc) use this device as a KISS TNC over the local network - no cable needed. No password - anyone on this WiFi network can transmit through the radio via these ports while enabled. Port number changes need a reboot to take effect; the Enable switch does not.</p></td></tr>\n");
-
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<input class=\"button\" id=\"submitTCPKISS\" name=\"commitTCPKISS\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		html->print("<input type=\"hidden\" name=\"commitTCPKISS\"/>\n");
-		html->print("</td></tr></table>\n");
-		html->print("</form>\n");
-		html->print("</td></tr></table>\n");
-		html->print("<br />\n");
-
-		html->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">\n");
-
-		/************************ AT-COMMAND **************************/
-		html->print("<form id='formATCommand' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		html->print("<table>\n");
-		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
-		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
-		html->print("<th colspan=\"2\"><span><b>AT-COMMAND CHANNEL</b></span></th>\n");
-		html->print("<tr>\n");
-		html->print("<td width=\"150\" align=\"right\"><b>MQTT:</b></td>\n");
-		char cmdFlag[20] = "";
-		if (config.at_cmd_mqtt)
-			strcpy(cmdFlag, "checked");
-		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"mqtt\" value=\"OK\" ");
-		html->print(cmdFlag);
-		html->print("><span class=\"slider round\"></span></label></td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>MESSAGE:</b></td>\n");
-		strcpy(cmdFlag, "");
-		if (config.at_cmd_msg)
-			strcpy(cmdFlag, "checked");
-		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"msg\" value=\"OK\" ");
-		html->print(cmdFlag);
-		html->print("><span class=\"slider round\"></span></label></td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>BLUETOOTH:</b></td>\n");
-		strcpy(cmdFlag, "");
-		if (config.at_cmd_bluetooth)
-			strcpy(cmdFlag, "checked");
-		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"bluetooth\" value=\"OK\" ");
-		html->print(cmdFlag);
-		html->print("><span class=\"slider round\"></span></label></td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>UART PORT:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"uart\" id=\"cmdUart\">\n");
-		for (int i = 0; i < 5; i++)
-		{
-			html->print("<option value=\"");
-			char *iStr6 = intToString(i);
-			html->print(iStr6);
-			html->print("\" ");
-			if (config.at_cmd_uart == i)
-			{
-				html->print("selected>");
-				html->print(TNC_PORT[i]);
-				html->print(" </option>\n");
-			}
-			else
-			{
-				html->print(">");
-				html->print(TNC_PORT[i]);
-				html->print(" </option>\n");
-			}
-			// Free temporary string
-			free(iStr6);
-		}
-		html->print("</select>\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitCMD'  name=\"commit\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitCMD\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form><br />\n");
+		data["cmdMqtt"] = config.at_cmd_mqtt;
+		data["cmdMsg"] = config.at_cmd_msg;
+		data["cmdBluetooth"] = config.at_cmd_bluetooth;
 
 #ifdef PPPOS
-		html->print("<br />\n");
+		data["pppos"] = true;
+		data["pppEn"] = config.ppp_enable;
+		data["pppGnss"] = config.ppp_gnss;
+		data["pppNapt"] = config.ppp_napt;
+		data["pppApn"] = config.ppp_apn;
+		data["pppPin"] = atoi(config.ppp_pin);
+		data["pppRx"] = config.ppp_rx_gpio;
+		data["pppTx"] = config.ppp_tx_gpio;
+		data["pppRstGpio"] = config.ppp_rst_gpio;
+		data["pppRstHigh"] = config.ppp_rst_active;
+		data["pppRstDelay"] = config.ppp_rst_delay;
 
-		html->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">\n");
-
-		/************************ PPPoS **************************/
-
-		html->print("<form id='formPPPoS' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		html->print("<table>\n");
-		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
-		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
-		html->print("<th colspan=\"2\"><span><b>PPP Over Serial (GSM/4G-LTE)</b></span></th>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Enable:</b></td>\n");
-		char pppEnFlag[20] = "";
-		if (config.ppp_enable)
-			strcpy(pppEnFlag, "checked");
-		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"pppEn\" value=\"OK\" ");
-		html->print(pppEnFlag);
-		html->print("><span class=\"slider round\"></span></label></td>\n");
-		html->print("</tr>\n");
-		html->print("<td align=\"right\"><b>GNSS:</b></td>\n");
-		strcpy(pppEnFlag, "");
-		if (config.ppp_gnss)
-			strcpy(pppEnFlag, "checked");
-		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"pppGnss\" value=\"OK\" ");
-		html->print(pppEnFlag);
-		html->print("><span class=\"slider round\"></span></label></td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>NAPT:</b></td>\n");
-		strcpy(pppEnFlag, "");
-		if (config.ppp_napt)
-			strcpy(pppEnFlag, "checked");
-		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"pppNapt\" value=\"OK\" ");
-		html->print(pppEnFlag);
-		html->print("><span class=\"slider round\"></span></label> *WiFi NAT</td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>APN:</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><input maxlength=\"20\" name=\"pppAPN\" type=\"text\" value=\"");
-		html->print(config.ppp_apn);
-		html->print("\" /></td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-
-		html->print("<td align=\"right\"><b>PIN:</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><input min=\"0\" max=\"999999\" name=\"pppPin\" type=\"number\" value=\"");
-		char *pppPinStr = intToString(atoi(config.ppp_pin));
-		html->print(pppPinStr);
-		free(pppPinStr);
-		html->print("\" /> <i>*PIN of SIM</i></td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-
-		html->print("<td align=\"right\"><b>RX GPIO:</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><input min=\"-1\" max=\"50\" name=\"rx\" type=\"number\" value=\"");
-		char *pppRxStr = intToString(config.ppp_rx_gpio);
-		html->print(pppRxStr);
-		free(pppRxStr);
-		html->print("\" /></td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>TX GPIO:</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><input min=\"-1\" max=\"50\" name=\"tx\" type=\"number\" value=\"");
-		char *pppTxStr = intToString(config.ppp_tx_gpio);
-		html->print(pppTxStr);
-		free(pppTxStr);
-		html->print("\" /></td>\n");
-		html->print("</tr>\n");
-
-		strcpy(LowFlag, "");
-		strcpy(HighFlag, "");
-		if (config.ppp_rst_active)
-			strcpy(HighFlag, "checked=\"checked\"");
-		else
-			strcpy(LowFlag, "checked=\"checked\"");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>RESET GPIO:</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><input min=\"-1\" max=\"50\"  name=\"rst\" type=\"number\" value=\"");
-		char *pppRstStr = intToString(config.ppp_rst_gpio);
-		html->print(pppRstStr);
-		free(pppRstStr);
-		html->print("\" /> Active:<input type=\"radio\" name=\"rst_active\" value=\"0\" ");
-		html->print(LowFlag);
-		html->print("/>LOW <input type=\"radio\" name=\"rst_active\" value=\"1\" ");
-		html->print(HighFlag);
-		html->print("/>HIGH </td>\n");
-		html->print("</tr>\n");
-
-		html->print("<td align=\"right\"><b>RESET DELAY:</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><input min=\"0\" max=\"999999\" name=\"rstDly\" type=\"number\" value=\"");
-		char *pppRstDelayStr = intToString(config.ppp_rst_delay);
-		html->print(pppRstDelayStr);
-		free(pppRstDelayStr);
-		html->print("\" /> mSec.</td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PORT:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"port\" id=\"port\">\n");
+		JsonArray pppPortOptions = data["pppPortOptions"].to<JsonArray>();
 		for (int i = 0; i < 2; i++)
 		{
-			html->print("<option value=\"");
-			char *iStr7 = intToString(i);
-			html->print(iStr7);
-			html->print("\" ");
-			if (config.ppp_serial == i)
-			{
-				html->print("selected>");
-				html->print(GNSS_PORT[i + 1]);
-				html->print(" </option>\n");
-			}
-			else
-			{
-				html->print(">");
-				html->print(GNSS_PORT[i + 1]);
-				html->print(" </option>\n");
-			}
-			// Free temporary string
-			free(iStr7);
+			JsonObject o = pppPortOptions.add<JsonObject>();
+			o["value"] = i;
+			o["label"] = GNSS_PORT[i + 1];
+			o["selected"] = (config.ppp_serial == i);
 		}
-		html->print("</select>\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Baudrate:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"baudrate\" id=\"baudrate\">\n");
+		JsonArray pppBaud = data["pppBaud"].to<JsonArray>();
 		for (int i = 0; i < 13; i++)
 		{
-			html->print("<option value=\"");
-			char *baudrateStr3 = intToString(baudrate[i]);
-			html->print(baudrateStr3);
-			html->print("\" ");
-			if (config.ppp_serial_baudrate == baudrate[i])
-			{
-				html->print("selected>");
-				html->print(baudrateStr3);
-				html->print(" </option>\n");
-			}
-			else
-			{
-				html->print(">");
-				html->print(baudrateStr3);
-				html->print(" </option>\n");
-			}
-			// Free temporary string
-			free(baudrateStr3);
+			JsonObject o = pppBaud.add<JsonObject>();
+			o["value"] = baudrate[i];
+			o["selected"] = (config.ppp_serial_baudrate == baudrate[i]);
 		}
-		html->print("</select> bps\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitPPPoS'  name=\"commitPPPoS\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitPPPoS\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form>\n");
-
-		html->print("</td></tr></table>\n");
+#else
+		data["pppos"] = false;
 #endif
 
+		String html_str = renderTemplate(MOD_TEMPLATE, data.as<JsonVariant>());
+		// Streamed response: avoids a single large calloc() for the whole page
+		// (same fix already applied to handle_igate/wx/sensor/etc after we
+		// confirmed via live heap-integrity diagnostics that the single big
+		// contiguous allocation was the reproducible trigger for a heap
+		// corruption assert under real traffic).
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
+		if (!html)
+		{
+			request->send(500, "text/html", "Memory allocation failed");
+			return;
+		}
+		html->print(html_str);
 		html->addHeader("MOD", "content");
 		html->addHeader("Cache-Control", "no-cache");
 		request->send(html);
 	}
 }
+
+static const char *MOD2_TEMPLATE = R"MOD2HTML(<script type="text/javascript">
+$('form').submit(function (e) {
+e.preventDefault();
+var data = new FormData(e.currentTarget);
+if(e.currentTarget.id==="formGNSS") document.getElementById("submitGNSS").disabled=true;
+if(e.currentTarget.id==="formMODBUS") document.getElementById("submitMODBUS").disabled=true;
+if(e.currentTarget.id==="formI2C0") document.getElementById("submitI2C0").disabled=true;
+if(e.currentTarget.id==="formI2C1") document.getElementById("submitI2C1").disabled=true;
+if(e.currentTarget.id==="formCOUNT0") document.getElementById("submitCOUNT0").disabled=true;
+if(e.currentTarget.id==="formCOUNT1") document.getElementById("submitCOUNT1").disabled=true;
+$.ajax({
+url: '/mod2',
+type: 'POST',
+data: data,
+contentType: false,
+processData: false,
+success: function (data) {
+alert("Submited Successfully\nRequire hardware REBOOT!");
+},
+error: function (data) {
+alert("An error occurred.");
+}
+});
+});
+</script>
+<table style="text-align:unset;border-width:0px;background:unset"><tr style="background:unset;vertical-align:top"><td width="50%" style="border:unset;vertical-align:top">
+<form accept-charset="UTF-8" action="#" class="form-horizontal" id="fromONEWIRE" method="post">
+<table>
+<th colspan="2"><span><b>1-Wire Bus Modify</b></span></th>
+<tr>
+<td align="right"><b>Enable</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if oneWireEn}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td align="right"><b>GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="data" type="number" value="{{oneWireGpio}}" /></td>
+</tr>
+<tr><td colspan="2" align="right">
+<input class="button" id="submitONEWIRE" name="commitONEWIRE" type="submit" value="Apply" maxlength="80"/>
+<input type="hidden" name="commitONEWIRE"/>
+</td></tr></table>
+</form><br />
+</td></tr></table>
+<br />
+<table style="text-align:unset;border-width:0px;background:unset"><tr style="background:unset;vertical-align:top"><td width="50%" style="border:unset;vertical-align:top">
+<form accept-charset="UTF-8" action="#" class="form-horizontal" id="fromI2C0" method="post">
+<table>
+<th colspan="2"><span><b>I2C_0(OLED) Modify</b></span></th>
+<tr>
+<td align="right"><b>Enable</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if i2c0En}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td align="right"><b>SDA GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="sda" type="number" value="{{i2c0Sda}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>SCK GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="sck" type="number" value="{{i2c0Sck}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>Frequency:</b></td>
+<td style="text-align: left;"><input min="1000" max="800000" name="freq" type="number" value="{{i2c0Freq}}" /></td>
+</tr>
+<tr><td colspan="2" align="right">
+<input class="button" id="submitI2C0" name="commitI2C0" type="submit" value="Apply" maxlength="80"/>
+<input type="hidden" name="commitI2C0"/>
+</td></tr></table>
+</form>
+<form accept-charset="UTF-8" action="#" class="form-horizontal" id="fromCOUNTER0" method="post">
+<table>
+<th colspan="2"><span><b>Counter_0 Modify</b></span></th>
+<tr>
+<td align="right"><b>Enable</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if counter0En}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td align="right"><b>INPUT GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="gpio" type="number" value="{{counter0Gpio}}" /></td>
+</tr>
+<tr>
+<td align="right">Active</td>
+<td style="text-align: left;"><input type="radio" name="active" value="0" {{#if counter0High}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="active" value="1" {{#if counter0High}}checked="checked"{{/if}}/>HIGH </td>
+</tr>
+<tr><td colspan="2" align="right">
+<input class="button" id="submitCOUNTER0" name="commitCOUNTER0" type="submit" value="Apply" maxlength="80"/>
+<input type="hidden" name="commitCOUNTER0"/>
+</td></tr></table>
+</form>
+</td><td width="50%" style="border:unset;">
+<form accept-charset="UTF-8" action="#" class="form-horizontal" id="fromI2C1" method="post">
+<table>
+<th colspan="2"><span><b>I2C_1 Modify</b></span></th>
+<tr>
+<td align="right"><b>Enable</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if i2c1En}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td align="right"><b>SDA GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="sda" type="number" value="{{i2c1Sda}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>SCK GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="sck" type="number" value="{{i2c1Sck}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>Frequency:</b></td>
+<td style="text-align: left;"><input min="1000" max="800000" name="freq" type="number" value="{{i2c1Freq}}" /></td>
+</tr>
+<tr><td colspan="2" align="right">
+<input class="button" id="submitI2C1" name="commitI2C1" type="submit" value="Apply" maxlength="80"/>
+<input type="hidden" name="commitI2C1"/>
+</td></tr></table>
+</form>
+<form accept-charset="UTF-8" action="#" class="form-horizontal" id="fromCOUNTER1" method="post">
+<table>
+<th colspan="2"><span><b>Counter_1 Modify</b></span></th>
+<tr>
+<td align="right"><b>Enable</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if counter1En}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td align="right"><b>INPUT GPIO:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="gpio" type="number" value="{{counter1Gpio}}" /></td>
+</tr>
+<tr>
+<td align="right">Active</td>
+<td style="text-align: left;"><input type="radio" name="active" value="0" {{#if counter1High}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="active" value="1" {{#if counter1High}}checked="checked"{{/if}}/>HIGH </td>
+</tr>
+<tr><td colspan="2" align="right">
+<input class="button" id="submitCOUNTER1" name="commitCOUNTER1" type="submit" value="Apply" maxlength="80"/>
+<input type="hidden" name="commitCOUNTER1"/>
+</td></tr></table>
+</form>
+</td></tr></table>
+<br />
+<table style="text-align:unset;border-width:0px;background:unset"><tr style="background:unset;vertical-align:top"><td width="50%" style="border:unset;vertical-align:top">
+<form accept-charset="UTF-8" action="#" class="form-horizontal" id="fromGNSS" method="post">
+<table>
+<th colspan="2"><span><b>GNSS Modify</b></span></th>
+<tr>
+<td align="right"><b>Enable</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if gnssEn}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td align="right"><b>PORT:</b></td>
+<td style="text-align: left;">
+<select name="channel" id="channel">
+{{#each gnssPortOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}} </option>
+{{/each}}</select>
+</td>
+</tr>
+<td align="right"><b>AT Command:</b></td>
+<td style="text-align: left;"><input maxlength="30" size="20" id="atc" name="atc" type="text" value="{{gnssAtCommand}}" /></td>
+</tr>
+<td align="right"><b>TCP Host:</b></td>
+<td style="text-align: left;"><input maxlength="20" size="15" id="Host" name="Host" type="text" value="{{gnssTcpHost}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>TCP Port:</b></td>
+<td style="text-align: left;"><input min="1024" max="65535"  id="Port" name="Port" type="number" value="{{gnssTcpPort}}" /></td>
+</tr>
+<tr><td colspan="2" align="right">
+<input class="button" id="submitGNSS" name="commitGNSS" type="submit" value="Apply" maxlength="80"/>
+<input type="hidden" name="commitGNSS"/>
+</td></tr></table>
+</form><br />
+</td><td width="50%" style="border:unset;">
+<form accept-charset="UTF-8" action="#" class="form-horizontal" id="fromMODBUS" method="post">
+<table>
+<th colspan="2"><span><b>MODBUS Modify</b></span></th>
+<tr>
+<td align="right"><b>Enable</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if modbusEn}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td align="right"><b>PORT:</b></td>
+<td style="text-align: left;">
+<select name="channel" id="channel">
+{{#each modbusPortOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}} </option>
+{{/each}}</select>
+</td>
+</tr>
+<tr>
+<td align="right"><b>Address:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="address" type="number" value="{{modbusAddress}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>DE:</b></td>
+<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="de" type="number" value="{{modbusDeGpio}}" /></td>
+</tr>
+<tr><td colspan="2" align="right">
+<input class="button" id="submitMODBUS" name="commitMODBUS" type="submit" value="Apply" maxlength="80"/>
+<input type="hidden" name="commitMODBUS"/>
+</td></tr></table>
+</form>
+</td></tr></table>
+)MOD2HTML";
 
 void handle_mod2(AsyncWebServerRequest *request)
 {
@@ -6180,605 +5505,295 @@ void handle_mod2(AsyncWebServerRequest *request)
 	}
 	else
 	{
+		esp_task_wdt_reset(); // feed watchdog: handle_mod2 runs on the async_tcp task itself,
+		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
+		JsonDocument data;
+		int gpioMax = GPIO_NUM_MAX;
+		data["gpioMax"] = gpioMax;
+
+		data["oneWireEn"] = config.onewire_enable;
+		data["oneWireGpio"] = config.onewire_gpio;
+
+		data["i2c0En"] = config.i2c_enable;
+		data["i2c0Sda"] = config.i2c_sda_pin;
+		data["i2c0Sck"] = config.i2c_sck_pin;
+		data["i2c0Freq"] = config.i2c_freq;
+
+		data["counter0En"] = config.counter0_enable;
+		data["counter0Gpio"] = config.counter0_gpio;
+		data["counter0High"] = config.counter0_active;
+
+		data["i2c1En"] = config.i2c1_enable;
+		data["i2c1Sda"] = config.i2c1_sda_pin;
+		data["i2c1Sck"] = config.i2c1_sck_pin;
+		data["i2c1Freq"] = config.i2c1_freq;
+
+		data["counter1En"] = config.counter1_enable;
+		data["counter1Gpio"] = config.counter1_gpio;
+		data["counter1High"] = config.counter1_active;
+
+		data["gnssEn"] = config.gnss_enable;
+		data["gnssAtCommand"] = config.gnss_at_command;
+		data["gnssTcpHost"] = config.gnss_tcp_host;
+		data["gnssTcpPort"] = config.gnss_tcp_port;
+
+		data["modbusEn"] = config.modbus_enable;
+		data["modbusAddress"] = config.modbus_address;
+		data["modbusDeGpio"] = config.modbus_de_gpio;
+
+		JsonArray gnssPortOptions = data["gnssPortOptions"].to<JsonArray>();
+		JsonArray modbusPortOptions = data["modbusPortOptions"].to<JsonArray>();
+		for (int i = 0; i < 5; i++)
+		{
+			JsonObject og = gnssPortOptions.add<JsonObject>();
+			og["value"] = i;
+			og["label"] = GNSS_PORT[i];
+			og["selected"] = (config.gnss_channel == i);
+			JsonObject om = modbusPortOptions.add<JsonObject>();
+			om["value"] = i;
+			om["label"] = GNSS_PORT[i];
+			om["selected"] = (config.modbus_channel == i);
+		}
+
+		String html_str = renderTemplate(MOD2_TEMPLATE, data.as<JsonVariant>());
 		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", 46000);
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
 		if (html == NULL)
 		{
 			request->send(500, "text/html", "Memory allocation failed");
 			return;
 		}
-
-		// Locals reused across several sections below (declared once here since
-		// the sections that originally declared them stayed in handle_mod when
-		// this function was split out).
-		char enFlage[20] = "";
-		char LowFlag[20] = "", HighFlag[20] = "";
-
-		// Initialize the HTML string with the JavaScript code
-		html->print("<script type=\"text/javascript\">\n");
-		html->print("$('form').submit(function (e) {\n");
-		html->print("e.preventDefault();\n");
-		html->print("var data = new FormData(e.currentTarget);\n");
-		html->print("if(e.currentTarget.id===\"formGNSS\") document.getElementById(\"submitGNSS\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formMODBUS\") document.getElementById(\"submitMODBUS\").disabled=true;\n");
-		// html->print("if(e.currentTarget.id===\"formONEWIRE\") document.getElementById(\"submitONEWIRE\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formI2C0\") document.getElementById(\"submitI2C0\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formI2C1\") document.getElementById(\"submitI2C1\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formCOUNT0\") document.getElementById(\"submitCOUNT0\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formCOUNT1\") document.getElementById(\"submitCOUNT1\").disabled=true;\n");
-		html->print("$.ajax({\n");
-		html->print("url: '/mod2',\n");
-		html->print("type: 'POST',\n");
-		html->print("data: data,\n");
-		html->print("contentType: false,\n");
-		html->print("processData: false,\n");
-		html->print("success: function (data) {\n");
-		html->print("alert(\"Submited Successfully\\nRequire hardware REBOOT!\");\n");
-		html->print("},\n");
-		html->print("error: function (data) {\n");
-		html->print("alert(\"An error occurred.\");\n");
-		html->print("}\n");
-		html->print("});\n");
-		html->print("});\n");
-		html->print("</script>\n");
-
-		html->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">");
-		/**************1-Wire Modify******************/
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromONEWIRE\" method=\"post\">\n");
-		html->print("<table>\n");
-		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
-		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
-		html->print("<th colspan=\"2\"><span><b>1-Wire Bus Modify</b></span></th>\n");
-		html->print("<tr>");
-
-		String syncFlage = "";
-		if (config.onewire_enable)
-			syncFlage = "checked";
-		html->print("<td align=\"right\"><b>Enable</b></td>\n");
-		{
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(syncFlage.c_str()) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", syncFlage.c_str());
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *onewire_gpio_str = StringToCharPtr(String(config.onewire_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"data\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(onewire_gpio_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"data\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, onewire_gpio_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(onewire_gpio_str);
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<input class=\"button\" id=\"submitONEWIRE\" name=\"commitONEWIRE\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		html->print("<input type=\"hidden\" name=\"commitONEWIRE\"/>\n");
-		html->print("</td></tr></table>\n");
-		html->print("</form><br />\n");
-		html->print("</td></tr></table>\n");
-		html->print("<br />\n");
-
-		html->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">");
-		/**************I2C_0 Modify******************/
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromI2C0\" method=\"post\">\n");
-		html->print("<table>\n");
-		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
-		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
-		html->print("<th colspan=\"2\"><span><b>I2C_0(OLED) Modify</b></span></th>\n");
-		html->print("<tr>");
-
-		syncFlage = "";
-		if (config.i2c_enable)
-			syncFlage = "checked";
-		html->print("<td align=\"right\"><b>Enable</b></td>\n");
-		{
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(syncFlage.c_str()) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", syncFlage.c_str());
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>SDA GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *i2c_sda_pin_str = StringToCharPtr(String(config.i2c_sda_pin));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"sda\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(i2c_sda_pin_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"sda\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, i2c_sda_pin_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(i2c_sda_pin_str);
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>SCK GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *i2c_sck_pin_str = StringToCharPtr(String(config.i2c_sck_pin));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"sck\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(i2c_sck_pin_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"sck\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, i2c_sck_pin_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(i2c_sck_pin_str);
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Frequency:</b></td>\n");
-		{
-			char *freq_str = StringToCharPtr(String(config.i2c_freq));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"1000\" max=\"800000\" name=\"freq\" type=\"number\" value=\"\" /></td>\n") + strlen(freq_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"1000\" max=\"800000\" name=\"freq\" type=\"number\" value=\"%s\" /></td>\n", freq_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(freq_str);
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<input class=\"button\" id=\"submitI2C0\" name=\"commitI2C0\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		html->print("<input type=\"hidden\" name=\"commitI2C0\"/>\n");
-		html->print("</td></tr></table>\n");
-		html->print("</form>\n");
-		/**************Counter_0 Modify******************/
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromCOUNTER0\" method=\"post\">\n");
-		html->print("<table>\n");
-		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
-		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
-		html->print("<th colspan=\"2\"><span><b>Counter_0 Modify</b></span></th>\n");
-		html->print("<tr>");
-
-		syncFlage = "";
-		if (config.counter0_enable)
-			syncFlage = "checked";
-		html->print("<td align=\"right\"><b>Enable</b></td>\n");
-		{
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(syncFlage.c_str()) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", syncFlage.c_str());
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>INPUT GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *counter0_gpio_str = StringToCharPtr(String(config.counter0_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"gpio\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(counter0_gpio_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"gpio\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, counter0_gpio_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(counter0_gpio_str);
-		}
-		html->print("</tr>\n");
-
-		sprintf(LowFlag, "");
-		sprintf(HighFlag, "");
-		if (config.counter0_active)
-			strcpy(HighFlag, "checked=\"checked\"");
-		else
-			strcpy(LowFlag, "checked=\"checked\"");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\">Active</td>\n");
-		{
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input type=\"radio\" name=\"active\" value=\"0\"  />LOW <input type=\"radio\" name=\"active\" value=\"1\"  />HIGH </td>\n") + strlen(LowFlag) + strlen(HighFlag) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input type=\"radio\" name=\"active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"active\" value=\"1\" %s/>HIGH </td>\n", LowFlag, HighFlag);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<input class=\"button\" id=\"submitCOUNTER0\" name=\"commitCOUNTER0\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		html->print("<input type=\"hidden\" name=\"commitCOUNTER0\"/>\n");
-		html->print("</td></tr></table>\n");
-		html->print("</form>\n");
-		html->print("</td><td width=\"50%\" style=\"border:unset;\">");
-		/**************I2C_1 Modify******************/
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromI2C1\" method=\"post\">\n");
-		html->print("<table>\n");
-		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
-		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
-		html->print("<th colspan=\"2\"><span><b>I2C_1 Modify</b></span></th>\n");
-		html->print("<tr>");
-
-		syncFlage = "";
-		if (config.i2c1_enable)
-			syncFlage = "checked";
-		html->print("<td align=\"right\"><b>Enable</b></td>\n");
-		{
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(syncFlage.c_str()) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", syncFlage.c_str());
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>SDA GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *i2c1_sda_pin_str = StringToCharPtr(String(config.i2c1_sda_pin));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"sda\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(i2c1_sda_pin_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"sda\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, i2c1_sda_pin_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(i2c1_sda_pin_str);
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>SCK GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *i2c1_sck_pin_str = StringToCharPtr(String(config.i2c1_sck_pin));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"sck\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(i2c1_sck_pin_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"sck\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, i2c1_sck_pin_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(i2c1_sck_pin_str);
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Frequency:</b></td>\n");
-		{
-			char *freq_str = StringToCharPtr(String(config.i2c1_freq));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"1000\" max=\"800000\" name=\"freq\" type=\"number\" value=\"\" /></td>\n") + strlen(freq_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"1000\" max=\"800000\" name=\"freq\" type=\"number\" value=\"%s\" /></td>\n", freq_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(freq_str);
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<input class=\"button\" id=\"submitI2C1\" name=\"commitI2C1\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		html->print("<input type=\"hidden\" name=\"commitI2C1\"/>\n");
-		html->print("</td></tr></table>\n");
-		html->print("</form>\n");
-		/**************Counter_1 Modify******************/
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromCOUNTER1\" method=\"post\">\n");
-		html->print("<table>\n");
-		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
-		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
-		html->print("<th colspan=\"2\"><span><b>Counter_1 Modify</b></span></th>\n");
-		html->print("<tr>");
-
-		syncFlage = "";
-		if (config.counter1_enable)
-			syncFlage = "checked";
-		html->print("<td align=\"right\"><b>Enable</b></td>\n");
-		{
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ") + strlen(syncFlage.c_str()) + strlen("\"><span class=\"slider round\"></span></label></td>\n") + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", syncFlage.c_str());
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>INPUT GPIO:</b></td>\n");
-		{
-			char *gpio_max_str = StringToCharPtr(String(GPIO_NUM_MAX));
-			char *counter1_gpio_str = StringToCharPtr(String(config.counter1_gpio));
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input min=\"-1\" max=\"\" name=\"gpio\" type=\"number\" value=\"\" /></td>\n") + strlen(gpio_max_str) + strlen(counter1_gpio_str) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input min=\"-1\" max=\"%s\" name=\"gpio\" type=\"number\" value=\"%s\" /></td>\n", gpio_max_str, counter1_gpio_str);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-			free(gpio_max_str);
-			free(counter1_gpio_str);
-		}
-		html->print("</tr>\n");
-
-		sprintf(LowFlag, "");
-		sprintf(HighFlag, "");
-		if (config.counter1_active)
-			strcpy(HighFlag, "checked=\"checked\"");
-		else
-			strcpy(LowFlag, "checked=\"checked\"");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\">Active</td>\n");
-		{
-			char *temp_html = allocateStringMemory(strlen("<td style=\"text-align: left;\"><input type=\"radio\" name=\"active\" value=\"0\"  />LOW <input type=\"radio\" name=\"active\" value=\"1\"  />HIGH </td>\n") + strlen(LowFlag) + strlen(HighFlag) + 1);
-			if (temp_html)
-			{
-				sprintf(temp_html, "<td style=\"text-align: left;\"><input type=\"radio\" name=\"active\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"active\" value=\"1\" %s/>HIGH </td>\n", LowFlag, HighFlag);
-				html->print(temp_html);
-				free(temp_html);
-			}
-			else
-			{
-				log_e("MOD page: temp_html allocation failed, skipping field");
-			}
-		}
-		html->print("</tr>\n");
-
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<input class=\"button\" id=\"submitCOUNTER1\" name=\"commitCOUNTER1\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		html->print("<input type=\"hidden\" name=\"commitCOUNTER1\"/>\n");
-		html->print("</td></tr></table>\n");
-		html->print("</form>\n");
-		html->print("</td></tr></table>\n");
-		html->print("<br />\n");
-
-		html->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;vertical-align:top\"><td width=\"50%\" style=\"border:unset;vertical-align:top\">");
-		/**************GNSS Modify******************/
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromGNSS\" method=\"post\">\n");
-		html->print("<table>\n");
-		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
-		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
-		html->print("<th colspan=\"2\"><span><b>GNSS Modify</b></span></th>\n");
-		html->print("<tr>\n");
-
-		strcpy(enFlage, "");
-		if (config.gnss_enable)
-			strcpy(enFlage, "checked");
-		html->print("<td align=\"right\"><b>Enable</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ");
-		html->print(enFlage);
-		html->print("><span class=\"slider round\"></span></label></td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PORT:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"channel\" id=\"channel\">\n");
-		for (int i = 0; i < 5; i++)
-		{
-			html->print("<option value=\"");
-			char *iStr2 = intToString(i);
-			html->print(iStr2);
-			html->print("\" ");
-			if (config.gnss_channel == i)
-			{
-				html->print("selected>");
-				html->print(GNSS_PORT[i]);
-				html->print(" </option>\n");
-			}
-			else
-			{
-				html->print(">");
-				html->print(GNSS_PORT[i]);
-				html->print(" </option>\n");
-			}
-			// Free temporary string
-			free(iStr2);
-		}
-		html->print("</select>\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
-
-		html->print("<td align=\"right\"><b>AT Command:</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><input maxlength=\"30\" size=\"20\" id=\"atc\" name=\"atc\" type=\"text\" value=\"");
-		html->print(config.gnss_at_command);
-		html->print("\" /></td>\n");
-		html->print("</tr>\n");
-		html->print("<td align=\"right\"><b>TCP Host:</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><input maxlength=\"20\" size=\"15\" id=\"Host\" name=\"Host\" type=\"text\" value=\"");
-		html->print(config.gnss_tcp_host);
-		html->print("\" /></td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>TCP Port:</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><input min=\"1024\" max=\"65535\"  id=\"Port\" name=\"Port\" type=\"number\" value=\"");
-		char *gnssTcpPortStr = intToString(config.gnss_tcp_port);
-		html->print(gnssTcpPortStr);
-		free(gnssTcpPortStr);
-		html->print("\" /></td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<input class=\"button\" id=\"submitGNSS\" name=\"commitGNSS\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		html->print("<input type=\"hidden\" name=\"commitGNSS\"/>\n");
-		html->print("</td></tr></table>\n");
-
-		html->print("</form><br />\n");
-		html->print("</td><td width=\"50%\" style=\"border:unset;\">");
-		/**************MODBUS Modify******************/
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromMODBUS\" method=\"post\">\n");
-		html->print("<table>\n");
-		esp_task_wdt_reset(); // feed watchdog: handle_mod runs on the async_tcp task itself,
-		// and this monolithic page can take long enough under heap pressure to trip the TWDT.
-		html->print("<th colspan=\"2\"><span><b>MODBUS Modify</b></span></th>\n");
-		html->print("<tr>\n");
-
-		strcpy(enFlage, "");
-		if (config.modbus_enable)
-			strcpy(enFlage, "checked");
-		html->print("<td align=\"right\"><b>Enable</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" ");
-		html->print(enFlage);
-		html->print("><span class=\"slider round\"></span></label></td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PORT:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"channel\" id=\"channel\">\n");
-		for (int i = 0; i < 5; i++)
-		{
-			html->print("<option value=\"");
-			char *iStr3 = intToString(i);
-			html->print(iStr3);
-			html->print("\" ");
-			if (config.modbus_channel == i)
-			{
-				html->print("selected>");
-				html->print(GNSS_PORT[i]);
-				html->print(" </option>\n");
-			}
-			else
-			{
-				html->print(">");
-				html->print(GNSS_PORT[i]);
-				html->print(" </option>\n");
-			}
-			// Free temporary string
-			free(iStr3);
-		}
-		html->print("</select>\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Address:</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><input min=\"-1\" max=\"");
-		char *gpioMaxStr20 = intToString(GPIO_NUM_MAX);
-		html->print(gpioMaxStr20);
-		free(gpioMaxStr20);
-		html->print("\" name=\"address\" type=\"number\" value=\"");
-		char *modbusAddrStr = intToString(config.modbus_address);
-		html->print(modbusAddrStr);
-		free(modbusAddrStr);
-		html->print("\" /></td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>DE:</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><input min=\"-1\" max=\"");
-		char *gpioMaxStr21 = intToString(GPIO_NUM_MAX);
-		html->print(gpioMaxStr21);
-		free(gpioMaxStr21);
-		html->print("\" name=\"de\" type=\"number\" value=\"");
-		char *modbusDeStr = intToString(config.modbus_de_gpio);
-		html->print(modbusDeStr);
-		free(modbusDeStr);
-		html->print("\" /></td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<input class=\"button\" id=\"submitMODBUS\" name=\"commitMODBUS\" type=\"submit\" value=\"Apply\" maxlength=\"80\"/>\n");
-		html->print("<input type=\"hidden\" name=\"commitMODBUS\"/>\n");
-		html->print("</td></tr></table>\n");
-		html->print("</form>\n");
-		html->print("</td></tr></table>\n");
-
+		html->print(html_str);
 		html->addHeader("MOD2", "content");
 		html->addHeader("Cache-Control", "no-cache");
 		request->send(html);
 	}
 }
+
+static const char *SYSTEM_TEMPLATE = R"SYSHTML(<script type="text/javascript">
+$('form').submit(function (e) {
+e.preventDefault();
+var data = new FormData(e.currentTarget);
+if(e.currentTarget.id==="formHostName") document.getElementById("updateHostName").disabled=true;
+if(e.currentTarget.id==="formTime") document.getElementById("updateTime").disabled=true;
+if(e.currentTarget.id==="formNTP") document.getElementById("updateTimeNtp").disabled=true;
+if(e.currentTarget.id==="formTimeZone") document.getElementById("updateTimeZone").disabled=true;
+if(e.currentTarget.id==="formReboot") document.getElementById("REBOOT").disabled=true;
+if(e.currentTarget.id==="formDisp") document.getElementById("submitDISP").disabled=true;
+if(e.currentTarget.id==="formWebAuth") document.getElementById("submitWebAuth").disabled=true;
+if(e.currentTarget.id==="formPWR") document.getElementById("submitPWR").disabled=true;
+if(e.currentTarget.id==="formPath") document.getElementById("submitPath").disabled=true;
+$.ajax({
+url: '/system',
+type: 'POST',
+data: data,
+contentType: false,
+processData: false,
+success: function (data) {
+alert("Submited Successfully");
+},
+error: function (data) {
+alert("An error occurred.");
+}
+});
+});
+</script>
+<table>
+<th colspan="2"><span><b>System Setting</b></span></th>
+<tr>
+<td style="text-align: right;">Host Name:</td>
+<td style="text-align: left;"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formHostName" method="post"><input name="SetHostName" type="text" value="{{hostName}}" />
+<button type='submit' id='updateHostName'  name="updateHostName"> Apply </button>
+<input type="hidden" name="updateHostName"/></form>
+</td>
+</tr>
+<tr>
+<td style="text-align: right;">LOCAL DATE/TIME </td>
+<td style="text-align: left;"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formTime" method="post">
+<input name="SetTime" type="text" value="{{setTime}}" />
+<span class="input-group-addon">
+<span class="glyphicon glyphicon-calendar">
+</span></span>
+<button type='submit' id='updateTime'  name="commit"> Time Update </button>
+<input type="hidden" name="updateTime"/></form>
+</td>
+</tr>
+<tr>
+<td style="text-align: right;">NTP Host </td>
+<td style="text-align: left;"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formNTP" method="post"><input name="SetTimeNtp" type="text" value="{{ntpHost}}" />
+<button type='submit' id='updateTimeNtp'  name="commit"> NTP Update </button>
+<input type="hidden" name="updateTimeNtp"/></form>
+</td>
+</tr>
+<tr>
+<td style="text-align: right;">Auto REBOOT:</td>
+<td style="text-align: left;"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formAutoReset" method="post"><input  min="0" max="65535"  name="SetAutoReset" type="number" value="{{resetTimeout}}" /> Minutes
+<button type='submit' id='updateAutoReset'  name="commit"> Update </button> *<i>0=No reset</i>
+<input type="hidden" name="updateAutoReset"/></form>
+</td>
+</tr>
+<tr>
+<td style="text-align: right;">Time Zone </td>
+<td style="text-align: left;"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formTimeZone" method="post">
+<select name="SetTimeZone" id="SetTimeZone">
+{{#each tzOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}} Sec</option>
+{{/each}}</select><button type='submit' id='updateTimeZone'  name="commit"> TZ Update </button>
+<input type="hidden" name="updateTimeZone"/></form>
+</td>
+</tr>
+<tr>
+<td style="text-align: right;">SYSTEM CONTROL </td>
+<td style="text-align: left;"><table><tr><td width="100"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formReboot" method="post"> <button type='submit' id='REBOOT'  name="commit" style="background-color:red;color:white"> REBOOT </button>
+ <input type="hidden" name="REBOOT"/></form></td><td width="100"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formFactory" method="post"> <button type='submit' id='Factory'  name="commit" style="background-color:orange;color:white"> Factory Reset </button>
+ <input type="hidden" name="Factory"/></form></td><td width="100"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formLoad" method="post"> <button type='submit' id='LoadCFG'  name="commit" style="background-color:green;color:white"> Load Default </button>
+ <input type="hidden" name="LoadCFG"/></form></td></tr></table></td>
+</tr></table><br /><br />
+<form id='formWebAuth' method="POST" action='#' enctype='multipart/form-data'>
+<table>
+<th colspan="2"><span><b>Web Authentication</b></span></th>
+<tr>
+<td align="right"><b>Web USER:</b></td>
+<td style="text-align: left;"><input size="32" maxlength="32" class="form-control" name="webauth_user" type="text" value="{{webUser}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>Web PASSWORD:</b></td>
+<td style="text-align: left;"><input size="63" maxlength="63" class="form-control" name="webauth_pass" type="password" value="{{webPass}}" /></td>
+</tr>
+<tr><td colspan="2" align="right">
+<div><button class="button" type='submit' id='submitWebAuth'  name="commit"> Apply Change </button></div>
+<input type="hidden" name="commitWebAuth"/>
+</td></tr></table><br />
+</form><br /><br />
+<form accept-charset="UTF-8" action="#" class="form-horizontal" id="formPWR" method="post">
+<table>
+<th colspan="2"><span><b>Display StandBy</b></span></th>
+<tr>
+<td align="right"><b>StandBy Delay:</b></td>
+<td style="text-align: left;"><input min="0" max="9999" name="stb" type="number" value="{{pwrStandbyDelay}}" /></td>
+</tr>
+<tr><td colspan="2" align="right">
+<div><button class="button" type='submit' id='submitPWR'  name="commitPWR"> Apply Change </button></div>
+<input type="hidden" name="commitPWR"/>
+</td></tr></table>
+</form><br /><br />
+{{#if logFile}}<form accept-charset="UTF-8" action="#" class="form-horizontal" id="formLOG" method="post">
+<table>
+<th colspan="2"><span><b>Log File</b></span></th>
+<tr>
+<td align="right"><b>Activate:</b></td>
+<td style="text-align: left;">
+<fieldset id="FilterGrp">
+<legend>Events</legend>
+<table style="text-align:unset;border-width:0px;background:unset">
+<tr style="background:unset;"><td style="border:unset;"><input class="field_checkbox" name="logTracker" type="checkbox" value="OK" {{#if logTracker}}checked{{/if}}/>Tracker</td>
+<td style="border:unset;"><input class="field_checkbox" name="logIgate" type="checkbox" value="OK" {{#if logIgate}}checked{{/if}}/>IGate</td>
+<td style="border:unset;"><input class="field_checkbox" name="logDigi" type="checkbox" value="OK" {{#if logDigi}}checked{{/if}}/>DIGI</td>
+<td style="border:unset;"><input class="field_checkbox" name="logWeather" type="checkbox" value="OK" {{#if logWeather}}checked{{/if}}/>Weather</td>
+<td style="border:unset;"></td>
+</tr></table></fieldset>
+</td>
+</tr>
+<tr><td colspan="2" align="right">
+<div><button class="button" type='submit' id='submitLOG'  name="commitLOG"> Apply Change </button></div>
+<input type="hidden" name="commitLOG"/>
+</td></tr></table>
+</form><br /><br />
+{{/if}}<form id='formPath' method="POST" action='#' enctype='multipart/form-data'>
+<table>
+<th colspan="2"><span><b>PATH USER Define</b></span></th>
+<tr>
+<td align="right"><b>PATH_1:</b></td>
+<td style="text-align: left;"><input size="72" maxlength="72" class="form-control" name="path1" type="text" value="{{path1}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>PATH_2:</b></td>
+<td style="text-align: left;"><input size="72" maxlength="72" class="form-control" name="path2" type="text" value="{{path2}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>PATH_3:</b></td>
+<td style="text-align: left;"><input size="72" maxlength="72" class="form-control" name="path3" type="text" value="{{path3}}" /></td>
+</tr>
+<tr>
+<td align="right"><b>PATH_4:</b></td>
+<td style="text-align: left;"><input size="72" maxlength="72" class="form-control" name="path4" type="text" value="{{path4}}" /></td>
+</tr>
+<tr><td colspan="2" align="right">
+<div><button class="button" type='submit' id='submitPath'  name="commitPath"> Apply Change </button></div>
+<input type="hidden" name="commitPath"/>
+</td></tr></table>
+</form><br /><br />{{#if dispSupport}}<form id='formDisp' method="POST" action='#' enctype='multipart/form-data'>
+<table>
+<th colspan="2"><span><b>Display Setting</b></span></th>
+<tr>
+<td style="text-align: right;"><b>OLED/TFT Enable</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="oledEnable" value="OK" {{#if oledEnable}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td style="text-align: right;"><b>Flip Rotate</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="dispFlip" value="OK" {{#if dispFlip}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+<tr>
+<td style="text-align: right;"><b>TX Display</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="txdispEnable" value="OK" {{#if txDisplay}}checked{{/if}}><span class="slider round"></span></label><label style="vertical-align: bottom;font-size: 8pt;"> <i>*All TX Packet for display affter filter.</i></label></td>
+</tr>
+<tr>
+<td style="text-align: right;"><b>RX Display</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="rxdispEnable" value="OK" {{#if rxDisplay}}checked{{/if}}><span class="slider round"></span></label><label style="vertical-align: bottom;font-size: 8pt;"> <i>*All RX Packet for display affter filter.</i></label></td>
+</tr>
+<tr>
+<td style="text-align: right;"><b>Head Up</b></td>
+<td style="text-align: left;"><label class="switch"><input type="checkbox" name="hupEnable" value="OK" {{#if hUp}}checked{{/if}}><span class="slider round"></span></label><label style="vertical-align: bottom;font-size: 8pt;"> <i>*The compass will rotate in the direction of movement.</i></label></td>
+</tr>
+<tr>
+<td style="text-align: right;"><b>TFT Brightness</b></td>
+<td style="text-align: left;">
+<select name="dispBright" id="dispBright">
+{{#each brightOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}}</option>
+{{/each}}</select>
+</td></tr>
+<tr>
+<td style="text-align: right;"><b>Popup Delay</b></td>
+<td style="text-align: left;">
+<select name="dispDelay" id="dispDelay">
+{{#each delayOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}} Sec</option>
+{{/each}}</select>
+</td></tr>
+<tr>
+<td style="text-align: right;"><b>OLED/TFT Sleep</b></td>
+<td style="text-align: left;">
+<select name="oled_timeout" id="oled_timeout">
+{{#each timeoutOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}} Sec</option>
+{{/each}}</select>
+</td></tr>
+<tr><td style="text-align: right;"><b>RX Channel</b></td><td style="text-align: left;"><input type="checkbox" name="dispRF" value="OK" {{#if dispRF}}checked{{/if}}/>RF <input type="checkbox" name="dispINET" value="OK" {{#if dispINET}}checked{{/if}}/>Internet </td></tr>
+<tr>
+<td align="right"><b>Filter DX:</b></td>
+<td style="text-align: left;"><input type="number" name="filterDX" min="0" max="9999"
+step="1" value="{{filterDistant}}" /> Km.  <label style="vertical-align: bottom;font-size: 8pt;"> <i>*Value 0 is all distant allow.</i></label></td>
+</tr>
+<tr>
+<td align="right"><b>Filter:</b></td>
+<td align="center">
+<fieldset id="filterDispGrp">
+<legend>Filter popup display</legend>
+<table style="text-align:unset;border-width:0px;background:unset">
+<tr style="background:unset;"><td style="border:unset;"><input class="field_checkbox" id="filterMessage" name="filterMessage" type="checkbox" value="OK" {{#if filterMessage}}checked{{/if}}/>Message</td>
+<td style="border:unset;"><input class="field_checkbox" id="filterStatus" name="filterStatus" type="checkbox" value="OK" {{#if filterStatus}}checked{{/if}}/>Status</td>
+<td style="border:unset;"><input class="field_checkbox" id="filterTelemetry" name="filterTelemetry" type="checkbox" value="OK" {{#if filterTelemetry}}checked{{/if}}/>Telemetry</td>
+<td style="border:unset;"><input class="field_checkbox" id="filterWeather" name="filterWeather" type="checkbox" value="OK" {{#if filterWeather}}checked{{/if}}/>Weather</td>
+<td style="border:unset;"><input class="field_checkbox" id="filterObject" name="filterObject" type="checkbox" value="OK" {{#if filterObject}}checked{{/if}}/>Object</td>
+</tr><tr style="background:unset;"><td style="border:unset;"><input class="field_checkbox" id="filterItem" name="filterItem" type="checkbox" value="OK" {{#if filterItem}}checked{{/if}}/>Item</td>
+<td style="border:unset;"><input class="field_checkbox" id="filterQuery" name="filterQuery" type="checkbox" value="OK" {{#if filterQuery}}checked{{/if}}/>Query</td>
+<td style="border:unset;"><input class="field_checkbox" id="filterBuoy" name="filterBuoy" type="checkbox" value="OK" {{#if filterBuoy}}checked{{/if}}/>Buoy</td>
+<td style="border:unset;"><input class="field_checkbox" id="filterPosition" name="filterPosition" type="checkbox" value="OK" {{#if filterPosition}}checked{{/if}}/>Position</td>
+<td style="border:unset;"></td>
+</tr></table></fieldset>
+</td></tr>
+<tr><td colspan="2" align="right">
+<div><button class="button" type='submit' id='submitDISP'  name="commitDISP"> Apply Change </button></div>
+<input type="hidden" name="commitDISP"/>
+</td></tr></table><br />
+</form><br />{{/if}})SYSHTML";
 
 void handle_system(AsyncWebServerRequest *request)
 {
@@ -7291,467 +6306,358 @@ void handle_system(AsyncWebServerRequest *request)
 		getLocalTime(&tmstruct, 100);
 		sprintf(strTime, "%d-%02d-%02d %02d:%02d:%02d", (tmstruct.tm_year) + 1900, (tmstruct.tm_mon) + 1, tmstruct.tm_mday, tmstruct.tm_hour, tmstruct.tm_min, tmstruct.tm_sec);
 
+		JsonDocument data;
+		data["hostName"] = config.host_name;
+		data["setTime"] = strTime;
+		data["ntpHost"] = config.ntp_host;
+		data["resetTimeout"] = config.reset_timeout;
+
+		JsonArray tzOptions = data["tzOptions"].to<JsonArray>();
+		char tzValueBuf[8];
+		for (int i = 0; i < 40; i++)
+		{
+			JsonObject o = tzOptions.add<JsonObject>();
+			snprintf(tzValueBuf, sizeof(tzValueBuf), "%.1f", tzList[i].tz);
+			o["value"] = tzValueBuf;
+			o["label"] = tzList[i].name;
+			o["selected"] = (config.timeZone == tzList[i].tz);
+		}
+
+		data["webUser"] = config.http_username;
+		data["webPass"] = config.http_password;
+		data["pwrStandbyDelay"] = config.pwr_stanby_delay;
+
+#ifdef LOG_FILE
+		data["logFile"] = true;
+		data["logTracker"] = (bool)(config.log & LOG_TRACKER);
+		data["logIgate"] = (bool)(config.log & LOG_IGATE);
+		data["logDigi"] = (bool)(config.log & LOG_DIGI);
+		data["logWeather"] = (bool)(config.log & LOG_WX);
+#else
+		data["logFile"] = false;
+#endif
+
+		data["path1"] = config.path[0];
+		data["path2"] = config.path[1];
+		data["path3"] = config.path[2];
+		data["path4"] = config.path[3];
+
+#if defined OLED || defined ST7735_160x80 || defined GUI_LCD
+		data["dispSupport"] = true;
+		data["oledEnable"] = config.oled_enable;
+		data["dispFlip"] = config.disp_flip;
+		data["txDisplay"] = config.tx_display;
+		data["rxDisplay"] = config.rx_display;
+		data["hUp"] = config.h_up;
+
+		JsonArray brightOptions = data["brightOptions"].to<JsonArray>();
+		for (int i = 0; i < 255; i += 25)
+		{
+			JsonObject o = brightOptions.add<JsonObject>();
+			o["value"] = i;
+			o["selected"] = (config.disp_brightness == i);
+		}
+		JsonArray delayOptions = data["delayOptions"].to<JsonArray>();
+		for (int i = 0; i < 16; i += 1)
+		{
+			JsonObject o = delayOptions.add<JsonObject>();
+			o["value"] = i;
+			o["selected"] = (config.dispDelay == i);
+		}
+		JsonArray timeoutOptions = data["timeoutOptions"].to<JsonArray>();
+		for (int i = 0; i <= 600; i += 30)
+		{
+			JsonObject o = timeoutOptions.add<JsonObject>();
+			o["value"] = i;
+			o["selected"] = (config.oled_timeout == i);
+		}
+
+		data["dispRF"] = config.dispRF;
+		data["dispINET"] = config.dispINET;
+		data["filterDistant"] = config.filterDistant;
+
+		data["filterMessage"] = (bool)(config.dispFilter & FILTER_MESSAGE);
+		data["filterStatus"] = (bool)(config.dispFilter & FILTER_STATUS);
+		data["filterTelemetry"] = (bool)(config.dispFilter & FILTER_TELEMETRY);
+		data["filterWeather"] = (bool)(config.dispFilter & FILTER_WX);
+		data["filterObject"] = (bool)(config.dispFilter & FILTER_OBJECT);
+		data["filterItem"] = (bool)(config.dispFilter & FILTER_ITEM);
+		data["filterQuery"] = (bool)(config.dispFilter & FILTER_QUERY);
+		data["filterBuoy"] = (bool)(config.dispFilter & FILTER_BUOY);
+		data["filterPosition"] = (bool)(config.dispFilter & FILTER_POSITION);
+#else
+		data["dispSupport"] = false;
+#endif
+
+		String html_str = renderTemplate(SYSTEM_TEMPLATE, data.as<JsonVariant>());
 		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", 48000);
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
 		if (!html)
 		{
 			return; // Memory allocation failed
 		}
-
-		html->print("<script type=\"text/javascript\">\n");
-		html->print("$('form').submit(function (e) {\n");
-		html->print("e.preventDefault();\n");
-		html->print("var data = new FormData(e.currentTarget);\n");
-		html->print("if(e.currentTarget.id===\"formHostName\") document.getElementById(\"updateHostName\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formTime\") document.getElementById(\"updateTime\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formNTP\") document.getElementById(\"updateTimeNtp\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formTimeZone\") document.getElementById(\"updateTimeZone\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formReboot\") document.getElementById(\"REBOOT\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formDisp\") document.getElementById(\"submitDISP\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formWebAuth\") document.getElementById(\"submitWebAuth\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formPWR\") document.getElementById(\"submitPWR\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formPath\") document.getElementById(\"submitPath\").disabled=true;\n");
-		html->print("$.ajax({\n");
-		html->print("url: '/system',\n");
-		html->print("type: 'POST',\n");
-		html->print("data: data,\n");
-		html->print("contentType: false,\n");
-		html->print("processData: false,\n");
-		html->print("success: function (data) {\n");
-		html->print("alert(\"Submited Successfully\");\n");
-		html->print("},\n");
-		html->print("error: function (data) {\n");
-		html->print("alert(\"An error occurred.\");\n");
-		html->print("}\n");
-		html->print("});\n");
-		html->print("});\n");
-		html->print("</script>\n");
-
-		// html += "<h2>System Setting</h2>\n";
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>System Setting</b></span></th>\n");
-		html->print("<tr>\n");
-		html->print("<td style=\"text-align: right;\">Host Name:</td>\n");
-
-		// Building form with snprintf to avoid string concatenation
-		char temp_buffer[300];
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formHostName\" method=\"post\"><input name=\"SetHostName\" type=\"text\" value=\"%s\" />\n", config.host_name);
-		html->print(temp_buffer);
-		html->print("<button type='submit' id='updateHostName'  name=\"updateHostName\"> Apply </button>\n");
-		html->print("<input type=\"hidden\" name=\"updateHostName\"/></form>\n</td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>");
-		// html += "<form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formTime\" method=\"post\">\n";
-		html->print("<td style=\"text-align: right;\">LOCAL DATE/TIME </td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formTime\" method=\"post\">\n<input name=\"SetTime\" type=\"text\" value=\"%s\" />\n", strTime);
-		html->print(temp_buffer);
-		html->print("<span class=\"input-group-addon\">\n<span class=\"glyphicon glyphicon-calendar\">\n</span></span>\n");
-		// html += "<div class=\"col-sm-3 col-xs-6\"><button class=\"btn btn-primary\" data-args=\"[true]\" data-method=\"getDate\" type=\"button\" data-related-target=\"#SetTime\" />Get Date</button></div>\n");
-		html->print("<button type='submit' id='updateTime'  name=\"commit\"> Time Update </button>\n");
-		html->print("<input type=\"hidden\" name=\"updateTime\"/></form>\n</td>\n");
-		// html += "<input class=\"btn btn-primary\" id=\"updateTime\" name=\"updateTime\" type=\"submit\" value=\"Time Update\" maxlength=\"80\"/></td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td style=\"text-align: right;\">NTP Host </td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formNTP\" method=\"post\"><input name=\"SetTimeNtp\" type=\"text\" value=\"%s\" />\n", config.ntp_host);
-		html->print(temp_buffer);
-		html->print("<button type='submit' id='updateTimeNtp'  name=\"commit\"> NTP Update </button>\n");
-		html->print("<input type=\"hidden\" name=\"updateTimeNtp\"/></form>\n</td>\n");
-		// html += "<input class=\"btn btn-primary\" id=\"updateTimeNtp\" name=\"updateTimeNtp\" type=\"submit\" value=\"NTP Update\" maxlength=\"80\"/></td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td style=\"text-align: right;\">Auto REBOOT:</td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formAutoReset\" method=\"post\"><input  min=\"0\" max=\"65535\"  name=\"SetAutoReset\" type=\"number\" value=\"%d\" /> Minutes\n", config.reset_timeout);
-		html->print(temp_buffer);
-		html->print("<button type='submit' id='updateAutoReset'  name=\"commit\"> Update </button> *<i>0=No reset</i>\n");
-		html->print("<input type=\"hidden\" name=\"updateAutoReset\"/></form>\n</td>\n");
-		// html += "<input class=\"button\" id=\"updateTimeNtp\" name=\"updateTimeNtp\" type=\"submit\" value=\"NTP Update\" maxlength=\"80\"/></td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td style=\"text-align: right;\">Time Zone </td>\n");
-		html->print("<td style=\"text-align: left;\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formTimeZone\" method=\"post\">\n");
-		html->print("<select name=\"SetTimeZone\" id=\"SetTimeZone\">\n");
-		for (int i = 0; i < 40; i++)
-		{
-			if (config.timeZone == tzList[i].tz)
-			{
-				snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%.1f\" selected>%s Sec</option>\n", tzList[i].tz, tzList[i].name);
-			}
-			else
-			{
-				snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%.1f\" >%s Sec</option>\n", tzList[i].tz, tzList[i].name);
-			}
-			html->print(temp_buffer);
-		}
-		html->print("</select>");
-		html->print("<button type='submit' id='updateTimeZone'  name=\"commit\"> TZ Update </button>\n");
-		html->print("<input type=\"hidden\" name=\"updateTimeZone\"/></form>\n</td>\n");
-		// html += "<input class=\"btn btn-primary\" id=\"updateTimeZone\" name=\"updateTimeZone\" type=\"submit\" value=\"TZ Update\" maxlength=\"80\"/></td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td style=\"text-align: right;\">SYSTEM CONTROL </td>\n");
-		html->print("<td style=\"text-align: left;\"><table><tr><td width=\"100\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formReboot\" method=\"post\"> <button type='submit' id='REBOOT'  name=\"commit\" style=\"background-color:red;color:white\"> REBOOT </button>\n");
-		html->print(" <input type=\"hidden\" name=\"REBOOT\"/></form></td><td width=\"100\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formFactory\" method=\"post\"> <button type='submit' id='Factory'  name=\"commit\" style=\"background-color:orange;color:white\"> Factory Reset </button>\n");
-		html->print(" <input type=\"hidden\" name=\"Factory\"/></form></td><td width=\"100\"><form accept-charset=\"UTF-8\" action=\"#\" enctype='multipart/form-data' id=\"formLoad\" method=\"post\"> <button type='submit' id='LoadCFG'  name=\"commit\" style=\"background-color:green;color:white\"> Load Default </button>\n");
-		html->print(" <input type=\"hidden\" name=\"LoadCFG\"/></form></td></tr></table></td>\n");
-		// html += "<td style=\"text-align: left;\"><input type='submit' class=\"btn btn-danger\" id=\"REBOOT\" name=\"REBOOT\" value='REBOOT'></td>\n");
-		html->print("</tr></table><br /><br />\n");
-
-		/************************ WEB AUTH **************************/
-		html->print("<form id='formWebAuth' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>Web Authentication</b></span></th>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Web USER:</b></td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input size=\"32\" maxlength=\"32\" class=\"form-control\" name=\"webauth_user\" type=\"text\" value=\"%s\" /></td>\n", config.http_username);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Web PASSWORD:</b></td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input size=\"63\" maxlength=\"63\" class=\"form-control\" name=\"webauth_pass\" type=\"password\" value=\"%s\" /></td>\n", config.http_password);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitWebAuth'  name=\"commit\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitWebAuth\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form><br /><br />");
-
-		/**************Power Mode******************/
-		// LU6JMF cleanup (Set/2026): "Power Save Mode" card stripped down to
-		// just StandBy Delay (OLED timeout), the only field that was ever
-		// really implemented. Enable/PWR GPIO/Sleep Interval/Power Mode/
-		// Events were a dead UI stub - removed to save space.
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formPWR\" method=\"post\">\n");
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>Display StandBy</b></span></th>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>StandBy Delay:</b></td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><input min=\"0\" max=\"9999\" name=\"stb\" type=\"number\" value=\"%d\" /></td>\n", config.pwr_stanby_delay);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitPWR'  name=\"commitPWR\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitPWR\"/>\n");
-		html->print("</td></tr></table>\n");
-
-		html->print("</form><br /><br />\n");
-
-		#ifdef LOG_FILE
-		/**************Log File******************/
-		// LU6JMF fix (Set/2026): filterFlageEn used to be declared by the
-		// (now removed) Power Save Mode "Events" section above. Re-declared
-		// here since this LOG_FILE block still needs it.
-		char filterFlageEn[10] = "";
-		html->print("<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formLOG\" method=\"post\">\n");
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>Log File</b></span></th>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Activate:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<fieldset id=\"FilterGrp\">\n");
-		html->print("<legend>Events</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">\n");
-		html->print("<tr style=\"background:unset;\">");
-
-		if (config.log & LOG_TRACKER)
-			strcpy(filterFlageEn, "checked");
-		else
-			strcpy(filterFlageEn, "");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"logTracker\" type=\"checkbox\" value=\"OK\" %s/>Tracker</td>\n", filterFlageEn);
-		html->print(temp_buffer);
-
-		if (config.log & LOG_IGATE)
-			strcpy(filterFlageEn, "checked");
-		else
-			strcpy(filterFlageEn, "");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"logIgate\" type=\"checkbox\" value=\"OK\" %s/>IGate</td>\n", filterFlageEn);
-		html->print(temp_buffer);
-
-		if (config.log & LOG_DIGI)
-			strcpy(filterFlageEn, "checked");
-		else
-			strcpy(filterFlageEn, "");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"logDigi\" type=\"checkbox\" value=\"OK\" %s/>DIGI</td>\n", filterFlageEn);
-		html->print(temp_buffer);
-
-		if (config.log & LOG_WX)
-			strcpy(filterFlageEn, "checked");
-		else
-			strcpy(filterFlageEn, "");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"logWeather\" type=\"checkbox\" value=\"OK\" %s/>Weather</td>\n", filterFlageEn);
-		html->print(temp_buffer);
-
-		html->print("<td style=\"border:unset;\"></td>\n");
-		html->print("</tr></table></fieldset>\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitLOG'  name=\"commitLOG\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitLOG\"/>\n");
-		html->print("</td></tr></table>\n");
-
-		html->print("</form><br /><br />\n");
-		#endif
-		/************************ PATH USER define **************************/
-		html->print("<form id='formPath' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>PATH USER Define</b></span></th>\n");
-		html->print("<tr>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"right\"><b>PATH_1:</b></td>\n<td style=\"text-align: left;\"><input size=\"72\" maxlength=\"72\" class=\"form-control\" name=\"path1\" type=\"text\" value=\"%s\" /></td>\n", config.path[0]);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"right\"><b>PATH_2:</b></td>\n<td style=\"text-align: left;\"><input size=\"72\" maxlength=\"72\" class=\"form-control\" name=\"path2\" type=\"text\" value=\"%s\" /></td>\n", config.path[1]);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"right\"><b>PATH_3:</b></td>\n<td style=\"text-align: left;\"><input size=\"72\" maxlength=\"72\" class=\"form-control\" name=\"path3\" type=\"text\" value=\"%s\" /></td>\n", config.path[2]);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td align=\"right\"><b>PATH_4:</b></td>\n<td style=\"text-align: left;\"><input size=\"72\" maxlength=\"72\" class=\"form-control\" name=\"path4\" type=\"text\" value=\"%s\" /></td>\n", config.path[3]);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitPath'  name=\"commitPath\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitPath\"/>\n");
-		html->print("</td></tr></table>\n");
-		html->print("</form><br /><br />");
-
-#if defined OLED || defined ST7735_160x80 || defined GUI_LCD
-		html->print("<form id='formDisp' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		// html += "<h2>Display Setting</h2>\n";
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>Display Setting</b></span></th>\n");
-		html->print("<tr>\n");
-		html->print("<td style=\"text-align: right;\"><b>OLED/TFT Enable</b></td>\n");
-		char oledFlageEn[10] = "";
-		if (config.oled_enable == true)
-			strcpy(oledFlageEn, "checked");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"oledEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", oledFlageEn);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-		if (config.disp_flip == true)
-			strcpy(oledFlageEn, "checked");
-		else
-			strcpy(oledFlageEn, "");
-		html->print("<tr>\n");
-		html->print("<td style=\"text-align: right;\"><b>Flip Rotate</b></td>\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"dispFlip\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", oledFlageEn);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td style=\"text-align: right;\"><b>TX Display</b></td>\n");
-		if (config.tx_display == true)
-			strcpy(oledFlageEn, "checked");
-		else
-			strcpy(oledFlageEn, "");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"txdispEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"> <i>*All TX Packet for display affter filter.</i></label></td>\n", oledFlageEn);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td style=\"text-align: right;\"><b>RX Display</b></td>\n");
-		if (config.rx_display == true)
-			strcpy(oledFlageEn, "checked");
-		else
-			strcpy(oledFlageEn, "");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"rxdispEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"> <i>*All RX Packet for display affter filter.</i></label></td>\n", oledFlageEn);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td style=\"text-align: right;\"><b>Head Up</b></td>\n");
-		if (config.h_up == true)
-			strcpy(oledFlageEn, "checked");
-		else
-			strcpy(oledFlageEn, "");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"hupEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"> <i>*The compass will rotate in the direction of movement.</i></label></td>\n", oledFlageEn);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td style=\"text-align: right;\"><b>TFT Brightness</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"dispBright\" id=\"dispBright\">\n");
-		for (int i = 0; i < 255; i += 25)
-		{
-			if (config.disp_brightness == i)
-			{
-				snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" selected>%d</option>\n", i, i);
-			}
-			else
-			{
-				snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" >%d</option>\n", i, i);
-			}
-			html->print(temp_buffer);
-		}
-		html->print("</select>\n");
-		html->print("</td></tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td style=\"text-align: right;\"><b>Popup Delay</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"dispDelay\" id=\"dispDelay\">\n");
-		for (int i = 0; i < 16; i += 1)
-		{
-			if (config.dispDelay == i)
-			{
-				snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" selected>%d Sec</option>\n", i, i);
-			}
-			else
-			{
-				snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" >%d Sec</option>\n", i, i);
-			}
-			html->print(temp_buffer);
-		}
-		html->print("</select>\n");
-		html->print("</td></tr>\n");
-		html->print("<tr>\n");
-		html->print("<td style=\"text-align: right;\"><b>OLED/TFT Sleep</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"oled_timeout\" id=\"oled_timeout\">\n");
-		for (int i = 0; i <= 600; i += 30)
-		{
-			if (config.oled_timeout == i)
-			{
-				snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" selected>%d Sec</option>\n", i, i);
-			}
-			else
-			{
-				snprintf(temp_buffer, sizeof(temp_buffer), "<option value=\"%d\" >%d Sec</option>\n", i, i);
-			}
-			html->print(temp_buffer);
-		}
-		html->print("</select>\n");
-		html->print("</td></tr>\n");
-		char rfFlageEn[20] = "";
-		if (config.dispRF == true)
-			strcpy(rfFlageEn, "checked");
-		char inetFlageEn[20] = "";
-		if (config.dispINET == true)
-			strcpy(inetFlageEn, "checked");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td style=\"text-align: right;\"><b>RX Channel</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"dispRF\" value=\"OK\" %s/>RF <input type=\"checkbox\" name=\"dispINET\" value=\"OK\" %s/>Internet </td></tr>\n", rfFlageEn, inetFlageEn);
-		html->print(temp_buffer);
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Filter DX:</b></td>\n");
-		html->print("<td style=\"text-align: left;\"><input type=\"number\" name=\"filterDX\" min=\"0\" max=\"9999\"\n");
-
-		snprintf(temp_buffer, sizeof(temp_buffer), "step=\"1\" value=\"%d\" /> Km.  <label style=\"vertical-align: bottom;font-size: 8pt;\"> <i>*Value 0 is all distant allow.</i></label></td>\n", config.filterDistant);
-		html->print(temp_buffer);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Filter:</b></td>\n");
-
-		html->print("<td align=\"center\">\n");
-		html->print("<fieldset id=\"filterDispGrp\">\n");
-		html->print("<legend>Filter popup display</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">\n");
-		html->print("<tr style=\"background:unset;\">");
-
-		// html += "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"dispTNC\" name=\"dispTNC\" type=\"checkbox\" value=\"OK\" " + rfFlageEn + "/>From RF</td>\n";
-
-		// html += "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"dispINET\" name=\"dispINET\" type=\"checkbox\" value=\"OK\" " + inetFlageEn + "/>From INET</td>\n";
-
-		if (config.dispFilter & FILTER_MESSAGE)
-			strcpy(oledFlageEn, "checked");
-		else
-			strcpy(oledFlageEn, "");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterMessage\" name=\"filterMessage\" type=\"checkbox\" value=\"OK\" %s/>Message</td>\n", oledFlageEn);
-		html->print(temp_buffer);
-		if (config.dispFilter & FILTER_STATUS)
-			strcpy(oledFlageEn, "checked");
-		else
-			strcpy(oledFlageEn, "");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterStatus\" name=\"filterStatus\" type=\"checkbox\" value=\"OK\" %s/>Status</td>\n", oledFlageEn);
-		html->print(temp_buffer);
-
-		if (config.dispFilter & FILTER_TELEMETRY)
-			strcpy(oledFlageEn, "checked");
-		else
-			strcpy(oledFlageEn, "");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterTelemetry\" name=\"filterTelemetry\" type=\"checkbox\" value=\"OK\" %s/>Telemetry</td>\n", oledFlageEn);
-		html->print(temp_buffer);
-
-		if (config.dispFilter & FILTER_WX)
-			strcpy(oledFlageEn, "checked");
-		else
-			strcpy(oledFlageEn, "");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterWeather\" name=\"filterWeather\" type=\"checkbox\" value=\"OK\" %s/>Weather</td>\n", oledFlageEn);
-		html->print(temp_buffer);
-
-		if (config.dispFilter & FILTER_OBJECT)
-			strcpy(oledFlageEn, "checked");
-		else
-			strcpy(oledFlageEn, "");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterObject\" name=\"filterObject\" type=\"checkbox\" value=\"OK\" %s/>Object</td>\n", oledFlageEn);
-		html->print(temp_buffer);
-
-		if (config.dispFilter & FILTER_ITEM)
-			strcpy(oledFlageEn, "checked");
-		else
-			strcpy(oledFlageEn, "");
-		html->print("</tr><tr style=\"background:unset;\"><td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterItem\" name=\"filterItem\" type=\"checkbox\" value=\"OK\" ");
-		html->print(oledFlageEn);
-		html->print("/>Item</td>\n");
-
-		if (config.dispFilter & FILTER_QUERY)
-			strcpy(oledFlageEn, "checked");
-		else
-			strcpy(oledFlageEn, "");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterQuery\" name=\"filterQuery\" type=\"checkbox\" value=\"OK\" %s/>Query</td>\n", oledFlageEn);
-		html->print(temp_buffer);
-
-		if (config.dispFilter & FILTER_BUOY)
-			strcpy(oledFlageEn, "checked");
-		else
-			strcpy(oledFlageEn, "");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterBuoy\" name=\"filterBuoy\" type=\"checkbox\" value=\"OK\" %s/>Buoy</td>\n", oledFlageEn);
-		html->print(temp_buffer);
-
-		if (config.dispFilter & FILTER_POSITION)
-			strcpy(oledFlageEn, "checked");
-		else
-			strcpy(oledFlageEn, "");
-		snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"border:unset;\"><input class=\"field_checkbox\" id=\"filterPosition\" name=\"filterPosition\" type=\"checkbox\" value=\"OK\" %s/>Position</td>\n", oledFlageEn);
-		html->print(temp_buffer);
-
-		html->print("<td style=\"border:unset;\"></td>\n");
-		html->print("</tr></table></fieldset>\n");
-
-		html->print("</td></tr>\n");
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitDISP'  name=\"commitDISP\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitDISP\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form><br />");
-#endif
-
+		html->print(html_str);
 		html->addHeader("System", "content");
 		html->addHeader("Cache-Control", "no-cache");
 		request->send(html);
 	}
 }
+
+static const char *IGATE_TEMPLATE =
+	"<script type=\"text/javascript\">\n"
+	"$('form').submit(function (e) {\n"
+	"e.preventDefault();\n"
+	"var data = new FormData(e.currentTarget);\n"
+	"if(e.currentTarget.id===\"formIgate\") document.getElementById(\"submitIGATE\").disabled=true;\n"
+	"if(e.currentTarget.id===\"formIgateFilter\") document.getElementById(\"submitIGATEfilter\").disabled=true;\n"
+	"$.ajax({\n"
+	"url: '/igate',\n"
+	"type: 'POST',\n"
+	"data: data,\n"
+	"contentType: false,\n"
+	"processData: false,\n"
+	"success: function (data) {\n"
+	"alert(\"Submited Successfully\");\n"
+	"},\n"
+	"error: function (data) {\n"
+	"alert(\"An error occurred.\");\n"
+	"}\n"
+	"});\n"
+	"});\n"
+	"</script>\n<script type=\"text/javascript\">\n"
+	"function openWindowSymbol() {\n"
+	"var i, l, options = [{\n"
+	"value: 'first',\n"
+	"text: 'First'\n"
+	"}, {\n"
+	"value: 'second',\n"
+	"text: 'Second'\n"
+	"}],\n"
+	"newWindow = window.open(\"/symbol\", null, \"height=400,width=400,status=no,toolbar=no,menubar=no,location=no\");\n"
+	"}\n"
+	"function setValue(symbol,table) {\n"
+	"document.getElementById('igateSymbol').value = String.fromCharCode(symbol);\n"
+	"if(table==1){\n document.getElementById('igateTable').value='/';\n"
+	"}else if(table==2){\n document.getElementById('igateTable').value='\\\\';\n}\n"
+	"document.getElementById('igateImgSymbol').src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n"
+	"\n}\n"
+	"function calculatePHGR(){document.forms.formIgate.texttouse.value=\"PHG\"+calcPower(document.forms.formIgate.power.value)+calcHeight(document.forms.formIgate.haat.value)+calcGain(document.forms.formIgate.gain.value)+calcDirection(document.forms.formIgate.direction.selectedIndex)}function Log2(e){return Math.log(e)/Math.log(2)}function calcPerHour(e){return e<10?e:String.fromCharCode(65+(e-10))}function calcHeight(e){return String.fromCharCode(48+Math.round(Log2(e/10),0))}function calcPower(e){if(e<1)return 0;if(e>=1&&e<4)return 1;if(e>=4&&e<9)return 2;if(e>=9&&e<16)return 3;if(e>=16&&e<25)return 4;if(e>=25&&e<36)return 5;if(e>=36&&e<49)return 6;if(e>=49&&e<64)return 7;if(e>=64&&e<81)return 8;if(e>=81)return 9}function calcDirection(e){if(e==\"0\")return\"0\";if(e==\"1\")return\"1\";if(e==\"2\")return\"2\";if(e==\"3\")return\"3\";if(e==\"4\")return\"4\";if(e==\"5\")return\"5\";if(e==\"6\")return\"6\";if(e==\"7\")return\"7\";if(e==\"8\")return\"8\"}function calcGain(e){return e>9?\"9\":e<0?\"0\":Math.round(e,0)}\n"
+	"function onRF2INETCheck() {\n"
+	"if (document.querySelector('#rf2inetEnable').checked) {\n"
+	"document.getElementById(\"rf2inetFilterGrp\").disabled=false;\n"
+	"} else {\n"
+	"document.getElementById(\"rf2inetFilterGrp\").disabled=true;\n"
+	"}\n}\n"
+	"function onINET2RFCheck() {\n"
+	"if (document.querySelector('#inet2rfEnable').checked) {\n"
+	"document.getElementById(\"inet2rfFilterGrp\").disabled=false;\n"
+	"} else {\n"
+	"document.getElementById(\"inet2rfFilterGrp\").disabled=true;\n"
+	"}\n}\n"
+	"function selPrecision(idx) {\n"
+	"var x=0;\n"
+	"x = document.getElementsByName(\"precision\"+idx)[0].value;\n"
+	"document.getElementsByName(\"eqns\"+idx+\"b\")[0].value=1/Math.pow(10,x);\n"
+	"}\n"
+	"function selOffset(idx) {\n"
+	"var x=0;\n"
+	"x = document.getElementsByName(\"offset\"+idx)[0].value;\n"
+	"document.getElementsByName(\"eqns\"+idx+\"c\")[0].value=x*(-1);\n"
+	"}\n"
+	"</script>\n"
+	"<form id='formIgate' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>[IGATE] Internet Gateway Mode</b></span></th>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Enable:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"igateEnable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Station Callsign:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"{{myCall}}\" /></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Station SSID:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"mySSID\" id=\"mySSID\">\n"
+	"{{#each ssidOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{value}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Station Symbol:</b></td>\n"
+	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"igateTable\" name=\"igateTable\" type=\"text\" value=\"{{symTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"igateSymbol\" name=\"igateSymbol\" type=\"text\" value=\"{{symSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"igateImgSymbol\" onclick=\"openWindowSymbol();\" src=\"http://aprs.nakhonthai.net/symbols/icons/{{symImgNum}}-{{symImgTable}}.png\"> <i>*Click icon for select symbol</i></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Item/Obj Name:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"9\" size=\"9\" id=\"igateObject\" name=\"igateObject\" type=\"text\" value=\"{{object}}\" /><i> *If not used, leave it blank.In use 3-9 charactor</i></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>PATH:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"igatePath\" id=\"igatePath\">\n"
+	"{{#each pathOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Server Host:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"20\" size=\"20\" id=\"aprsHost\" name=\"aprsHost\" type=\"text\" value=\"{{aprsHost}}\" /> *APRS-IS by T2THAI at <a href=\"http://aprs.nakhonthai.net:14501\" target=\"_t2thai\">aprs.nakhonthai.net:14580</a>,CBAPRS at <a href=\"http://aprs.nakhonthai.net:24501\" target=\"_t2thai\">aprs.nakhonthai.net:24580</a></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Server Port:</b></td>\n"
+	"<td style=\"text-align: left;\"><input min=\"1\" max=\"65535\" step=\"1\" id=\"aprsPort\" name=\"aprsPort\" type=\"number\" value=\"{{aprsPort}}\" /> *AMPR Host at <a href=\"http://aprs.hs5tqa.ampr.org:14501\" target=\"_t2thai\">aprs.hs5tqa.ampr.org:14580</a></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Server Filter:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"30\" size=\"30\" id=\"aprsFilter\" name=\"aprsFilter\" type=\"text\" value=\"{{aprsFilter}}\" /> *Filter: <a target=\"_blank\" href=\"http://www.aprs-is.net/javAPRSFilter.aspx\">http://www.aprs-is.net/javAPRSFilter.aspx</a></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Text Comment:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"25\" size=\"30\" id=\"igateComment\" name=\"igateComment\" type=\"text\" value=\"{{comment}}\" /></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Text Status:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"60\" id=\"igateStatus\" name=\"igateStatus\" type=\"text\" value=\"{{status}}\" />  Interval:<input min=\"0\" max=\"3600\" step=\"1\" name=\"igateSTSInv\" type=\"number\" value=\"{{statusInterval}}\" />Sec.</td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>RF2INET:</b></td>\n<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"rf2inetEnable\" name=\"rf2inetEnable\" onclick=\"onRF2INETCheck()\" value=\"OK\" {{#if rf2inet}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch RF to Internet gateway</i></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>INET2RF:</b></td>\n<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"inet2rfEnable\" name=\"inet2rfEnable\" onclick=\"onINET2RFCheck()\" value=\"OK\" {{#if inet2rf}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch Internet to RF gateway</i></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Time Stamp:</b></td>\n<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"igateTimeStamp\" value=\"OK\" {{#if timestamp}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n<tr>"
+	"<td align=\"right\"><b>POSITION:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<table>"
+	"<tr><td style=\"text-align: right;\">Beacon:</td><td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"igateBcnEnable\" value=\"OK\" {{#if bcnEn}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\">  Interval:<input min=\"0\" max=\"3600\" step=\"1\" id=\"igatePosInv\" name=\"igatePosInv\" type=\"number\" value=\"{{posInterval}}\" />Sec.</label></td></tr>"
+	"<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"igatePosSel\" value=\"0\" {{#if posFix}}checked=\"checked\"{{/if}}/>Fix <input type=\"radio\" name=\"igatePosSel\" value=\"1\" {{#if posGPS}}checked=\"checked\"{{/if}}/>GPS </td></tr>\n"
+	"<tr><td style=\"text-align: right;\">TX Channel:</td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"igatePos2RF\" value=\"OK\" {{#if pos2RF}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"igatePos2INET\" value=\"OK\" {{#if pos2INET}}checked{{/if}}/>Internet </td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" id=\"igatePosLat\" name=\"igatePosLat\" type=\"number\" value=\"{{lat}}\" />degrees (positive for North, negative for South)</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" id=\"igatePosLon\" name=\"igatePosLon\" type=\"number\" value=\"{{lon}}\" />degrees (positive for East, negative for West)</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" id=\"igatePosAlt\" name=\"igatePosAlt\" type=\"number\" value=\"{{alt}}\" /> meter. *Value 0 is not send height</td></tr>\n"
+	"</table></td>"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>PHG:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<table>"
+	"<tr>\n"
+	"<td align=\"right\">Radio TX Power</td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"power\" id=\"power\">\n"
+	"<option value=\"1\" selected>1</option>\n"
+	"<option value=\"5\">5</option>\n"
+	"<option value=\"10\">10</option>\n"
+	"<option value=\"15\">15</option>\n"
+	"<option value=\"25\">25</option>\n"
+	"<option value=\"35\">35</option>\n"
+	"<option value=\"50\">50</option>\n"
+	"<option value=\"65\">65</option>\n"
+	"<option value=\"80\">80</option>\n"
+	"</select> Watts</td>\n"
+	"</tr>\n"
+	"<tr><td style=\"text-align: right;\">Antenna Gain</td><td style=\"text-align: left;\"><input size=\"3\" min=\"0\" max=\"100\" step=\"0.1\" id=\"gain\" name=\"gain\" type=\"number\" value=\"6\" /> dBi</td></tr>\n"
+	"<tr>\n"
+	"<td align=\"right\">Height</td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"haat\" id=\"haat\">\n"
+	"<option value=\"10\" selected>10</option>\n"
+	"<option value=\"20\">20</option>\n"
+	"<option value=\"40\">40</option>\n"
+	"<option value=\"80\">80</option>\n"
+	"<option value=\"160\">160</option>\n"
+	"<option value=\"320\">320</option>\n"
+	"<option value=\"640\">640</option>\n"
+	"<option value=\"1280\">1280</option>\n"
+	"<option value=\"2560\">2560</option>\n"
+	"<option value=\"5120\">5120</option>\n"
+	"</select> Feet</td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\">Antenna/Direction</td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"direction\" id=\"direction\">\n"
+	"<option>Omni</option><option>NE</option><option>E</option><option>SE</option><option>S</option><option>SW</option><option>W</option><option>NW</option><option>N</option>\n"
+	"</select></td>\n"
+	"</tr>\n"
+	"<tr><td align=\"right\"><b>PHG Text</b></td><td align=\"left\"><input name=\"texttouse\" type=\"text\" size=\"6\" style=\"background-color: rgb(97, 239, 170);\" value=\"{{phg}}\"/> <input type=\"button\" value=\"Calculate PHG\" onclick=\"javascript:calculatePHGR()\" /></td></tr>\n"
+	"</table></td>"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n"
+	"<td align=\"center\"><table>\n"
+	"<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"igateTlmInv\" name=\"igateTlmInv\" type=\"number\" value=\"{{tlmInterval}}\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>"
+	"{{#each tlmChannels}}<tr><td align=\"right\"><b>CH A{{num}}:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<table>"
+	"<tr><td style=\"text-align: right;\">Sensor:</td>\n"
+	"<td style=\"text-align: left;\">CH: "
+	"<select name=\"sensorCH{{idx}}\" id=\"sensorCH{{idx}}\">\n"
+	"{{#each sensorOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"<td style=\"text-align: left;\">Name: <input maxlength=\"10\" size=\"8\" name=\"param{{idx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
+	"<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{idx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
+	"<td style=\"text-align: left;\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision{{idx}}\" type=\"text\" value=\"{{precision}}\" onchange=\"selPrecision({{idx}})\"/></td></tr>\n"
+	"<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}a\" type=\"number\" value=\"{{eqnsA}}\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}b\" type=\"number\" value=\"{{eqnsB}}\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}c\" type=\"number\" value=\"{{eqnsC}}\" /> (av<sup>2</sup>+bv+c) </td>\n"
+	"<td style=\"text-align: left;\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset{{idx}}\" type=\"text\" value=\"{{offset}}\" onchange=\"selOffset({{idx}})\"/></td></tr>\n"
+	"</table></td>"
+	"</tr>\n"
+	"{{/each}}"
+	"</table></td></tr>\n"
+	"<tr><td colspan=\"2\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitIGATE'  name=\"commitIGATE\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitIGATE\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form><br /><br />"
+	"<form id='formIgateFilter' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>[IGATE] Filter</b></span></th>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>RF2INET Filter:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<fieldset id=\"rf2inetFilterGrp\" {{#if rf2inetGrpDisabled}}disabled{{/if}}>\n"
+	"<legend>Filter RF to Internet</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">"
+	"<tr style=\"background:unset;\">"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterMessage\" type=\"checkbox\" value=\"OK\" {{#if rf2inetMsg}}checked{{/if}}/>Message</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterStatus\" type=\"checkbox\" value=\"OK\" {{#if rf2inetStatus}}checked{{/if}}/>Status</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterTelemetry\" type=\"checkbox\" value=\"OK\" {{#if rf2inetTlm}}checked{{/if}}/>Telemetry</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterWeather\" type=\"checkbox\" value=\"OK\" {{#if rf2inetWx}}checked{{/if}}/>Weather</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterObject\" type=\"checkbox\" value=\"OK\" {{#if rf2inetObj}}checked{{/if}}/>Object</td>\n"
+	"</tr><tr style=\"background:unset;\"><td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterItem\" type=\"checkbox\" value=\"OK\" {{#if rf2inetItem}}checked{{/if}}/>Item</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterQuery\" type=\"checkbox\" value=\"OK\" {{#if rf2inetQuery}}checked{{/if}}/>Query</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterBuoy\" type=\"checkbox\" value=\"OK\" {{#if rf2inetBuoy}}checked{{/if}}/>Buoy</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterPosition\" type=\"checkbox\" value=\"OK\" {{#if rf2inetPos}}checked{{/if}}/>Position</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterAll\" type=\"checkbox\" value=\"OK\" {{#if rf2inetAll}}checked{{/if}}/>ALL</td>\n"
+	"<td style=\"border:unset;\"></td>"
+	"</tr></table></fieldset>\n"
+	"</td></tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>INET2RF Filter:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<fieldset id=\"inet2rfFilterGrp\" {{#if inet2rfGrpDisabled}}disabled{{/if}}>\n"
+	"<legend>Filter Internet to RF</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">"
+	"<tr style=\"background:unset;\">"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterMessage\" type=\"checkbox\" value=\"OK\" {{#if inet2rfMsg}}checked{{/if}}/>Message</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterStatus\" type=\"checkbox\" value=\"OK\" {{#if inet2rfStatus}}checked{{/if}}/>Status</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterTelemetry\" type=\"checkbox\" value=\"OK\" {{#if inet2rfTlm}}checked{{/if}}/>Telemetry</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterWeather\" type=\"checkbox\" value=\"OK\" {{#if inet2rfWx}}checked{{/if}}/>Weather</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterObject\" type=\"checkbox\" value=\"OK\" {{#if inet2rfObj}}checked{{/if}}/>Object</td>\n"
+	"</tr><tr style=\"background:unset;\"><td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterItem\" type=\"checkbox\" value=\"OK\" {{#if inet2rfItem}}checked{{/if}}/>Item</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterQuery\" type=\"checkbox\" value=\"OK\" {{#if inet2rfQuery}}checked{{/if}}/>Query</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterBuoy\" type=\"checkbox\" value=\"OK\" {{#if inet2rfBuoy}}checked{{/if}}/>Buoy</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterPosition\" type=\"checkbox\" value=\"OK\" {{#if inet2rfPos}}checked{{/if}}/>Position</td>\n"
+	"<td style=\"border:unset;\"></td>"
+	"</tr></table></fieldset>\n"
+	"</td></tr>\n"
+	"<tr><td colspan=\"2\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitIGATEfilter'  name=\"commitIGATEfilter\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitIGATEfilter\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form><br />";
 
 void handle_igate(AsyncWebServerRequest *request)
 {
@@ -8259,496 +7165,356 @@ config.igate_phg[sizeof(config.igate_phg) - 1] = 0;
 	}
 	else
 	{
+		esp_task_wdt_reset(); // feed watchdog: handle_igate runs on the async_tcp task itself,
+		// and this is the largest/most complex RF page (5 TLM channels, 2 filter fieldsets,
+		// 35-45KB fixed HTML alone) - can take long enough under heap pressure to trip the TWDT.
+		JsonDocument data;
+		data["enabled"] = config.igate_en;
+		data["myCall"] = config.aprs_mycall;
+
+		JsonArray ssidOptions = data["ssidOptions"].to<JsonArray>();
+		for (uint8_t ssid = 0; ssid <= 15; ssid++)
+		{
+			JsonObject o = ssidOptions.add<JsonObject>();
+			o["value"] = ssid;
+			o["selected"] = (config.aprs_ssid == ssid);
+		}
+
+		auto tableFor = [](char first) -> const char *
+		{
+			if (first == 92)
+				return "2";
+			return "1";
+		};
+		char cbuf[2];
+		cbuf[0] = config.igate_symbol[0];
+		cbuf[1] = 0;
+		data["symTable"] = cbuf;
+		cbuf[0] = config.igate_symbol[1];
+		cbuf[1] = 0;
+		data["symSymbol"] = cbuf;
+		data["symImgNum"] = (int)config.igate_symbol[1];
+		data["symImgTable"] = tableFor(config.igate_symbol[0]);
+
+		data["object"] = config.igate_object;
+
+		JsonArray pathOptions = data["pathOptions"].to<JsonArray>();
+		for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
+		{
+			JsonObject o = pathOptions.add<JsonObject>();
+			o["value"] = pthIdx;
+			o["label"] = PATH_NAME[pthIdx];
+			o["selected"] = (config.igate_path == pthIdx);
+		}
+
+		data["aprsHost"] = config.aprs_host;
+		data["aprsPort"] = config.aprs_port;
+		data["aprsFilter"] = config.aprs_filter;
+		data["comment"] = config.igate_comment;
+		data["status"] = config.igate_status;
+		data["statusInterval"] = config.igate_sts_interval;
+		data["rf2inet"] = config.rf2inet;
+		data["inet2rf"] = config.inet2rf;
+		data["timestamp"] = config.igate_timestamp;
+		data["bcnEn"] = config.igate_bcn;
+		data["posInterval"] = config.igate_interval;
+		data["posFix"] = !config.igate_gps;
+		data["posGPS"] = config.igate_gps;
+		data["pos2RF"] = config.igate_loc2rf;
+		data["pos2INET"] = config.igate_loc2inet;
+
+		char buf[32];
+		snprintf(buf, sizeof(buf), "%.5f", config.igate_lat);
+		data["lat"] = buf;
+		snprintf(buf, sizeof(buf), "%.5f", config.igate_lon);
+		data["lon"] = buf;
+		snprintf(buf, sizeof(buf), "%.2f", config.igate_alt);
+		data["alt"] = buf;
+
+		data["phg"] = config.igate_phg;
+
+		data["tlmInterval"] = config.igate_tlm_interval;
+
+		JsonArray tlmChannels = data["tlmChannels"].to<JsonArray>();
+		for (int ax = 0; ax < 5; ax++)
+		{
+			JsonObject c = tlmChannels.add<JsonObject>();
+			c["idx"] = ax;
+			c["num"] = ax + 1;
+			c["param"] = config.igate_tlm_PARM[ax];
+			c["unit"] = config.igate_tlm_UNIT[ax];
+			c["precision"] = config.igate_tlm_precision[ax];
+			snprintf(buf, sizeof(buf), "%.5f", config.igate_tlm_EQNS[ax][0]);
+			c["eqnsA"] = buf;
+			snprintf(buf, sizeof(buf), "%.5f", config.igate_tlm_EQNS[ax][1]);
+			c["eqnsB"] = buf;
+			snprintf(buf, sizeof(buf), "%.5f", config.igate_tlm_EQNS[ax][2]);
+			c["eqnsC"] = buf;
+			snprintf(buf, sizeof(buf), "%.5f", config.igate_tlm_offset[ax]);
+			c["offset"] = buf;
+
+			JsonArray sensorOptions = c["sensorOptions"].to<JsonArray>();
+			for (uint8_t idx = 0; idx < 11; idx++)
+			{
+				JsonObject o = sensorOptions.add<JsonObject>();
+				o["value"] = idx;
+				o["label"] = (idx == 0) ? String("NONE") : ("SENSOR#" + String(idx));
+				o["selected"] = (config.igate_tlm_sensor[ax] == idx);
+			}
+		}
+
+		esp_task_wdt_reset();
+		data["rf2inetGrpDisabled"] = !config.rf2inet;
+		data["rf2inetMsg"] = (config.rf2inetFilter & FILTER_MESSAGE) != 0;
+		data["rf2inetStatus"] = (config.rf2inetFilter & FILTER_STATUS) != 0;
+		data["rf2inetTlm"] = (config.rf2inetFilter & FILTER_TELEMETRY) != 0;
+		data["rf2inetWx"] = (config.rf2inetFilter & FILTER_WX) != 0;
+		data["rf2inetObj"] = (config.rf2inetFilter & FILTER_OBJECT) != 0;
+		data["rf2inetItem"] = (config.rf2inetFilter & FILTER_ITEM) != 0;
+		data["rf2inetQuery"] = (config.rf2inetFilter & FILTER_QUERY) != 0;
+		data["rf2inetBuoy"] = (config.rf2inetFilter & FILTER_BUOY) != 0;
+		data["rf2inetPos"] = (config.rf2inetFilter & FILTER_POSITION) != 0;
+		data["rf2inetAll"] = (config.rf2inetFilter & FILTER_ENABLE_ALL) != 0;
+
+		data["inet2rfGrpDisabled"] = !config.inet2rf;
+		data["inet2rfMsg"] = (config.inet2rfFilter & FILTER_MESSAGE) != 0;
+		data["inet2rfStatus"] = (config.inet2rfFilter & FILTER_STATUS) != 0;
+		data["inet2rfTlm"] = (config.inet2rfFilter & FILTER_TELEMETRY) != 0;
+		data["inet2rfWx"] = (config.inet2rfFilter & FILTER_WX) != 0;
+		data["inet2rfObj"] = (config.inet2rfFilter & FILTER_OBJECT) != 0;
+		data["inet2rfItem"] = (config.inet2rfFilter & FILTER_ITEM) != 0;
+		data["inet2rfQuery"] = (config.inet2rfFilter & FILTER_QUERY) != 0;
+		data["inet2rfBuoy"] = (config.inet2rfFilter & FILTER_BUOY) != 0;
+		data["inet2rfPos"] = (config.inet2rfFilter & FILTER_POSITION) != 0;
+
+		// Page content (IGATE form + IGATE Filter form, incl. 5x telemetry channel
+		// blocks) measures ~35-45KB of fixed HTML alone before variable values are
+		// substituted in - too close to the old 44000 reserve, forcing late
+		// resizeAdd() growth mid-stream under heap pressure and silently truncating
+		// the response (missing Apply button/filter form). Raised to 60000, in line
+		// with the other large pages that already work reliably at this scale
+		// (MOD=55000, System=48000) - still well under the size that previously
+		// triggered the block_trim_free heap corruption, so the earlier fix holds.
+		log_e("[IGATE] before alloc: freeHeap=%u largestFreeBlock=%u", ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+		esp_task_wdt_reset();
+		delay(1);
+		String html_str = renderTemplate(IGATE_TEMPLATE, data.as<JsonVariant>());
 		// Streamed response: avoids a single large calloc() for the whole page.
 		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
 		// instead of requiring one big contiguous heap block up front - this was
 		// the reproducible trigger for a heap corruption assert (block_trim_free)
 		// under real traffic, confirmed via heap-integrity diagnostics.
-		char tempHtml[512];
-		AsyncResponseStream *html = request->beginResponseStream("text/html", 44000);
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
 		if (!html)
 		{
 			request->send(500, "text/html", "Memory allocation failed");
 			return;
 		}
-		html->print("<script type=\"text/javascript\">\n");
-		html->print("$('form').submit(function (e) {\n");
-		html->print("e.preventDefault();\n");
-		html->print("var data = new FormData(e.currentTarget);\n");
-		// html->print("document.getElementById(\"submitIGATE\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formIgate\") document.getElementById(\"submitIGATE\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formIgateFilter\") document.getElementById(\"submitIGATEfilter\").disabled=true;\n");
-		html->print("$.ajax({\n");
-		html->print("url: '/igate',\n");
-		html->print("type: 'POST',\n");
-		html->print("data: data,\n");
-		html->print("contentType: false,\n");
-		html->print("processData: false,\n");
-		html->print("success: function (data) {\n");
-		html->print("alert(\"Submited Successfully\");\n");
-		html->print("},\n");
-		html->print("error: function (data) {\n");
-		html->print("alert(\"An error occurred.\");\n");
-		html->print("}\n");
-		html->print("});\n");
-		html->print("});\n");
-		html->print("</script>\n<script type=\"text/javascript\">\n");
-
-		html->print("function openWindowSymbol() {\n");
-		html->print("var i, l, options = [{\n");
-		html->print("value: 'first',\n");
-		html->print("text: 'First'\n");
-		html->print("}, {\n");
-		html->print("value: 'second',\n");
-		html->print("text: 'Second'\n");
-		html->print("}],\n");
-		html->print("newWindow = window.open(\"/symbol\", null, \"height=400,width=400,status=no,toolbar=no,menubar=no,location=no\");\n");
-		html->print("}\n");
-
-		html->print("function setValue(symbol,table) {\n");
-		html->print("document.getElementById('igateSymbol').value = String.fromCharCode(symbol);\n");
-		html->print("if(table==1){\n document.getElementById('igateTable').value='/';\n");
-		html->print("}else if(table==2){\n document.getElementById('igateTable').value='\\\\';\n}\n");
-		html->print("document.getElementById('igateImgSymbol').src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n");
-		html->print("\n}\n");
-		html->print("function calculatePHGR(){document.forms.formIgate.texttouse.value=\"PHG\"+calcPower(document.forms.formIgate.power.value)+calcHeight(document.forms.formIgate.haat.value)+calcGain(document.forms.formIgate.gain.value)+calcDirection(document.forms.formIgate.direction.selectedIndex)}function Log2(e){return Math.log(e)/Math.log(2)}function calcPerHour(e){return e<10?e:String.fromCharCode(65+(e-10))}function calcHeight(e){return String.fromCharCode(48+Math.round(Log2(e/10),0))}function calcPower(e){if(e<1)return 0;if(e>=1&&e<4)return 1;if(e>=4&&e<9)return 2;if(e>=9&&e<16)return 3;if(e>=16&&e<25)return 4;if(e>=25&&e<36)return 5;if(e>=36&&e<49)return 6;if(e>=49&&e<64)return 7;if(e>=64&&e<81)return 8;if(e>=81)return 9}function calcDirection(e){if(e==\"0\")return\"0\";if(e==\"1\")return\"1\";if(e==\"2\")return\"2\";if(e==\"3\")return\"3\";if(e==\"4\")return\"4\";if(e==\"5\")return\"5\";if(e==\"6\")return\"6\";if(e==\"7\")return\"7\";if(e==\"8\")return\"8\"}function calcGain(e){return e>9?\"9\":e<0?\"0\":Math.round(e,0)}\n");
-		html->print("function onRF2INETCheck() {\n");
-		html->print("if (document.querySelector('#rf2inetEnable').checked) {\n");
-		// Checkbox has been checked
-		html->print("document.getElementById(\"rf2inetFilterGrp\").disabled=false;\n");
-		html->print("} else {\n");
-		// Checkbox has been unchecked
-		html->print("document.getElementById(\"rf2inetFilterGrp\").disabled=true;\n");
-		html->print("}\n}\n");
-		html->print("function onINET2RFCheck() {\n");
-		html->print("if (document.querySelector('#inet2rfEnable').checked) {\n");
-		// Checkbox has been checked
-		html->print("document.getElementById(\"inet2rfFilterGrp\").disabled=false;\n");
-		html->print("} else {\n");
-		// Checkbox has been unchecked
-		html->print("document.getElementById(\"inet2rfFilterGrp\").disabled=true;\n");
-		html->print("}\n}\n");
-
-		html->print("function selPrecision(idx) {\n");
-		html->print("var x=0;\n");
-		html->print("x = document.getElementsByName(\"precision\"+idx)[0].value;\n");
-		html->print("document.getElementsByName(\"eqns\"+idx+\"b\")[0].value=1/Math.pow(10,x);\n");
-		html->print("}\n");
-		html->print("function selOffset(idx) {\n");
-		html->print("var x=0;\n");
-		html->print("x = document.getElementsByName(\"offset\"+idx)[0].value;\n");
-		html->print("document.getElementsByName(\"eqns\"+idx+\"c\")[0].value=x*(-1);\n");
-		html->print("}\n");
-		html->print("</script>\n");
-		delay(1);
-		/************************ IGATE Mode **************************/
-		html->print("<form id='formIgate' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		// html->print("<h2>[IGATE] Internet Gateway Mode</h2>\n");
-		html->print("<table>\n");
-		// html->print("<tr>\n");
-		// html->print("<th width=\"200\"><span><b>Setting</b></span></th>\n");
-		// html->print("<th><span><b>Value</b></span></th>\n");
-		// html->print("</tr>\n");
-		html->print("<th colspan=\"2\"><span><b>[IGATE] Internet Gateway Mode</b></span></th>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Enable:</b></td>\n");
-		char igateEnFlag[10] = "";
-		if (config.igate_en)
-			strcpy(igateEnFlag, "checked");
-		else
-			strcpy(igateEnFlag, "");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"igateEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", igateEnFlag);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Station Callsign:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"%s\" /></td>\n", config.aprs_mycall);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Station SSID:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"mySSID\" id=\"mySSID\">\n");
-		for (uint8_t ssid = 0; ssid <= 15; ssid++)
-		{
-			if (config.aprs_ssid == ssid)
-			{
-				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>%d</option>\n", ssid, ssid);
-				}
-				else
-				{
-				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%d</option>\n", ssid, ssid);
-				}
-			html->print(tempHtml);
-		}
-		html->print("</select></td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Station Symbol:</b></td>\n");
-		const char *table = "1";
-		if (config.igate_symbol[0] == 47)
-			table = "1";
-		if (config.igate_symbol[0] == 92)
-			table = "2";
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"igateTable\" name=\"igateTable\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"igateSymbol\" name=\"igateSymbol\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"igateImgSymbol\" onclick=\"openWindowSymbol();\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-%s.png\"> <i>*Click icon for select symbol</i></td>\n",
-						 config.igate_symbol[0], config.igate_symbol[1], (int)config.igate_symbol[1], table);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Item/Obj Name:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"9\" size=\"9\" id=\"igateObject\" name=\"igateObject\" type=\"text\" value=\"%s\" /><i> *If not used, leave it blank.In use 3-9 charactor</i></td>\n", config.igate_object);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PATH:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"igatePath\" id=\"igatePath\">\n");
-		for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
-			{
-				if (config.igate_path == pthIdx)
-				{
-				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>%s</option>\n", pthIdx, PATH_NAME[pthIdx]);
-				}
-				else
-				{
-				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%s</option>\n", pthIdx, PATH_NAME[pthIdx]);
-				}
-			html->print(tempHtml);
-		}
-		html->print("</select></td>\n");
-		// html->print("<td style=\"text-align: left;\"><input maxlength=\"72\" size=\"72\" id=\"igatePath\" name=\"igatePath\" type=\"text\" value=\"" + String(config.igate_path) + "\" /></td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Server Host:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"20\" size=\"20\" id=\"aprsHost\" name=\"aprsHost\" type=\"text\" value=\"%s\" /> *APRS-IS by T2THAI at <a href=\"http://aprs.nakhonthai.net:14501\" target=\"_t2thai\">aprs.nakhonthai.net:14580</a>,CBAPRS at <a href=\"http://aprs.nakhonthai.net:24501\" target=\"_t2thai\">aprs.nakhonthai.net:24580</a></td>\n", config.aprs_host);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Server Port:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input min=\"1\" max=\"65535\" step=\"1\" id=\"aprsPort\" name=\"aprsPort\" type=\"number\" value=\"%d\" /> *AMPR Host at <a href=\"http://aprs.hs5tqa.ampr.org:14501\" target=\"_t2thai\">aprs.hs5tqa.ampr.org:14580</a></td>\n", config.aprs_port);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Server Filter:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"30\" size=\"30\" id=\"aprsFilter\" name=\"aprsFilter\" type=\"text\" value=\"%s\" /> *Filter: <a target=\"_blank\" href=\"http://www.aprs-is.net/javAPRSFilter.aspx\">http://www.aprs-is.net/javAPRSFilter.aspx</a></td>\n", config.aprs_filter);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Text Comment:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"25\" size=\"30\" id=\"igateComment\" name=\"igateComment\" type=\"text\" value=\"%s\" /></td>\n", config.igate_comment);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Text Status:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"60\" id=\"igateStatus\" name=\"igateStatus\" type=\"text\" value=\"%s\" />  Interval:<input min=\"0\" max=\"3600\" step=\"1\" name=\"igateSTSInv\" type=\"number\" value=\"%d\" />Sec.</td>\n", config.igate_status, config.igate_sts_interval);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-
-		char rf2inetFlag[10];
-		if (config.rf2inet)
-			strcpy(rf2inetFlag, "checked");
-		else
-			strcpy(rf2inetFlag, "");
-		snprintf(tempHtml, sizeof(tempHtml), "<td align=\"right\"><b>RF2INET:</b></td>\n<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"rf2inetEnable\" name=\"rf2inetEnable\" onclick=\"onRF2INETCheck()\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch RF to Internet gateway</i></label></td>\n", rf2inetFlag);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		char inet2rfEnFlag[10];
-		if (config.inet2rf)
-			strcpy(inet2rfEnFlag, "checked");
-		else
-			strcpy(inet2rfEnFlag, "");
-		snprintf(tempHtml, sizeof(tempHtml), "<td align=\"right\"><b>INET2RF:</b></td>\n<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"inet2rfEnable\" name=\"inet2rfEnable\" onclick=\"onINET2RFCheck()\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch Internet to RF gateway</i></label></td>\n", inet2rfEnFlag);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-			const char *timeStampFlag = config.igate_timestamp ? "checked" : "";
-		snprintf(tempHtml, sizeof(tempHtml), "<td align=\"right\"><b>Time Stamp:</b></td>\n<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"igateTimeStamp\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", timeStampFlag);
-		html->print(tempHtml);
-		html->print("</tr>\n<tr>");
-
-		html->print("<td align=\"right\"><b>POSITION:</b></td>\n");
-		html->print("<td align=\"center\">\n");
-		html->print("<table>");
-			const char *igateBcnEnFlag = config.igate_bcn ? "checked" : "";
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Beacon:</td><td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"igateBcnEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\">  Interval:<input min=\"0\" max=\"3600\" step=\"1\" id=\"igatePosInv\" name=\"igatePosInv\" type=\"number\" value=\"%d\" />Sec.</label></td></tr>", igateBcnEnFlag, config.igate_interval);
-		html->print(tempHtml);
-		const char *igatePosFixFlag = config.igate_gps ? "" : "checked=\"checked\"";
-		const char *igatePosGPSFlag = config.igate_gps ? "checked=\"checked\"" : "";
-		const char *igatePos2RFFlag = config.igate_loc2rf ? "checked" : "";
-		const char *igatePos2INETFlag = config.igate_loc2inet ? "checked" : "";
-
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"igatePosSel\" value=\"0\" %s/>Fix <input type=\"radio\" name=\"igatePosSel\" value=\"1\" %s/>GPS </td></tr>\n", igatePosFixFlag, igatePosGPSFlag);
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">TX Channel:</td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"igatePos2RF\" value=\"OK\" %s/>RF <input type=\"checkbox\" name=\"igatePos2INET\" value=\"OK\" %s/>Internet </td></tr>\n", igatePos2RFFlag, igatePos2INETFlag);
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" id=\"igatePosLat\" name=\"igatePosLat\" type=\"number\" value=\"%.5f\" />degrees (positive for North, negative for South)</td></tr>\n", config.igate_lat);
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" id=\"igatePosLon\" name=\"igatePosLon\" type=\"number\" value=\"%.5f\" />degrees (positive for East, negative for West)</td></tr>\n", config.igate_lon);
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" id=\"igatePosAlt\" name=\"igatePosAlt\" type=\"number\" value=\"%.2f\" /> meter. *Value 0 is not send height</td></tr>\n", config.igate_alt);
-		html->print(tempHtml);
-
-		html->print("</table></td>");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PHG:</b></td>\n");
-		html->print("<td align=\"center\">\n");
-		html->print("<table>");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\">Radio TX Power</td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"power\" id=\"power\">\n");
-		html->print("<option value=\"1\" selected>1</option>\n");
-		html->print("<option value=\"5\">5</option>\n");
-		html->print("<option value=\"10\">10</option>\n");
-		html->print("<option value=\"15\">15</option>\n");
-		html->print("<option value=\"25\">25</option>\n");
-		html->print("<option value=\"35\">35</option>\n");
-		html->print("<option value=\"50\">50</option>\n");
-		html->print("<option value=\"65\">65</option>\n");
-		html->print("<option value=\"80\">80</option>\n");
-		html->print("</select> Watts</td>\n");
-		html->print("</tr>\n");
-		html->print("<tr><td style=\"text-align: right;\">Antenna Gain</td><td style=\"text-align: left;\"><input size=\"3\" min=\"0\" max=\"100\" step=\"0.1\" id=\"gain\" name=\"gain\" type=\"number\" value=\"6\" /> dBi</td></tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\">Height</td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"haat\" id=\"haat\">\n");
-		int k = 10;
-		for (uint8_t w = 0; w < 10; w++)
-		{
-			char *temp_opt = allocateStringMemory(256);
-			if (temp_opt)
-			{
-				if (w == 0)
-				{
-					snprintf(temp_opt, 256, "<option value=\"%d\" selected>%d</option>\n", k, k);
-				}
-				else
-				{
-					snprintf(temp_opt, 256, "<option value=\"%d\">%d</option>\n", k, k);
-				}
-				html->print(temp_opt);
-				free(temp_opt);
-			}
-			k += k;
-		}
-		html->print("</select> Feet</td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\">Antenna/Direction</td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"direction\" id=\"direction\">\n");
-		html->print("<option>Omni</option><option>NE</option><option>E</option><option>SE</option><option>S</option><option>SW</option><option>W</option><option>NW</option><option>N</option>\n");
-		html->print("</select></td>\n");
-		html->print("</tr>\n");
-
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td align=\"right\"><b>PHG Text</b></td><td align=\"left\"><input name=\"texttouse\" type=\"text\" size=\"6\" style=\"background-color: rgb(97, 239, 170);\" value=\"%s\"/> <input type=\"button\" value=\"Calculate PHG\" onclick=\"javascript:calculatePHGR()\" /></td></tr>\n", config.igate_phg);
-		html->print(tempHtml);
-		html->print("</table></td>");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n");
-		html->print("<td align=\"center\"><table>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"igateTlmInv\" name=\"igateTlmInv\" type=\"number\" value=\"%d\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>", config.igate_tlm_interval);
-		html->print(tempHtml);
-		for (int ax = 0; ax < 5; ax++)
-		{
-			snprintf(tempHtml, sizeof(tempHtml), "<tr><td align=\"right\"><b>CH A%d:</b></td>\n", ax + 1);
-			html->print(tempHtml);
-
-			html->print("<td align=\"center\">\n");
-			html->print("<table>");
-
-			html->print("<tr><td style=\"text-align: right;\">Sensor:</td>\n");
-			html->print("<td style=\"text-align: left;\">CH: ");
-
-			snprintf(tempHtml, sizeof(tempHtml), "<select name=\"sensorCH%d\" id=\"sensorCH%d\">\n", ax, ax);
-			html->print(tempHtml);
-
-			for (uint8_t idx = 0; idx < 11; idx++)
-				{
-					if (idx == 0)
-					{
-						if (config.igate_tlm_sensor[ax] == idx)
-						{
-						snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>NONE</option>\n", idx);
-						}
-						else
-						{
-						snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">NONE</option>\n", idx);
-						}
-					}
-					else
-					{
-						if (config.igate_tlm_sensor[ax] == idx)
-						{
-						snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>SENSOR#%d</option>\n", idx, idx);
-						}
-						else
-						{
-						snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">SENSOR#%d</option>\n", idx, idx);
-						}
-					}
-				html->print(tempHtml);
-			}
-			html->print("</select></td>\n");
-
-			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Name: <input maxlength=\"10\" size=\"8\" name=\"param%d\" type=\"text\" value=\"%s\" /></td>\n", ax, config.igate_tlm_PARM[ax]);
-			html->print(tempHtml);
-
-			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit%d\" type=\"text\" value=\"%s\" /></td>\n", ax, config.igate_tlm_UNIT[ax]);
-			html->print(tempHtml);
-
-			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision%d\" type=\"text\" value=\"%d\" onchange=\"selPrecision(%d)\"/></td></tr>\n", ax, config.igate_tlm_precision[ax], ax);
-			html->print(tempHtml);
-
-			snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%da\" type=\"number\" value=\"%.5f\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%db\" type=\"number\" value=\"%.5f\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%dc\" type=\"number\" value=\"%.5f\" /> (av<sup>2</sup>+bv+c) </td>\n",
-							 ax, config.igate_tlm_EQNS[ax][0], ax, config.igate_tlm_EQNS[ax][1], ax, config.igate_tlm_EQNS[ax][2]);
-			html->print(tempHtml);
-
-			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset%d\" type=\"text\" value=\"%.5f\" onchange=\"selOffset(%d)\"/></td></tr>\n", ax, config.igate_tlm_offset[ax], ax);
-			html->print(tempHtml);
-
-			html->print("</table></td>");
-			html->print("</tr>\n");
-		}
-		html->print("</table></td></tr>\n");
-
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitIGATE'  name=\"commitIGATE\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitIGATE\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form><br /><br />");
-
-		html->print("<form id='formIgateFilter' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>[IGATE] Filter</b></span></th>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>RF2INET Filter:</b></td>\n");
-
-		html->print("<td align=\"center\">\n");
-		if (config.rf2inet)
-			html->print("<fieldset id=\"rf2inetFilterGrp\">\n");
-		else
-			html->print("<fieldset id=\"rf2inetFilterGrp\" disabled>\n");
-		html->print("<legend>Filter RF to Internet</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">");
-		html->print("<tr style=\"background:unset;\">");
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterMessage\" type=\"checkbox\" value=\"OK\" %s/>Message</td>\n",
-						 (config.rf2inetFilter & FILTER_MESSAGE) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterStatus\" type=\"checkbox\" value=\"OK\" %s/>Status</td>\n",
-						 (config.rf2inetFilter & FILTER_STATUS) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterTelemetry\" type=\"checkbox\" value=\"OK\" %s/>Telemetry</td>\n",
-						 (config.rf2inetFilter & FILTER_TELEMETRY) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterWeather\" type=\"checkbox\" value=\"OK\" %s/>Weather</td>\n",
-						 (config.rf2inetFilter & FILTER_WX) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterObject\" type=\"checkbox\" value=\"OK\" %s/>Object</td>\n",
-						 (config.rf2inetFilter & FILTER_OBJECT) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "</tr><tr style=\"background:unset;\"><td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterItem\" type=\"checkbox\" value=\"OK\" %s/>Item</td>\n",
-						 (config.rf2inetFilter & FILTER_ITEM) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterQuery\" type=\"checkbox\" value=\"OK\" %s/>Query</td>\n",
-						 (config.rf2inetFilter & FILTER_QUERY) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterBuoy\" type=\"checkbox\" value=\"OK\" %s/>Buoy</td>\n",
-						 (config.rf2inetFilter & FILTER_BUOY) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterPosition\" type=\"checkbox\" value=\"OK\" %s/>Position</td>\n",
-						 (config.rf2inetFilter & FILTER_POSITION) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"rf2inetFilterAll\" type=\"checkbox\" value=\"OK\" %s/>ALL</td>\n",
-				 (config.rf2inetFilter & FILTER_ENABLE_ALL) ? "checked" : "");
-		html->print(tempHtml);
-
-		html->print("<td style=\"border:unset;\"></td>");
-		html->print("</tr></table></fieldset>\n");
-		html->print("</td></tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>INET2RF Filter:</b></td>\n");
-
-		html->print("<td align=\"center\">\n");
-		if (config.inet2rf)
-			html->print("<fieldset id=\"inet2rfFilterGrp\">\n");
-		else
-			html->print("<fieldset id=\"inet2rfFilterGrp\" disabled>\n");
-		html->print("<legend>Filter Internet to RF</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">");
-		html->print("<tr style=\"background:unset;\">");
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterMessage\" type=\"checkbox\" value=\"OK\" %s/>Message</td>\n",
-						 (config.inet2rfFilter & FILTER_MESSAGE) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterStatus\" type=\"checkbox\" value=\"OK\" %s/>Status</td>\n",
-						 (config.inet2rfFilter & FILTER_STATUS) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterTelemetry\" type=\"checkbox\" value=\"OK\" %s/>Telemetry</td>\n",
-						 (config.inet2rfFilter & FILTER_TELEMETRY) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterWeather\" type=\"checkbox\" value=\"OK\" %s/>Weather</td>\n",
-						 (config.inet2rfFilter & FILTER_WX) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterObject\" type=\"checkbox\" value=\"OK\" %s/>Object</td>\n",
-						 (config.inet2rfFilter & FILTER_OBJECT) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "</tr><tr style=\"background:unset;\"><td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterItem\" type=\"checkbox\" value=\"OK\" %s/>Item</td>\n",
-						 (config.inet2rfFilter & FILTER_ITEM) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterQuery\" type=\"checkbox\" value=\"OK\" %s/>Query</td>\n",
-						 (config.inet2rfFilter & FILTER_QUERY) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterBuoy\" type=\"checkbox\" value=\"OK\" %s/>Buoy</td>\n",
-						 (config.inet2rfFilter & FILTER_BUOY) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"inet2rfFilterPosition\" type=\"checkbox\" value=\"OK\" %s/>Position</td>\n",
-						 (config.inet2rfFilter & FILTER_POSITION) ? "checked" : "");
-		html->print(tempHtml);
-
-		html->print("<td style=\"border:unset;\"></td>");
-		html->print("</tr></table></fieldset>\n");
-		html->print("</td></tr>\n");
-
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitIGATEfilter'  name=\"commitIGATEfilter\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitIGATEfilter\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form><br />");
-
+		html->print(html_str);
 		html->addHeader("IGATE", "content");
 		html->addHeader("Cache-Control", "no-cache");
 		request->send(html);
 	}
 }
+
+static const char *DIGI_TEMPLATE =
+	"<script type=\"text/javascript\">\n"
+	"$('form').submit(function (e) {\n"
+	"e.preventDefault();\n"
+	"var data = new FormData(e.currentTarget);\n"
+	"document.getElementById(\"submitDIGI\").disabled=true;\n"
+	"$.ajax({\n"
+	"url: '/digi',\n"
+	"type: 'POST',\n"
+	"data: data,\n"
+	"contentType: false,\n"
+	"processData: false,\n"
+	"success: function (data) {\n"
+	"alert(\"Submited Successfully\");\n"
+	"},\n"
+	"error: function (data) {\n"
+	"alert(\"An error occurred.\");\n"
+	"}\n"
+	"});\n"
+	"});\n"
+	"</script>\n<script type=\"text/javascript\">\n"
+	"function openWindowSymbol() {\n"
+	"var i, l, options = [{\n"
+	"value: 'first',\n"
+	"text: 'First'\n"
+	"}, {\n"
+	"value: 'second',\n"
+	"text: 'Second'\n"
+	"}],\n"
+	"newWindow = window.open(\"/symbol\", null, \"height=400,width=400,status=no,toolbar=no,menubar=no,titlebar=no,location=no\");\n"
+	"}\n"
+	"function setValue(symbol,table) {\n"
+	"document.getElementById('digiSymbol').value = String.fromCharCode(symbol);\n"
+	"if(table==1){\n document.getElementById('digiTable').value='/';\n"
+	"}else if(table==2){\n document.getElementById('digiTable').value='\\\\';\n}\n"
+	"document.getElementById('digiImgSymbol').src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n"
+	"\n}\n"
+	"function calculatePHGR(){document.forms.formDIGI.texttouse.value=\"PHG\"+calcPower(document.forms.formDIGI.power.value)+calcHeight(document.forms.formDIGI.haat.value)+calcGain(document.forms.formDIGI.gain.value)+calcDirection(document.forms.formDIGI.direction.selectedIndex)}function Log2(e){return Math.log(e)/Math.log(2)}function calcPerHour(e){return e<10?e:String.fromCharCode(65+(e-10))}function calcHeight(e){return String.fromCharCode(48+Math.round(Log2(e/10),0))}function calcPower(e){if(e<1)return 0;if(e>=1&&e<4)return 1;if(e>=4&&e<9)return 2;if(e>=9&&e<16)return 3;if(e>=16&&e<25)return 4;if(e>=25&&e<36)return 5;if(e>=36&&e<49)return 6;if(e>=49&&e<64)return 7;if(e>=64&&e<81)return 8;if(e>=81)return 9}function calcDirection(e){if(e==\"0\")return\"0\";if(e==\"1\")return\"1\";if(e==\"2\")return\"2\";if(e==\"3\")return\"3\";if(e==\"4\")return\"4\";if(e==\"5\")return\"5\";if(e==\"6\")return\"6\";if(e==\"7\")return\"7\";if(e==\"8\")return\"8\"}function calcGain(e){return e>9?\"9\":e<0?\"0\":Math.round(e,0)}\n"
+	"function selPrecision(idx) {\n"
+	"var x=0;\n"
+	"x = document.getElementsByName(\"precision\"+idx)[0].value;\n"
+	"document.getElementsByName(\"eqns\"+idx+\"b\")[0].value=1/Math.pow(10,x);\n"
+	"}\n"
+	"function selOffset(idx) {\n"
+	"var x=0;\n"
+	"x = document.getElementsByName(\"offset\"+idx)[0].value;\n"
+	"document.getElementsByName(\"eqns\"+idx+\"c\")[0].value=x*(-1);\n"
+	"}\n"
+	"</script>\n"
+	"<form id='formDIGI' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>[DIGI] Digital Repeater Mode</b></span></th>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Enable:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiEnable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Auto Enable:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiAuto\" value=\"OK\" {{#if digiAuto}}checked{{/if}}><span class=\"slider round\"></span></label> <i>*Automatic enable when APRS-IS disconnected</i></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Station Callsign:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"{{myCall}}\" /></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Station SSID:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"mySSID\" id=\"mySSID\">\n"
+	"{{#each ssidOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{value}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Station Symbol:</b></td>\n"
+	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"digiTable\" name=\"digiTable\" type=\"text\" value=\"{{symTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"digiSymbol\" name=\"digiSymbol\" type=\"text\" value=\"{{symSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"digiImgSymbol\" onclick=\"openWindowSymbol();\" src=\"http://aprs.nakhonthai.net/symbols/icons/{{symImgNum}}-{{symImgTable}}.png\"> <i>*Click icon for select symbol</i></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>PATH:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"digiPath\" id=\"digiPath\">\n"
+	"{{#each pathOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Text Comment:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"25\" size=\"30\" id=\"digiComment\" name=\"digiComment\" type=\"text\" value=\"{{comment}}\" /></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Text Status:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"60\" id=\"digiStatus\" name=\"digiStatus\" type=\"text\" value=\"{{status}}\" />  Interval:<input min=\"0\" max=\"3600\" step=\"1\" name=\"digiSTSInv\" type=\"number\" value=\"{{statusInterval}}\" />Sec.</td>\n"
+	"</tr>\n"
+	"<tr><td style=\"text-align: right;\"><b>Repeat Delay:</b></td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"100\" id=\"digiDelay\" name=\"digiDelay\" type=\"number\" value=\"{{delay}}\" /> mSec. <i>*0 is auto,Other random of delay time</i></td></tr>"
+	"<tr>\n"
+	"<td align=\"right\"><b>Time Stamp:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiTimeStamp\" value=\"OK\" {{#if timestamp}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n"
+	"<tr><td align=\"right\"><b>POSITION:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<table>"
+	"<tr><td style=\"text-align: right;\">Beacon:</td><td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiBcnEnable\" value=\"OK\" {{#if bcnEn}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\">  Interval:<input min=\"0\" max=\"3600\" step=\"1\" id=\"digiPosInv\" name=\"digiPosInv\" type=\"number\" value=\"{{posInterval}}\" />Sec.</label></td></tr>"
+	"<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"digiPosSel\" value=\"0\" {{#if posFix}}checked=\"checked\"{{/if}}/>Fix <input type=\"radio\" name=\"digiPosSel\" value=\"1\" {{#if posGPS}}checked=\"checked\"{{/if}}/>GPS </td></tr>\n"
+	"<tr><td style=\"text-align: right;\">TX Channel:</td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"digiPos2RF\" value=\"OK\" {{#if pos2RF}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"digiPos2INET\" value=\"OK\" {{#if pos2INET}}checked{{/if}}/>Internet </td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" id=\"digiPosLat\" name=\"digiPosLat\" type=\"number\" value=\"{{lat}}\" />degrees (positive for North, negative for South)</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" id=\"digiPosLon\" name=\"digiPosLon\" type=\"number\" value=\"{{lon}}\" />degrees (positive for East, negative for West)</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" id=\"digiPosAlt\" name=\"digiPosAlt\" type=\"number\" value=\"{{alt}}\" /> meter. *Value 0 is not send height</td></tr>\n"
+	"</table></td>"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>PHG:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<table>"
+	"<tr>\n"
+	"<td align=\"right\">Radio TX Power</td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"power\" id=\"power\">\n"
+	"<option value=\"1\" selected>1</option>\n"
+	"<option value=\"5\">5</option>\n"
+	"<option value=\"10\">10</option>\n"
+	"<option value=\"15\">15</option>\n"
+	"<option value=\"25\">25</option>\n"
+	"<option value=\"35\">35</option>\n"
+	"<option value=\"50\">50</option>\n"
+	"<option value=\"65\">65</option>\n"
+	"<option value=\"80\">80</option>\n"
+	"</select> Watts</td>\n"
+	"</tr>\n"
+	"<tr><td style=\"text-align: right;\">Antenna Gain</td><td style=\"text-align: left;\"><input size=\"3\" min=\"0\" max=\"100\" step=\"0.1\" id=\"gain\" name=\"gain\" type=\"number\" value=\"6\" /> dBi</td></tr>\n"
+	"<tr>\n"
+	"<td align=\"right\">Height</td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"haat\" id=\"haat\">\n"
+	"<option value=\"10\" selected>10</option>\n"
+	"<option value=\"20\">20</option>\n"
+	"<option value=\"40\">40</option>\n"
+	"<option value=\"80\">80</option>\n"
+	"<option value=\"160\">160</option>\n"
+	"<option value=\"320\">320</option>\n"
+	"<option value=\"640\">640</option>\n"
+	"<option value=\"1280\">1280</option>\n"
+	"<option value=\"2560\">2560</option>\n"
+	"<option value=\"5120\">5120</option>\n"
+	"</select> Feet</td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\">Antenna/Direction</td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"direction\" id=\"direction\">\n"
+	"<option>Omni</option><option>NE</option><option>E</option><option>SE</option><option>S</option><option>SW</option><option>W</option><option>NW</option><option>N</option>\n"
+	"</select></td>\n"
+	"</tr>\n"
+	"<tr><td align=\"right\"><b>PHG Text</b></td><td align=\"left\"><input name=\"texttouse\" type=\"text\" size=\"6\" style=\"background-color: rgb(97, 239, 170);\" value=\"{{phg}}\"/> <input type=\"button\" value=\"Calculate PHG\" onclick=\"javascript:calculatePHGR()\" /></td></tr>\n"
+	"</table></td>"
+	"<tr>\n"
+	"<td align=\"right\"><b>Filter:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<fieldset id=\"FilterGrp\">\n"
+	"<legend>Filter repeater</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">"
+	"<tr style=\"background:unset;\">"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterMessage\" type=\"checkbox\" value=\"OK\" {{#if filterMessage}}checked{{/if}}/>Message</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterStatus\" type=\"checkbox\" value=\"OK\" {{#if filterStatus}}checked{{/if}}/>Status</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterTelemetry\" type=\"checkbox\" value=\"OK\" {{#if filterTelemetry}}checked{{/if}}/>Telemetry</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterWeather\" type=\"checkbox\" value=\"OK\" {{#if filterWeather}}checked{{/if}}/>Weather</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterObject\" type=\"checkbox\" value=\"OK\" {{#if filterObject}}checked{{/if}}/>Object</td>\n"
+	"</tr><tr style=\"background:unset;\"><td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterItem\" type=\"checkbox\" value=\"OK\" {{#if filterItem}}checked{{/if}}/>Item</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterQuery\" type=\"checkbox\" value=\"OK\" {{#if filterQuery}}checked{{/if}}/>Query</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterBuoy\" type=\"checkbox\" value=\"OK\" {{#if filterBuoy}}checked{{/if}}/>Buoy</td>\n"
+	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterPosition\" type=\"checkbox\" value=\"OK\" {{#if filterPosition}}checked{{/if}}/>Position</td>\n"
+	"<td style=\"border:unset;\"></td>"
+	"</tr></table></fieldset>\n"
+	"</td></tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n"
+	"<td align=\"center\"><table>\n"
+	"<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"digiTlmInv\" name=\"digiTlmInv\" type=\"number\" value=\"{{tlmInterval}}\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>"
+	"{{#each tlmChannels}}<tr><td align=\"right\"><b>CH A{{num}}:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<table>"
+	"<tr><td style=\"text-align: right;\">Sensor:</td>\n"
+	"<td style=\"text-align: left;\">CH: "
+	"<select name=\"sensorCH{{idx}}\" id=\"sensorCH{{idx}}\">\n"
+	"{{#each sensorOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"<td style=\"text-align: left;\">Name: <input maxlength=\"10\" size=\"8\" name=\"param{{idx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
+	"<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{idx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
+	"<td style=\"text-align: left;\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision{{idx}}\" type=\"text\" value=\"{{precision}}\" onchange=\"selPrecision({{idx}})\"/></td></tr>\n"
+	"<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}a\" type=\"number\" value=\"{{eqnsA}}\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}b\" type=\"number\" value=\"{{eqnsB}}\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}c\" type=\"number\" value=\"{{eqnsC}}\" /> (av<sup>2</sup>+bv+c) </td>\n"
+	"<td style=\"text-align: left;\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset{{idx}}\" type=\"text\" value=\"{{offset}}\" onchange=\"selOffset({{idx}})\" /></td></tr>\n"
+	"</table></td>"
+	"</tr>\n"
+	"{{/each}}"
+	"</table></td></tr>\n"
+	"<tr><td colspan=\"2\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitDIGI'  name=\"commitDIGI\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitDIGI\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form><br />";
 
 void handle_digi(AsyncWebServerRequest *request)
 {
@@ -9135,395 +7901,215 @@ config.digi_phg[sizeof(config.digi_phg) - 1] = 0;
 	}
 	else
 	{
+		esp_task_wdt_reset(); // feed watchdog: handle_digi runs on the async_tcp task itself,
+		// same class of page as MSG/IGATE (5 TLM channels, 9-flag filter fieldset).
+		JsonDocument data;
+		data["enabled"] = config.digi_en;
+		data["digiAuto"] = config.digi_auto;
+		data["myCall"] = config.digi_mycall;
+
+		JsonArray ssidOptions = data["ssidOptions"].to<JsonArray>();
+		for (uint8_t ssid = 0; ssid <= 15; ssid++)
+		{
+			JsonObject o = ssidOptions.add<JsonObject>();
+			o["value"] = ssid;
+			o["selected"] = (config.digi_ssid == ssid);
+		}
+
+		auto tableFor = [](char first) -> const char *
+		{
+			if (first == 92)
+				return "2";
+			return "1";
+		};
+		char cbuf[2];
+		cbuf[0] = config.digi_symbol[0];
+		cbuf[1] = 0;
+		data["symTable"] = cbuf;
+		cbuf[0] = config.digi_symbol[1];
+		cbuf[1] = 0;
+		data["symSymbol"] = cbuf;
+		data["symImgNum"] = (int)config.digi_symbol[1];
+		data["symImgTable"] = tableFor(config.digi_symbol[0]);
+
+		JsonArray pathOptions = data["pathOptions"].to<JsonArray>();
+		for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
+		{
+			JsonObject o = pathOptions.add<JsonObject>();
+			o["value"] = pthIdx;
+			o["label"] = PATH_NAME[pthIdx];
+			o["selected"] = (config.digi_path == pthIdx);
+		}
+
+		data["comment"] = config.digi_comment;
+		data["status"] = config.digi_status;
+		data["statusInterval"] = config.digi_sts_interval;
+		data["delay"] = config.digi_delay;
+		data["timestamp"] = config.digi_timestamp;
+		data["bcnEn"] = config.digi_bcn;
+		data["posInterval"] = config.digi_interval;
+		data["posFix"] = !config.digi_gps;
+		data["posGPS"] = config.digi_gps;
+		data["pos2RF"] = config.digi_loc2rf;
+		data["pos2INET"] = config.digi_loc2inet;
+
+		char buf[32];
+		snprintf(buf, sizeof(buf), "%.5f", config.digi_lat);
+		data["lat"] = buf;
+		snprintf(buf, sizeof(buf), "%.5f", config.digi_lon);
+		data["lon"] = buf;
+		snprintf(buf, sizeof(buf), "%.2f", config.digi_alt);
+		data["alt"] = buf;
+
+		data["phg"] = config.digi_phg;
+
+		data["filterMessage"] = (config.digiFilter & FILTER_MESSAGE) != 0;
+		data["filterStatus"] = (config.digiFilter & FILTER_STATUS) != 0;
+		data["filterTelemetry"] = (config.digiFilter & FILTER_TELEMETRY) != 0;
+		data["filterWeather"] = (config.digiFilter & FILTER_WX) != 0;
+		data["filterObject"] = (config.digiFilter & FILTER_OBJECT) != 0;
+		data["filterItem"] = (config.digiFilter & FILTER_ITEM) != 0;
+		data["filterQuery"] = (config.digiFilter & FILTER_QUERY) != 0;
+		data["filterBuoy"] = (config.digiFilter & FILTER_BUOY) != 0;
+		data["filterPosition"] = (config.digiFilter & FILTER_POSITION) != 0;
+
+		data["tlmInterval"] = config.digi_tlm_interval;
+
+		JsonArray tlmChannels = data["tlmChannels"].to<JsonArray>();
+		for (int ax = 0; ax < 5; ax++)
+		{
+			JsonObject c = tlmChannels.add<JsonObject>();
+			c["idx"] = ax;
+			c["num"] = ax + 1;
+			c["param"] = config.digi_tlm_PARM[ax];
+			c["unit"] = config.digi_tlm_UNIT[ax];
+			c["precision"] = config.digi_tlm_precision[ax];
+			snprintf(buf, sizeof(buf), "%.5f", config.digi_tlm_EQNS[ax][0]);
+			c["eqnsA"] = buf;
+			snprintf(buf, sizeof(buf), "%.5f", config.digi_tlm_EQNS[ax][1]);
+			c["eqnsB"] = buf;
+			snprintf(buf, sizeof(buf), "%.5f", config.digi_tlm_EQNS[ax][2]);
+			c["eqnsC"] = buf;
+			snprintf(buf, sizeof(buf), "%.5f", config.digi_tlm_offset[ax]);
+			c["offset"] = buf;
+
+			JsonArray sensorOptions = c["sensorOptions"].to<JsonArray>();
+			for (uint8_t idx = 0; idx < 11; idx++)
+			{
+				JsonObject o = sensorOptions.add<JsonObject>();
+				o["value"] = idx;
+				o["label"] = (idx == 0) ? String("NONE") : ("SENSOR#" + String(idx));
+				o["selected"] = (config.digi_tlm_sensor[ax] == idx);
+			}
+		}
+
+		esp_task_wdt_reset();
+		String html_str = renderTemplate(DIGI_TEMPLATE, data.as<JsonVariant>());
 		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", 30000);
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
 		if (!html)
 		{
 			request->send(500, "text/html", "Memory allocation failed");
 			return;
 		}
-		char tempHtml[512];
-		html->print("<script type=\"text/javascript\">\n");
-		html->print("$('form').submit(function (e) {\n");
-		html->print("e.preventDefault();\n");
-		html->print("var data = new FormData(e.currentTarget);\n");
-		html->print("document.getElementById(\"submitDIGI\").disabled=true;\n");
-		html->print("$.ajax({\n");
-		html->print("url: '/digi',\n");
-		html->print("type: 'POST',\n");
-		html->print("data: data,\n");
-		html->print("contentType: false,\n");
-		html->print("processData: false,\n");
-		html->print("success: function (data) {\n");
-		html->print("alert(\"Submited Successfully\");\n");
-		html->print("},\n");
-		html->print("error: function (data) {\n");
-		html->print("alert(\"An error occurred.\");\n");
-		html->print("}\n");
-		html->print("});\n");
-		html->print("});\n");
-		html->print("</script>\n<script type=\"text/javascript\">\n");
-		html->print("function openWindowSymbol() {\n");
-		html->print("var i, l, options = [{\n");
-		html->print("value: 'first',\n");
-		html->print("text: 'First'\n");
-		html->print("}, {\n");
-		html->print("value: 'second',\n");
-		html->print("text: 'Second'\n");
-		html->print("}],\n");
-		html->print("newWindow = window.open(\"/symbol\", null, \"height=400,width=400,status=no,toolbar=no,menubar=no,titlebar=no,location=no\");\n");
-		html->print("}\n");
-
-		html->print("function setValue(symbol,table) {\n");
-		html->print("document.getElementById('digiSymbol').value = String.fromCharCode(symbol);\n");
-		html->print("if(table==1){\n document.getElementById('digiTable').value='/';\n");
-		html->print("}else if(table==2){\n document.getElementById('digiTable').value='\\\\';\n}\n");
-		html->print("document.getElementById('digiImgSymbol').src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n");
-		html->print("\n}\n");
-		html->print("function calculatePHGR(){document.forms.formDIGI.texttouse.value=\"PHG\"+calcPower(document.forms.formDIGI.power.value)+calcHeight(document.forms.formDIGI.haat.value)+calcGain(document.forms.formDIGI.gain.value)+calcDirection(document.forms.formDIGI.direction.selectedIndex)}function Log2(e){return Math.log(e)/Math.log(2)}function calcPerHour(e){return e<10?e:String.fromCharCode(65+(e-10))}function calcHeight(e){return String.fromCharCode(48+Math.round(Log2(e/10),0))}function calcPower(e){if(e<1)return 0;if(e>=1&&e<4)return 1;if(e>=4&&e<9)return 2;if(e>=9&&e<16)return 3;if(e>=16&&e<25)return 4;if(e>=25&&e<36)return 5;if(e>=36&&e<49)return 6;if(e>=49&&e<64)return 7;if(e>=64&&e<81)return 8;if(e>=81)return 9}function calcDirection(e){if(e==\"0\")return\"0\";if(e==\"1\")return\"1\";if(e==\"2\")return\"2\";if(e==\"3\")return\"3\";if(e==\"4\")return\"4\";if(e==\"5\")return\"5\";if(e==\"6\")return\"6\";if(e==\"7\")return\"7\";if(e==\"8\")return\"8\"}function calcGain(e){return e>9?\"9\":e<0?\"0\":Math.round(e,0)}\n");
-		html->print("function selPrecision(idx) {\n");
-		html->print("var x=0;\n");
-		html->print("x = document.getElementsByName(\"precision\"+idx)[0].value;\n");
-		html->print("document.getElementsByName(\"eqns\"+idx+\"b\")[0].value=1/Math.pow(10,x);\n");
-		html->print("}\n");
-		html->print("function selOffset(idx) {\n");
-		html->print("var x=0;\n");
-		html->print("x = document.getElementsByName(\"offset\"+idx)[0].value;\n");
-		html->print("document.getElementsByName(\"eqns\"+idx+\"c\")[0].value=x*(-1);\n");
-		html->print("}\n");
-		html->print("</script>\n");
-
-		/************************ DIGI Mode **************************/
-		html->print("<form id='formDIGI' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		// html->print("<h2>[DIGI] Digital Repeater Mode</h2>\n");
-		html->print("<table>\n");
-		// html->print("<tr>\n");
-		// html->print("<th width=\"200\"><span><b>Setting</b></span></th>\n");
-		// html->print("<th><span><b>Value</b></span></th>\n");
-		// html->print("</tr>\n");
-		html->print("<th colspan=\"2\"><span><b>[DIGI] Digital Repeater Mode</b></span></th>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Enable:</b></td>\n");
-		char digiFlag[10] = "";
-		if (config.digi_en)
-			strcpy(digiFlag, "checked");
-		else
-			strcpy(digiFlag, "");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", digiFlag);
-		html->print(tempHtml);
-
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Auto Enable:</b></td>\n");
-
-		if (config.digi_auto)
-			strcpy(digiFlag, "checked");
-		else
-			strcpy(digiFlag, "");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiAuto\" value=\"OK\" %s><span class=\"slider round\"></span></label> <i>*Automatic enable when APRS-IS disconnected</i></td>\n", digiFlag);
-		html->print(tempHtml);
-
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Station Callsign:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"%s\" /></td>\n", config.digi_mycall);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Station SSID:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"mySSID\" id=\"mySSID\">\n");
-		for (uint8_t ssid = 0; ssid <= 15; ssid++)
-		{
-			if (config.digi_ssid == ssid)
-			{
-				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>%d</option>\n", ssid, ssid);
-			}
-			else
-			{
-				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%d</option>\n", ssid, ssid);
-			}
-			html->print(tempHtml);
-		}
-		html->print("</select></td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Station Symbol:</b></td>\n");
-		char table[3] = "1";
-		if (config.digi_symbol[0] == 47)
-			strcpy(table, "1");
-		if (config.digi_symbol[0] == 92)
-			strcpy(table, "2");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"digiTable\" name=\"digiTable\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"digiSymbol\" name=\"digiSymbol\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"digiImgSymbol\" onclick=\"openWindowSymbol();\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-%s.png\"> <i>*Click icon for select symbol</i></td>\n",
-				 config.digi_symbol[0], config.digi_symbol[1], (int)config.digi_symbol[1], table);
-		html->print(tempHtml);
-
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PATH:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"digiPath\" id=\"digiPath\">\n");
-		for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
-		{
-			if (config.digi_path == pthIdx)
-			{
-				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>%s</option>\n", pthIdx, PATH_NAME[pthIdx]);
-			}
-			else
-			{
-				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%s</option>\n", pthIdx, PATH_NAME[pthIdx]);
-			}
-			html->print(tempHtml);
-		}
-		html->print("</select></td>\n");
-		// html->print("<td style=\"text-align: left;\"><input maxlength=\"72\" size=\"72\" id=\"digiPath\" name=\"digiPath\" type=\"text\" value=\"" + String(config.digi_path) + "\" /></td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Text Comment:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"25\" size=\"30\" id=\"digiComment\" name=\"digiComment\" type=\"text\" value=\"%s\" /></td>\n", config.digi_comment);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Text Status:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"60\" id=\"digiStatus\" name=\"digiStatus\" type=\"text\" value=\"%s\" />  Interval:<input min=\"0\" max=\"3600\" step=\"1\" name=\"digiSTSInv\" type=\"number\" value=\"%d\" />Sec.</td>\n", config.digi_status, config.digi_sts_interval);
-		html->print(tempHtml);
-
-		html->print("</tr>\n");
-
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\"><b>Repeat Delay:</b></td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"100\" id=\"digiDelay\" name=\"digiDelay\" type=\"number\" value=\"%d\" /> mSec. <i>*0 is auto,Other random of delay time</i></td></tr>", config.digi_delay);
-		html->print(tempHtml);
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Time Stamp:</b></td>\n");
-		char timeStampFlag[10];
-		if (config.digi_timestamp)
-			strcpy(timeStampFlag, "checked");
-		else
-			strcpy(timeStampFlag, "");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiTimeStamp\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", timeStampFlag);
-		html->print(tempHtml);
-
-		html->print("</tr>\n");
-
-		html->print("<tr><td align=\"right\"><b>POSITION:</b></td>\n");
-		html->print("<td align=\"center\">\n");
-		html->print("<table>");
-
-		if (config.digi_bcn)
-			strcpy(digiFlag, "checked");
-		else
-			strcpy(digiFlag, "");
-
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Beacon:</td><td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiBcnEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\">  Interval:<input min=\"0\" max=\"3600\" step=\"1\" id=\"digiPosInv\" name=\"digiPosInv\" type=\"number\" value=\"%d\" />Sec.</label></td></tr>", digiFlag, config.digi_interval);
-		html->print(tempHtml);
-
-		String digiPosFixFlag = "";
-		String digiPosGPSFlag = "";
-		String digiPos2RFFlag = "";
-		String digiPos2INETFlag = "";
-		if (config.digi_gps)
-			digiPosGPSFlag = "checked=\"checked\"";
-		else
-			digiPosFixFlag = "checked=\"checked\"";
-
-		if (config.digi_loc2rf)
-			digiPos2RFFlag = "checked";
-		if (config.digi_loc2inet)
-			digiPos2INETFlag = "checked";
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"digiPosSel\" value=\"0\" %s/>Fix <input type=\"radio\" name=\"digiPosSel\" value=\"1\" %s/>GPS </td></tr>\n",
-				 digiPosFixFlag.c_str(), digiPosGPSFlag.c_str());
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">TX Channel:</td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"digiPos2RF\" value=\"OK\" %s/>RF <input type=\"checkbox\" name=\"digiPos2INET\" value=\"OK\" %s/>Internet </td></tr>\n",
-				 digiPos2RFFlag.c_str(), digiPos2INETFlag.c_str());
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" id=\"digiPosLat\" name=\"digiPosLat\" type=\"number\" value=\"%.5f\" />degrees (positive for North, negative for South)</td></tr>\n", config.digi_lat);
-		html->print(tempHtml);
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" id=\"digiPosLon\" name=\"digiPosLon\" type=\"number\" value=\"%.5f\" />degrees (positive for East, negative for West)</td></tr>\n", config.digi_lon);
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" id=\"digiPosAlt\" name=\"digiPosAlt\" type=\"number\" value=\"%.2f\" /> meter. *Value 0 is not send height</td></tr>\n", config.digi_alt);
-		html->print(tempHtml);
-		html->print("</table></td>");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PHG:</b></td>\n");
-		html->print("<td align=\"center\">\n");
-		html->print("<table>");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\">Radio TX Power</td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"power\" id=\"power\">\n");
-		html->print("<option value=\"1\" selected>1</option>\n");
-		html->print("<option value=\"5\">5</option>\n");
-		html->print("<option value=\"10\">10</option>\n");
-		html->print("<option value=\"15\">15</option>\n");
-		html->print("<option value=\"25\">25</option>\n");
-		html->print("<option value=\"35\">35</option>\n");
-		html->print("<option value=\"50\">50</option>\n");
-		html->print("<option value=\"65\">65</option>\n");
-		html->print("<option value=\"80\">80</option>\n");
-		html->print("</select> Watts</td>\n");
-		html->print("</tr>\n");
-		html->print("<tr><td style=\"text-align: right;\">Antenna Gain</td><td style=\"text-align: left;\"><input size=\"3\" min=\"0\" max=\"100\" step=\"0.1\" id=\"gain\" name=\"gain\" type=\"number\" value=\"6\" /> dBi</td></tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\">Height</td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"haat\" id=\"haat\">\n");
-		int k = 10;
-		for (uint8_t w = 0; w < 10; w++)
-		{
-			if (w == 0)
-			{
-				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>%d</option>\n", k, k);
-			}
-			else
-			{
-				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%d</option>\n", k, k);
-			}
-			html->print(tempHtml);
-			k += k;
-		}
-		html->print("</select> Feet</td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\">Antenna/Direction</td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"direction\" id=\"direction\">\n");
-		html->print("<option>Omni</option><option>NE</option><option>E</option><option>SE</option><option>S</option><option>SW</option><option>W</option><option>NW</option><option>N</option>\n");
-		html->print("</select></td>\n");
-		html->print("</tr>\n");
-
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td align=\"right\"><b>PHG Text</b></td><td align=\"left\"><input name=\"texttouse\" type=\"text\" size=\"6\" style=\"background-color: rgb(97, 239, 170);\" value=\"%s\"/> <input type=\"button\" value=\"Calculate PHG\" onclick=\"javascript:calculatePHGR()\" /></td></tr>\n", config.digi_phg);
-		html->print(tempHtml);
-
-		html->print("</table></tr>");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Filter:</b></td>\n");
-
-		html->print("<td align=\"center\">\n");
-		html->print("<fieldset id=\"FilterGrp\">\n");
-		html->print("<legend>Filter repeater</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">");
-		html->print("<tr style=\"background:unset;\">");
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterMessage\" type=\"checkbox\" value=\"OK\" %s/>Message</td>\n",
-				 (config.digiFilter & FILTER_MESSAGE) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterStatus\" type=\"checkbox\" value=\"OK\" %s/>Status</td>\n",
-				 (config.digiFilter & FILTER_STATUS) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterTelemetry\" type=\"checkbox\" value=\"OK\" %s/>Telemetry</td>\n",
-				 (config.digiFilter & FILTER_TELEMETRY) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterWeather\" type=\"checkbox\" value=\"OK\" %s/>Weather</td>\n",
-				 (config.digiFilter & FILTER_WX) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterObject\" type=\"checkbox\" value=\"OK\" %s/>Object</td>\n",
-				 (config.digiFilter & FILTER_OBJECT) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "</tr><tr style=\"background:unset;\"><td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterItem\" type=\"checkbox\" value=\"OK\" %s/>Item</td>\n",
-				 (config.digiFilter & FILTER_ITEM) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterQuery\" type=\"checkbox\" value=\"OK\" %s/>Query</td>\n",
-				 (config.digiFilter & FILTER_QUERY) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterBuoy\" type=\"checkbox\" value=\"OK\" %s/>Buoy</td>\n",
-				 (config.digiFilter & FILTER_BUOY) ? "checked" : "");
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"FilterPosition\" type=\"checkbox\" value=\"OK\" %s/>Position</td>\n",
-				 (config.digiFilter & FILTER_POSITION) ? "checked" : "");
-		html->print(tempHtml);
-
-		html->print("<td style=\"border:unset;\"></td>");
-		html->print("</tr></table></fieldset>\n");
-		html->print("</td></tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n");
-		html->print("<td align=\"center\"><table>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"digiTlmInv\" name=\"digiTlmInv\" type=\"number\" value=\"%d\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>", config.digi_tlm_interval);
-		html->print(tempHtml);
-		for (int ax = 0; ax < 5; ax++)
-		{
-			snprintf(tempHtml, sizeof(tempHtml), "<tr><td align=\"right\"><b>CH A%d:</b></td>\n", ax + 1);
-			html->print(tempHtml);
-			html->print("<td align=\"center\">\n");
-			html->print("<table>");
-
-			html->print("<tr><td style=\"text-align: right;\">Sensor:</td>\n");
-			html->print("<td style=\"text-align: left;\">CH: ");
-
-			snprintf(tempHtml, sizeof(tempHtml), "<select name=\"sensorCH%d\" id=\"sensorCH%d\">\n", ax, ax);
-			html->print(tempHtml);
-
-			for (uint8_t idx = 0; idx < 11; idx++)
-			{
-				if (idx == 0)
-				{
-					if (config.digi_tlm_sensor[ax] == idx)
-					{
-						snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>NONE</option>\n", idx);
-					}
-					else
-					{
-						snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">NONE</option>\n", idx);
-					}
-				}
-				else
-				{
-					if (config.digi_tlm_sensor[ax] == idx)
-					{
-						snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>SENSOR#%d</option>\n", idx, idx);
-					}
-					else
-					{
-						snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">SENSOR#%d</option>\n", idx, idx);
-					}
-				}
-				html->print(tempHtml);
-			}
-			html->print("</select></td>\n");
-
-			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Name: <input maxlength=\"10\" size=\"8\" name=\"param%d\" type=\"text\" value=\"%s\" /></td>\n", ax, config.digi_tlm_PARM[ax]);
-			html->print(tempHtml);
-			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit%d\" type=\"text\" value=\"%s\" /></td>\n", ax, config.digi_tlm_UNIT[ax]);
-			html->print(tempHtml);
-
-			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision%d\" type=\"text\" value=\"%d\" onchange=\"selPrecision(%d)\"/></td></tr>\n", ax, config.digi_tlm_precision[ax], ax);
-			html->print(tempHtml);
-
-			snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%da\" type=\"number\" value=\"%.5f\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%db\" type=\"number\" value=\"%.5f\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%dc\" type=\"number\" value=\"%.5f\" /> (av<sup>2</sup>+bv+c) </td>\n",
-					 ax, config.digi_tlm_EQNS[ax][0], ax, config.digi_tlm_EQNS[ax][1], ax, config.digi_tlm_EQNS[ax][2]);
-			html->print(tempHtml);
-
-			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset%d\" type=\"text\" value=\"%.5f\" onchange=\"selOffset(%d)\" /></td></tr>\n", ax, config.digi_tlm_offset[ax], ax);
-			html->print(tempHtml);
-
-			html->print("</table></td>");
-			html->print("</tr>\n");
-		}
-		html->print("</table></td></tr>\n");
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitDIGI'  name=\"commitDIGI\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitDIGI\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form><br />");
-
+		html->print(html_str);
 		html->addHeader("digi", "content");
 		html->addHeader("Cache-Control", "no-cache");
 		request->send(html);
 	}
 }
+
+static const char *WX_TEMPLATE =
+	"<script type=\"text/javascript\">\n"
+	"$('form').submit(function (e) {\n"
+	"e.preventDefault();\n"
+	"var data = new FormData(e.currentTarget);\n"
+	"document.getElementById(\"submitWX\").disabled=true;\n"
+	"$.ajax({\n"
+	"url: '/wx',\n"
+	"type: 'POST',\n"
+	"data: data,\n"
+	"contentType: false,\n"
+	"processData: false,\n"
+	"success: function (data) {\n"
+	"alert(\"Submited Successfully\");\n"
+	"},\n"
+	"error: function (data) {\n"
+	"alert(\"An error occurred.\");\n"
+	"}\n"
+	"});\n"
+	"});\n"
+	"</script>\n"
+	"<form id='formWX' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>[WX] Weather Station</b></span></th>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Enable:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Station Callsign:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"{{myCall}}\" /></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Station SSID:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"mySSID\" id=\"mySSID\">\n"
+	"{{#each ssidOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{value}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Object Name:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"9\" size=\"9\" name=\"Object\" type=\"text\" value=\"{{object}}\" /><i> *If not used, leave it blank.In use 3-9 charactor</i></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>PATH:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"Path\" id=\"Path\">\n"
+	"{{#each pathOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Text Comment:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"50\" name=\"Comment\" type=\"text\" value=\"{{comment}}\" /></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Time Stamp:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wxTimeStamp\" value=\"OK\" {{#if timestamp}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n"
+	"<tr><td align=\"right\"><b>POSITION:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<table>"
+	"<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"3600\" step=\"1\" id=\"PosInv\" name=\"PosInv\" type=\"number\" value=\"{{posInterval}}\" />Sec.</td></tr>"
+	"<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"PosSel\" value=\"0\" {{#if posFix}}checked=\"checked\"{{/if}}/>Fix <input type=\"radio\" name=\"PosSel\" value=\"1\" {{#if posGPS}}checked=\"checked\"{{/if}}/>GPS </td></tr>\n"
+	"<tr><td style=\"text-align: right;\">TX Channel:</td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"Pos2RF\" value=\"OK\" {{#if pos2RF}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"Pos2INET\" value=\"OK\" {{#if pos2INET}}checked{{/if}}/>Internet </td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" name=\"PosLat\" type=\"number\" value=\"{{lat}}\" />degrees (positive for North, negative for South)</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" name=\"PosLon\" type=\"number\" value=\"{{lon}}\" />degrees (positive for East, negative for West)</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" name=\"PosAlt\" type=\"number\" value=\"{{alt}}\" /> meter. *The altitude in meters(m) above sea level</td></tr>\n"
+	"</table></td>"
+	"</tr>\n"
+	"<tr><td align=\"right\"><b>SENSOR:<br />Selection</b></td>\n"
+	"<td align=\"center\">\n"
+	"<table>"
+	"{{#each sensors}}<tr><td align=\"right\"><b>{{name}}:</b> \n"
+	"<label class=\"switch\"><input type=\"checkbox\" name=\"senEn{{idx}}\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label>"
+	"</td>\n"
+	"<td style=\"text-align: left;\">Sensor Channel: "
+	"<select name=\"sensorCH{{idx}}\" id=\"sensorCH{{idx}}\">\n"
+	"{{#each chOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select>\n"
+	"<input type=\"radio\" name=\"avgSel{{idx}}\" value=\"0\" {{#if avg}}{{else}}checked=\"checked\"{{/if}}/>Sample <input type=\"radio\" name=\"avgSel{{idx}}\" value=\"1\" {{#if avg}}checked=\"checked\"{{/if}}/>Average"
+	"</td></tr>"
+	"{{/each}}"
+	"</table></td></tr>\n"
+	"<tr><td colspan=\"2\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitWX'  name=\"commitWX\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitWX\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form><br />";
 
 void handle_wx(AsyncWebServerRequest *request)
 {
@@ -9733,243 +8319,173 @@ void handle_wx(AsyncWebServerRequest *request)
 	}
 	else
 	{
-		// Allocate initial memory for HTML content
-		char tempHtml[300];
+		esp_task_wdt_reset(); // feed watchdog: handle_wx runs on the async_tcp task itself,
+		// same class of page as MSG/IGATE/DIGI (per-sensor channel selects, WX_SENSOR_NUM rows).
+		JsonDocument data;
+		data["enabled"] = config.wx_en;
+		data["myCall"] = config.wx_mycall;
+
+		JsonArray ssidOptions = data["ssidOptions"].to<JsonArray>();
+		for (uint8_t ssid = 0; ssid <= 15; ssid++)
+		{
+			JsonObject o = ssidOptions.add<JsonObject>();
+			o["value"] = ssid;
+			o["selected"] = (config.wx_ssid == ssid);
+		}
+
+		data["object"] = config.wx_object;
+
+		JsonArray pathOptions = data["pathOptions"].to<JsonArray>();
+		for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
+		{
+			JsonObject o = pathOptions.add<JsonObject>();
+			o["value"] = pthIdx;
+			o["label"] = PATH_NAME[pthIdx];
+			o["selected"] = (config.wx_path == pthIdx);
+		}
+
+		data["comment"] = config.wx_comment;
+		data["timestamp"] = config.wx_timestamp;
+		data["posInterval"] = config.wx_interval;
+		data["posFix"] = !config.wx_gps;
+		data["posGPS"] = config.wx_gps;
+		data["pos2RF"] = config.wx_2rf;
+		data["pos2INET"] = config.wx_2inet;
+
+		char buf[32];
+		snprintf(buf, sizeof(buf), "%.5f", config.wx_lat);
+		data["lat"] = buf;
+		snprintf(buf, sizeof(buf), "%.5f", config.wx_lon);
+		data["lon"] = buf;
+		snprintf(buf, sizeof(buf), "%.2f", config.wx_alt);
+		data["alt"] = buf;
+
+		JsonArray sensors = data["sensors"].to<JsonArray>();
+		for (int ax = 0; ax < WX_SENSOR_NUM; ax++)
+		{
+			JsonObject s = sensors.add<JsonObject>();
+			s["idx"] = ax;
+			s["name"] = WX_SENSOR[ax];
+			s["enabled"] = config.wx_sensor_enable[ax];
+			s["avg"] = config.wx_sensor_avg[ax];
+
+			JsonArray chOptions = s["chOptions"].to<JsonArray>();
+			for (uint8_t idx = 0; idx < 11; idx++)
+			{
+				JsonObject o = chOptions.add<JsonObject>();
+				o["value"] = idx;
+				o["label"] = (idx == 0) ? String("NONE") : ("SENSOR#" + String(idx));
+				o["selected"] = (config.wx_sensor_ch[ax] == idx);
+			}
+		}
+
 		log_e("[WX] before alloc: freeHeap=%u largestFreeBlock=%u", ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", 28000);
+		esp_task_wdt_reset();
+		String html_str = renderTemplate(WX_TEMPLATE, data.as<JsonVariant>());
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
 		if (!html)
 		{
 			request->send(500, "text/html", "Memory allocation failed");
 			return;
 		}
-		html->print("<script type=\"text/javascript\">\n");
-		html->print("$('form').submit(function (e) {\n");
-		html->print("e.preventDefault();\n");
-		html->print("var data = new FormData(e.currentTarget);\n");
-		html->print("document.getElementById(\"submitWX\").disabled=true;\n");
-		html->print("$.ajax({\n");
-		html->print("url: '/wx',\n");
-		html->print("type: 'POST',\n");
-		html->print("data: data,\n");
-		html->print("contentType: false,\n");
-		html->print("processData: false,\n");
-		html->print("success: function (data) {\n");
-		html->print("alert(\"Submited Successfully\");\n");
-		html->print("},\n");
-		html->print("error: function (data) {\n");
-		html->print("alert(\"An error occurred.\");\n");
-		html->print("}\n");
-		html->print("});\n");
-		html->print("});\n");
-		html->print("</script>\n");
-
-		/************************ WX Mode **************************/
-		html->print("<form id='formWX' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>[WX] Weather Station</b></span></th>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Enable:</b></td>\n");
-		char EnFlag[10] = "";
-		if (config.wx_en)
-			strcpy(EnFlag, "checked");
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", EnFlag);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Station Callsign:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"%s\" /></td>\n", config.wx_mycall);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Station SSID:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"mySSID\" id=\"mySSID\">\n");
-		for (uint8_t ssid = 0; ssid <= 15; ssid++)
-		{
-			if (config.wx_ssid == ssid)
-			{
-				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>%d</option>\n", ssid, ssid);
-			}
-			else
-			{
-				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%d</option>\n", ssid, ssid);
-			}
-			html->print(tempHtml);
-		}
-		html->print("</select></td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Object Name:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"9\" size=\"9\" name=\"Object\" type=\"text\" value=\"%s\" /><i> *If not used, leave it blank.In use 3-9 charactor</i></td>\n", config.wx_object);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PATH:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"Path\" id=\"Path\">\n");
-		for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
-		{
-			if (config.wx_path == pthIdx)
-			{
-				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>%s</option>\n", pthIdx, PATH_NAME[pthIdx]);
-			}
-			else
-			{
-				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%s</option>\n", pthIdx, PATH_NAME[pthIdx]);
-			}
-			html->print(tempHtml);
-		}
-		html->print("</select></td>\n");
-		// html->print("<td style=\"text-align: left;\"><input maxlength=\"72\" size=\"72\" name=\"Path\" type=\"text\" value=\"" + String(config.wx_path) + "\" /></td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Text Comment:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"50\" name=\"Comment\" type=\"text\" value=\"%s\" /></td>\n", config.wx_comment);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Time Stamp:</b></td>\n");
-		char timeStampFlag[10];
-		if (config.wx_timestamp)
-			strcpy(timeStampFlag, "checked");
-		else
-			strcpy(timeStampFlag, "");
-
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wxTimeStamp\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", timeStampFlag);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-
-		html->print("<tr><td align=\"right\"><b>POSITION:</b></td>\n");
-		html->print("<td align=\"center\">\n");
-		html->print("<table>");
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"3600\" step=\"1\" id=\"PosInv\" name=\"PosInv\" type=\"number\" value=\"%d\" />Sec.</td></tr>", config.wx_interval);
-		html->print(tempHtml);
-		String PosFixFlag = "";
-		String PosGPSFlag = "";
-		String Pos2RFFlag = "";
-		String Pos2INETFlag = "";
-		if (config.wx_gps)
-			PosGPSFlag = "checked=\"checked\"";
-		else
-			PosFixFlag = "checked=\"checked\"";
-
-		if (config.wx_2rf)
-			Pos2RFFlag = "checked";
-		if (config.wx_2inet)
-			Pos2INETFlag = "checked";
-
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"PosSel\" value=\"0\" %s/>Fix <input type=\"radio\" name=\"PosSel\" value=\"1\" %s/>GPS </td></tr>\n", PosFixFlag.c_str(), PosGPSFlag.c_str());
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">TX Channel:</td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"Pos2RF\" value=\"OK\" %s/>RF <input type=\"checkbox\" name=\"Pos2INET\" value=\"OK\" %s/>Internet </td></tr>\n", Pos2RFFlag.c_str(), Pos2INETFlag.c_str());
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" name=\"PosLat\" type=\"number\" value=\"%.5f\" />degrees (positive for North, negative for South)</td></tr>\n", config.wx_lat);
-		html->print(tempHtml);
-
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" name=\"PosLon\" type=\"number\" value=\"%.5f\" />degrees (positive for East, negative for West)</td></tr>\n", config.wx_lon);
-		html->print(tempHtml);
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" name=\"PosAlt\" type=\"number\" value=\"%.2f\" /> meter. *The altitude in meters(m) above sea level</td></tr>\n", config.wx_alt);
-		html->print(tempHtml);
-
-		html->print("</table></td>");
-		html->print("</tr>\n");
-
-		// html->print("<tr>\n");
-		// html->print("<td align=\"right\"><b>PORT:</b></td>\n");
-		// html->print("<td style=\"text-align: left;\">\n");
-		// html->print("<select name=\"channel\" id=\"channel\">\n");
-		// for (int i = 0; i < 5; i++)
-		// {
-		// 	if (config.wx_channel == i)
-		// 		html->print("<option value=\"" + String(i) + "\" selected>" + String(WX_PORT[i]) + " </option>\n");
-		// 	else
-		// 		html->print("<option value=\"" + String(i) + "\" >" + String(WX_PORT[i]) + " </option>\n");
-		// }
-		// html->print("</select>\n");
-		// html->print("</td>\n");
-		// html->print("</tr>\n");
-		/************************ Sensor Config Mode **************************/
-		// html->print("<form id='formSENSOR' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		// html->print("<table>\n");
-		// html->print("<th colspan=\"2\"><span><b>Sensor Config</b></span></th>\n");
-
-		html->print("<tr><td align=\"right\"><b>SENSOR:<br />Selection</b></td>\n");
-		html->print("<td align=\"center\">\n");
-		html->print("<table>");
-
-		for (int ax = 0; ax < WX_SENSOR_NUM; ax++)
-		{
-			snprintf(tempHtml, sizeof(tempHtml), "<tr><td align=\"right\"><b>%s:</b> \n", WX_SENSOR[ax]);
-			html->print(tempHtml);
-
-			char EnFlag[16] = "";
-			if (config.wx_sensor_enable[ax])
-				snprintf(EnFlag, sizeof(EnFlag), "checked");
-
-			snprintf(tempHtml, sizeof(tempHtml), "<label class=\"switch\"><input type=\"checkbox\" name=\"senEn%d\" value=\"OK\" %s><span class=\"slider round\"></span></label>", ax, EnFlag);
-			html->print(tempHtml);
-
-			html->print("</td>\n");
-
-			// html->print("<td style=\"text-align: lefe;\">Sensor:</td>\n");
-			html->print("<td style=\"text-align: left;\">Sensor Channel: ");
-
-			snprintf(tempHtml, sizeof(tempHtml), "<select name=\"sensorCH%d\" id=\"sensorCH%d\">\n", ax, ax);
-			html->print(tempHtml);
-			for (uint8_t idx = 0; idx < 11; idx++)
-			{
-				if (idx == 0)
-				{
-					if (config.wx_sensor_ch[ax] == idx)
-					{
-						snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>NONE</option>\n", idx);
-					}
-					else
-					{
-						snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">NONE</option>\n", idx);
-					}
-				}
-				else
-				{
-					if (config.wx_sensor_ch[ax] == idx)
-					{
-						snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>SENSOR#%d</option>\n", idx, idx);
-					}
-					else
-					{
-						snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">SENSOR#%d</option>\n", idx, idx);
-					}
-				}
-				html->print(tempHtml);
-			}
-			html->print("</select>\n");
-			String avgFlag = "";
-			String sampleFlag = "";
-			if (config.wx_sensor_avg[ax])
-				avgFlag = "checked=\"checked\"";
-			else
-				sampleFlag = "checked=\"checked\"";
-
-			snprintf(tempHtml, sizeof(tempHtml), "<input type=\"radio\" name=\"avgSel%d\" value=\"0\" %s/>Sample <input type=\"radio\" name=\"avgSel%d\" value=\"1\" %s/>Average", ax, sampleFlag.c_str(), ax, avgFlag.c_str());
-			html->print(tempHtml);
-			html->print("</td></tr>");
-		}
-		html->print("</table></td></tr>\n");
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitWX'  name=\"commitWX\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitWX\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form><br />");
-
+		html->print(html_str);
 		html->addHeader("Weather", "content");
 		html->addHeader("Cache-Control", "no-cache");
 		request->send(html);
 	}
 }
+
+static const char *TLM_TEMPLATE =
+	"<script type=\"text/javascript\">\n"
+	"$('form').submit(function (e) {\n"
+	"e.preventDefault();\n"
+	"var data = new FormData(e.currentTarget);\n"
+	"document.getElementById(\"submitTLM\").disabled=true;\n"
+	"$.ajax({\n"
+	"url: '/tlm',\n"
+	"type: 'POST',\n"
+	"data: data,\n"
+	"contentType: false,\n"
+	"processData: false,\n"
+	"success: function (data) {\n"
+	"alert(\"Submited Successfully\");\n"
+	"},\n"
+	"error: function (data) {\n"
+	"alert(\"An error occurred.\");\n"
+	"}\n"
+	"});\n"
+	"});\n"
+	"</script>\n"
+	"<form id='formTLM' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>System Telemetry</b></span></th>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Enable:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Station Callsign:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"{{myCall}}\" /></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Station SSID:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"mySSID\" id=\"mySSID\">\n"
+	"{{#each ssidOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{value}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>PATH:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"Path\" id=\"Path\">\n"
+	"{{#each pathOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Text Comment:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"50\" name=\"Comment\" type=\"text\" value=\"{{comment}}\" /></td>\n"
+	"</tr>\n"
+	"<tr><td style=\"text-align: right;\">Info Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"3600\" step=\"1\" name=\"infoInv\" type=\"number\" value=\"{{infoInterval}}\" />Sec.</td></tr>"
+	"<tr><td style=\"text-align: right;\">Data Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"3600\" step=\"1\" name=\"dataInv\" type=\"number\" value=\"{{dataInterval}}\" />Sec.</td></tr>"
+	"<tr><td style=\"text-align: right;\">TX Channel:</td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"Pos2RF\" value=\"OK\" {{#if pos2RF}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"Pos2INET\" value=\"OK\" {{#if pos2INET}}checked{{/if}}/>Internet </td></tr>\n"
+	"{{#each channelsA}}<tr><td align=\"right\"><b>Channel A{{num}}:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<table>"
+	"<tr><td style=\"text-align: right;\">Type/Name:</td>\n"
+	"<td style=\"text-align: left;\">Sensor Type: "
+	"<select name=\"sensorCH{{chIdx}}\" id=\"sensorCH{{chIdx}}\">\n"
+	"{{#each sensorOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"<td style=\"text-align: left;\">Parameter: <input maxlength=\"10\" size=\"8\" name=\"param{{chIdx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
+	"<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{chIdx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
+	"</tr>\n"
+	"<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.0001\" name=\"eqns{{chIdx}}a\" type=\"number\" value=\"{{eqnsA}}\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.0001\" name=\"eqns{{chIdx}}b\" type=\"number\" value=\"{{eqnsB}}\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.0001\" name=\"eqns{{chIdx}}c\" type=\"number\" value=\"{{eqnsC}}\" /> (av<sup>2</sup>+bv+c)</td></tr>\n"
+	"</table></td>"
+	"</tr>\n"
+	"{{/each}}"
+	"{{#each channelsB}}<tr><td align=\"right\"><b>Channel B{{num}}:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<table>"
+	"<td style=\"text-align: left;\">Type: "
+	"<select name=\"sensorCH{{selIdx}}\" id=\"sensorCH{{bitIdx}}\">\n"
+	"{{#each sensorOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"<td style=\"text-align: left;\">Parameter: <input maxlength=\"10\" size=\"8\" name=\"param{{selIdx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
+	"<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{selIdx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
+	"<td style=\"text-align: left;\"> Active:<input type=\"radio\" name=\"bitact{{bitIdx}}\" value=\"0\" {{#if low}}checked=\"checked\"{{/if}}/>LOW <input type=\"radio\" name=\"bitact{{bitIdx}}\" value=\"1\" {{#if high}}checked=\"checked\"{{/if}}/>HIGH </td>\n"
+	"</tr>\n"
+	"</table></td>"
+	"</tr>\n"
+	"{{/each}}"
+	"<tr><td colspan=\"2\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitTLM'  name=\"commitTLM\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitTLM\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form><br />";
 
 void handle_tlm(AsyncWebServerRequest *request)
 {
@@ -10145,343 +8661,93 @@ void handle_tlm(AsyncWebServerRequest *request)
 	}
 	else
 	{
+		JsonDocument data;
+		data["enabled"] = config.tlm0_en;
+		data["myCall"] = config.tlm0_mycall;
+
+		JsonArray ssidOptions = data["ssidOptions"].to<JsonArray>();
+		for (uint8_t ssid = 0; ssid <= 15; ssid++)
+		{
+			JsonObject o = ssidOptions.add<JsonObject>();
+			o["value"] = ssid;
+			o["selected"] = (config.tlm0_ssid == ssid);
+		}
+
+		JsonArray pathOptions = data["pathOptions"].to<JsonArray>();
+		for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
+		{
+			JsonObject o = pathOptions.add<JsonObject>();
+			o["value"] = pthIdx;
+			o["label"] = PATH_NAME[pthIdx];
+			o["selected"] = (config.tlm0_path == pthIdx);
+		}
+
+		data["comment"] = config.tlm0_comment;
+		data["infoInterval"] = config.tlm0_info_interval;
+		data["dataInterval"] = config.tlm0_data_interval;
+		data["pos2RF"] = config.tlm0_2rf;
+		data["pos2INET"] = config.tlm0_2inet;
+
+		JsonArray channelsA = data["channelsA"].to<JsonArray>();
+		for (int ax = 0; ax < 5; ax++)
+		{
+			JsonObject c = channelsA.add<JsonObject>();
+			c["num"] = ax + 1;
+			c["chIdx"] = ax;
+			c["param"] = config.tlm0_PARM[ax];
+			c["unit"] = config.tlm0_UNIT[ax];
+			char buf[24];
+			snprintf(buf, sizeof(buf), "%.3f", config.tlm0_EQNS[ax][0]);
+			c["eqnsA"] = buf;
+			snprintf(buf, sizeof(buf), "%.3f", config.tlm0_EQNS[ax][1]);
+			c["eqnsB"] = buf;
+			snprintf(buf, sizeof(buf), "%.3f", config.tlm0_EQNS[ax][2]);
+			c["eqnsC"] = buf;
+
+			JsonArray sensorOptions = c["sensorOptions"].to<JsonArray>();
+			for (uint8_t idx = 0; idx < SYSTEM_LEN; idx++)
+			{
+				JsonObject o = sensorOptions.add<JsonObject>();
+				o["value"] = idx;
+				o["label"] = SYSTEM_NAME[idx];
+				o["selected"] = (config.tml0_data_channel[ax] == idx);
+			}
+		}
+
+		JsonArray channelsB = data["channelsB"].to<JsonArray>();
+		uint8_t b = 1;
+		for (int ax = 0; ax < 8; ax++)
+		{
+			JsonObject c = channelsB.add<JsonObject>();
+			c["num"] = ax + 1;
+			c["selIdx"] = ax + 5;
+			c["bitIdx"] = ax;
+			c["param"] = config.tlm0_PARM[ax + 5];
+			c["unit"] = config.tlm0_UNIT[ax + 5];
+			c["high"] = (config.tlm0_BITS_Active & b) != 0;
+			c["low"] = !(config.tlm0_BITS_Active & b);
+
+			JsonArray sensorOptions = c["sensorOptions"].to<JsonArray>();
+			for (uint8_t idx = 0; idx < SYSTEM_BIT_LEN; idx++)
+			{
+				JsonObject o = sensorOptions.add<JsonObject>();
+				o["value"] = idx;
+				o["label"] = SYSTEM_BITS_NAME[idx];
+				o["selected"] = (config.tml0_data_channel[ax + 5] == idx);
+			}
+			b <<= 1;
+		}
+
+		esp_task_wdt_reset();
+		String html_str = renderTemplate(TLM_TEMPLATE, data.as<JsonVariant>());
 		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", 20000);
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
 		if (!html)
 		{
 			request->send(500, "text/html", "Memory allocation failed");
 			return;
 		}
-		html->print("<script type=\"text/javascript\">\n");
-		html->print("$('form').submit(function (e) {\n");
-		html->print("e.preventDefault();\n");
-		html->print("var data = new FormData(e.currentTarget);\n");
-		html->print("document.getElementById(\"submitTLM\").disabled=true;\n");
-		html->print("$.ajax({\n");
-		html->print("url: '/tlm',\n");
-		html->print("type: 'POST',\n");
-		html->print("data: data,\n");
-		html->print("contentType: false,\n");
-		html->print("processData: false,\n");
-		html->print("success: function (data) {\n");
-		html->print("alert(\"Submited Successfully\");\n");
-		html->print("},\n");
-		html->print("error: function (data) {\n");
-		html->print("alert(\"An error occurred.\");\n");
-		html->print("}\n");
-		html->print("});\n");
-		html->print("});\n");
-		html->print("</script>\n");
-
-		/************************ TLM Mode **************************/
-		html->print("<form id='formTLM' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>System Telemetry</b></span></th>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Enable:</b></td>\n");
-		char EnFlag[10] = "";
-		if (config.tlm0_en)
-			strcpy(EnFlag, "checked");
-		{
-			char *temp_flag = allocateStringMemory(512);
-			if (temp_flag)
-			{
-				snprintf(temp_flag, 512, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", EnFlag);
-				html->print(temp_flag);
-				free(temp_flag);
-			}
-		}
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		{
-			char *temp_callsign = allocateStringMemory(512);
-			if (temp_callsign)
-			{
-				snprintf(temp_callsign, 512, "<td align=\"right\"><b>Station Callsign:</b></td>\n<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"%s\" /></td>\n", config.tlm0_mycall);
-				html->print(temp_callsign);
-				free(temp_callsign);
-			}
-		}
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Station SSID:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"mySSID\" id=\"mySSID\">\n");
-		for (uint8_t ssid = 0; ssid <= 15; ssid++)
-		{
-			char *temp_option = allocateStringMemory(256);
-			if (temp_option)
-			{
-				if (config.tlm0_ssid == ssid)
-				{
-					snprintf(temp_option, 256, "<option value=\"%d\" selected>%d</option>\n", ssid, ssid);
-				}
-				else
-				{
-					snprintf(temp_option, 256, "<option value=\"%d\">%d</option>\n", ssid, ssid);
-				}
-				html->print(temp_option);
-				free(temp_option);
-			}
-		}
-		html->print("</select></td>\n");
-		html->print("</tr>\n");
-
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PATH:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"Path\" id=\"Path\">\n");
-		for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
-		{
-			{
-				char *temp_path = allocateStringMemory(256);
-				if (temp_path)
-				{
-					if (config.tlm0_path == pthIdx)
-					{
-						snprintf(temp_path, 256, "<option value=\"%d\" selected>%s</option>\n", pthIdx, PATH_NAME[pthIdx]);
-					}
-					else
-					{
-						snprintf(temp_path, 256, "<option value=\"%d\">%s</option>\n", pthIdx, PATH_NAME[pthIdx]);
-					}
-					html->print(temp_path);
-					free(temp_path);
-				}
-			}
-		}
-		html->print("</select></td>\n");
-		// html->print("<td style=\"text-align: left;\"><input maxlength=\"72\" size=\"72\" name=\"Path\" type=\"text\" value=\"" + String(config.tlm0_path) + "\" /></td>\n");
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		{
-			char *temp_comment = allocateStringMemory(512);
-			if (temp_comment)
-			{
-				snprintf(temp_comment, 512, "<td align=\"right\"><b>Text Comment:</b></td>\n<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"50\" name=\"Comment\" type=\"text\" value=\"%s\" /></td>\n", config.tlm0_comment);
-				html->print(temp_comment);
-				free(temp_comment);
-			}
-		}
-		html->print("</tr>\n");
-
-		{
-			char *temp_intervals = allocateStringMemory(1024);
-			if (temp_intervals)
-			{
-				snprintf(temp_intervals, 1024, "<tr><td style=\"text-align: right;\">Info Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"3600\" step=\"1\" name=\"infoInv\" type=\"number\" value=\"%d\" />Sec.</td></tr>", config.tlm0_info_interval);
-				html->print(temp_intervals);
-				snprintf(temp_intervals, 1024, "<tr><td style=\"text-align: right;\">Data Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"3600\" step=\"1\" name=\"dataInv\" type=\"number\" value=\"%d\" />Sec.</td></tr>", config.tlm0_data_interval);
-				html->print(temp_intervals);
-				free(temp_intervals);
-			}
-		}
-
-		char Pos2RFFlag[10] = "";
-		char Pos2INETFlag[10] = "";
-		if (config.tlm0_2rf)
-			strcpy(Pos2RFFlag, "checked");
-		if (config.tlm0_2inet)
-			strcpy(Pos2INETFlag, "checked");
-		{
-			char *temp_channels = allocateStringMemory(1024);
-			if (temp_channels)
-			{
-				snprintf(temp_channels, 1024, "<tr><td style=\"text-align: right;\">TX Channel:</td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"Pos2RF\" value=\"OK\" %s/>RF <input type=\"checkbox\" name=\"Pos2INET\" value=\"OK\" %s/>Internet </td></tr>\n", Pos2RFFlag, Pos2INETFlag);
-				html->print(temp_channels);
-				free(temp_channels);
-			}
-		}
-
-		// html->print("<tr>\n");
-		// html->print("<td align=\"right\"><b>Time Stamp:</b></td>\n");
-		// String timeStampFlag = "";
-		// if (config.wx_timestamp)
-		// 	timeStampFlag = "checked";
-		// html->print("<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wxTimeStamp\" value=\"OK\" " + timeStampFlag + "><span class=\"slider round\"></span></label></td>\n");
-		// html->print("</tr>\n");
-		for (int ax = 0; ax < 5; ax++)
-		{
-			{
-				char *temp_channel_a = allocateStringMemory(512);
-				if (temp_channel_a)
-				{
-					snprintf(temp_channel_a, 512, "<tr><td align=\"right\"><b>Channel A%d:</b></td>\n", ax + 1);
-					html->print(temp_channel_a);
-					free(temp_channel_a);
-				}
-			}
-			html->print("<td align=\"center\">\n");
-			html->print("<table>");
-
-			// html->print("<tr><td style=\"text-align: right;\">Name:</td><td style=\"text-align: center;\"><i>Sensor Type</i></td><td style=\"text-align: center;\"><i>Parameter</i></td><td style=\"text-align: center;\"><i>Unit</i></td></tr>\n");
-
-			html->print("<tr><td style=\"text-align: right;\">Type/Name:</td>\n");
-			html->print("<td style=\"text-align: left;\">Sensor Type: ");
-			{
-				char *temp_select = allocateStringMemory(256);
-				if (temp_select)
-				{
-					snprintf(temp_select, 256, "<select name=\"sensorCH%d\" id=\"sensorCH%d\">\n", ax, ax);
-					html->print(temp_select);
-					free(temp_select);
-				}
-			}
-			for (uint8_t idx = 0; idx < SYSTEM_LEN; idx++)
-			{
-				{
-					char *temp_option = allocateStringMemory(256);
-					if (temp_option)
-					{
-						if (config.tml0_data_channel[ax] == idx)
-						{
-							snprintf(temp_option, 256, "<option value=\"%d\" selected>%s</option>\n", idx, SYSTEM_NAME[idx]);
-						}
-						else
-						{
-							snprintf(temp_option, 256, "<option value=\"%d\">%s</option>\n", idx, SYSTEM_NAME[idx]);
-						}
-						html->print(temp_option);
-						free(temp_option);
-					}
-				}
-			}
-			html->print("</select></td>\n");
-
-			{
-				char *temp_param = allocateStringMemory(512);
-				if (temp_param)
-				{
-					snprintf(temp_param, 512, "<td style=\"text-align: left;\">Parameter: <input maxlength=\"10\" size=\"8\" name=\"param%d\" type=\"text\" value=\"%s\" /></td>\n", ax, config.tlm0_PARM[ax]);
-					html->print(temp_param);
-					free(temp_param);
-				}
-			}
-			{
-				char *temp_unit = allocateStringMemory(512);
-				if (temp_unit)
-				{
-					snprintf(temp_unit, 512, "<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit%d\" type=\"text\" value=\"%s\" /></td>\n", ax, config.tlm0_UNIT[ax]);
-					html->print(temp_unit);
-					free(temp_unit);
-				}
-			}
-			html->print("</tr>\n");
-			{
-				char *temp_eqns = allocateStringMemory(1024);
-				if (temp_eqns)
-				{
-					snprintf(temp_eqns, 1024, "<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.0001\" name=\"eqns%da\" type=\"number\" value=\"%.3f\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.0001\" name=\"eqns%db\" type=\"number\" value=\"%.3f\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.0001\" name=\"eqns%dc\" type=\"number\" value=\"%.3f\" /> (av<sup>2</sup>+bv+c)</td></tr>\n",
-							 ax, config.tlm0_EQNS[ax][0], ax, config.tlm0_EQNS[ax][1], ax, config.tlm0_EQNS[ax][2]);
-					html->print(temp_eqns);
-					free(temp_eqns);
-				}
-			}
-			html->print("</table></td>");
-			html->print("</tr>\n");
-		}
-
-		uint8_t b = 1;
-		for (int ax = 0; ax < 8; ax++)
-		{
-			{
-				char *temp_channel_b = allocateStringMemory(512);
-				if (temp_channel_b)
-				{
-					snprintf(temp_channel_b, 512, "<tr><td align=\"right\"><b>Channel B%d:</b></td>\n", ax + 1);
-					html->print(temp_channel_b);
-					free(temp_channel_b);
-				}
-			}
-			html->print("<td align=\"center\">\n");
-			html->print("<table>");
-
-			// html->print("<tr><td style=\"text-align: right;\">Type/Name:</td>\n");
-			html->print("<td style=\"text-align: left;\">Type: ");
-			{
-				char *temp_select_b = allocateStringMemory(256);
-				if (temp_select_b)
-				{
-					snprintf(temp_select_b, 256, "<select name=\"sensorCH%d\" id=\"sensorCH%d\">\n", ax + 5, ax);
-					html->print(temp_select_b);
-					free(temp_select_b);
-				}
-			}
-			for (uint8_t idx = 0; idx < SYSTEM_BIT_LEN; idx++)
-			{
-				{
-					char *temp_option_b = allocateStringMemory(256);
-					if (temp_option_b)
-					{
-						if (config.tml0_data_channel[ax + 5] == idx)
-						{
-							snprintf(temp_option_b, 256, "<option value=\"%d\" selected>%s</option>\n", idx, SYSTEM_BITS_NAME[idx]);
-						}
-						else
-						{
-							snprintf(temp_option_b, 256, "<option value=\"%d\">%s</option>\n", idx, SYSTEM_BITS_NAME[idx]);
-						}
-						html->print(temp_option_b);
-						free(temp_option_b);
-					}
-				}
-			}
-			html->print("</select></td>\n");
-
-			{
-				char *temp_param_b = allocateStringMemory(512);
-				if (temp_param_b)
-				{
-					snprintf(temp_param_b, 512, "<td style=\"text-align: left;\">Parameter: <input maxlength=\"10\" size=\"8\" name=\"param%d\" type=\"text\" value=\"%s\" /></td>\n", ax + 5, config.tlm0_PARM[ax + 5]);
-					html->print(temp_param_b);
-					free(temp_param_b);
-				}
-			}
-			{
-				char *temp_unit_b = allocateStringMemory(512);
-				if (temp_unit_b)
-				{
-					snprintf(temp_unit_b, 512, "<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit%d\" type=\"text\" value=\"%s\" /></td>\n", ax + 5, config.tlm0_UNIT[ax + 5]);
-					html->print(temp_unit_b);
-					free(temp_unit_b);
-				}
-			}
-			char LowFlag[20] = "", HighFlag[20] = "";
-			if (config.tlm0_BITS_Active & b)
-				strcpy(HighFlag, "checked=\"checked\"");
-			else
-				strcpy(LowFlag, "checked=\"checked\"");
-			{
-				char *temp_radio_b = allocateStringMemory(512);
-				if (temp_radio_b)
-				{
-					snprintf(temp_radio_b, 512, "<td style=\"text-align: left;\"> Active:<input type=\"radio\" name=\"bitact%d\" value=\"0\" %s/>LOW <input type=\"radio\" name=\"bitact%d\" value=\"1\" %s/>HIGH </td>\n", ax, LowFlag, ax, HighFlag);
-					html->print(temp_radio_b);
-					free(temp_radio_b);
-				}
-			}
-			html->print("</tr>\n");
-			// html->print("<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax + 1) + "a\" type=\"number\" value=\"" + String(config.tlm0_EQNS[ax][0], 3) + "\" />  b:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax + 1) + "b\" type=\"number\" value=\"" + String(config.tlm0_EQNS[ax][1], 3) + "\" /> c:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax + 1) + "c\" type=\"number\" value=\"" + String(config.tlm0_EQNS[ax][2], 3) + "\" /> (av<sup>2</sup>+bv+c)</td></tr>\n";
-			html->print("</table></td>");
-			html->print("</tr>\n");
-			b <<= 1;
-		}
-
-		// html->print("<tr><td align=\"right\"><b>Parameter Name:</b></td>\n";
-		// strcat(html, "<td align=\"center\">\n";
-		// strcat(html, "<table>";
-
-		// // strcat(html, "<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" name=\"PosLat\" type=\"number\" value=\"" + String(config.wx_lat, 5) + "\" />degrees (positive for North, negative for South)</td></tr>\n";
-		// // strcat(html, "<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" name=\"PosLon\" type=\"number\" value=\"" + String(config.wx_lon, 5) + "\" />degrees (positive for East, negative for West)</td></tr>\n";
-		// // strcat(html, "<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" name=\"PosAlt\" type=\"number\" value=\"" + String(config.wx_alt, 2) + "\" /> meter. *Value 0 is not send height</td></tr>\n";
-		// strcat(html, "</table></td>";
-		// strcat(html, "</tr>\n";
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitTLM'  name=\"commitTLM\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitTLM\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form><br />");
-
+		html->print(html_str);
 		html->addHeader("Telemetry", "content");
 		html->addHeader("Cache-Control", "no-cache");
 		request->send(html);
@@ -10489,6 +8755,171 @@ void handle_tlm(AsyncWebServerRequest *request)
 }
 
 extern TaskHandle_t taskSensorHandle;
+
+static const char *SENSOR_TEMPLATE =
+	"<script type=\"text/javascript\">\n"
+	"$('form').submit(function (e) {\n"
+	"e.preventDefault();\n"
+	"var data = new FormData(e.currentTarget);\n"
+	"document.getElementById(\"submitSENSOR\").disabled=true;\n"
+	"$.ajax({\n"
+	"url: '/sensor',\n"
+	"type: 'POST',\n"
+	"data: data,\n"
+	"contentType: false,\n"
+	"processData: false,\n"
+	"success: function (data) {\n"
+	"alert(\"Submited Successfully\");\n"
+	"},\n"
+	"error: function (data) {\n"
+	"alert(\"An error occurred.\");\n"
+	"}\n"
+	"});\n"
+	"});\n"
+	"function setElm(name,val) {\n"
+	"document.getElementById(name).value=val;\n"
+	"};\n"
+	"function selSensorType(idx) {\n"
+	"var x=0;\n"
+	"var parm=\"param\"+idx;\n"
+	"var unit=\"unit\"+idx;\n"
+	"x = document.getElementById(\"sensorCH\"+idx).value;\n"
+	"if (x==1) {\n"
+	"setElm(parm,\"Co2\");setElm(unit,\"ppm\");\n"
+	"}else if (x==2) {\n"
+	"setElm(parm,\"CH2O\");setElm(unit,\"\xce\xbcg/m\xc2\xb3\");\n"
+	"}else if (x==3) {\n"
+	"setElm(parm,\"TVOC\");setElm(unit,\"\xce\xbcg/m\xc2\xb3\");\n"
+	"}else if (x==4) {\n"
+	"setElm(parm,\"PM2.5\");setElm(unit,\"\xce\xbcg/m\xc2\xb3\");\n"
+	"}else if (x==5) {\n"
+	"setElm(parm,\"PM10.0\");setElm(unit,\"\xce\xbcg/m\xc2\xb3\");\n"
+	"}else if (x==6) {\n"
+	"setElm(parm,\"Temperature\");setElm(unit,\"\xc2\xb0""C\");\n"
+	"}else if (x==7) {\n"
+	"setElm(parm,\"Humidity\");setElm(unit,\"%RH\");\n"
+	"}else if (x==8) {\n"
+	"setElm(parm,\"Pressure\");setElm(unit,\"hPa\");\n"
+	"}else if (x==9) {\n"
+	"setElm(parm,\"WindSpeed\");setElm(unit,\"kPh\");\n"
+	"}else if (x==10) {\n"
+	"setElm(parm,\"WindCourse\");setElm(unit,\"\xc2\xb0\");\n"
+	"}else if (x==11) {\n"
+	"setElm(parm,\"Rain\");setElm(unit,\"mm\");\n"
+	"}else if (x==12) {\n"
+	"setElm(parm,\"Luminosity\");setElm(unit,\"W/m\xc2\xb3\");\n"
+	"}else if (x==13) {\n"
+	"setElm(parm,\"SoilTemp\");setElm(unit,\"\xc2\xb0""C\");\n"
+	"}else if (x==14) {\n"
+	"setElm(parm,\"SoilMoisture\");setElm(unit,\"%VWC\");\n"
+	"}else if (x==15) {\n"
+	"setElm(parm,\"WaterTemp\");setElm(unit,\"\xc2\xb0""C\");\n"
+	"}else if (x==16) {\n"
+	"setElm(parm,\"WaterTDS\");setElm(unit,\" \");\n"
+	"}else if (x==17) {\n"
+	"setElm(parm,\"WaterLevel\");setElm(unit,\"mm\");\n"
+	"}else if (x==18) {\n"
+	"setElm(parm,\"WaterFlow\");setElm(unit,\"L/min\");\n"
+	"}else if (x==19) {\n"
+	"setElm(parm,\"Voltage\");setElm(unit,\"V\");\n"
+	"}else if (x==20) {\n"
+	"setElm(parm,\"Current\");setElm(unit,\"A\");\n"
+	"}else if (x==21) {\n"
+	"setElm(parm,\"Power\");setElm(unit,\"W\");\n"
+	"}else if (x==22) {\n"
+	"setElm(parm,\"Energy\");setElm(unit,\"Wh\");\n"
+	"}else if (x==23) {\n"
+	"setElm(parm,\"Frequency\");setElm(unit,\"Hz\");\n"
+	"}else if (x==24) {\n"
+	"setElm(parm,\"PF\");setElm(unit,\" \");\n"
+	"}else if (x==25) {\n"
+	"setElm(parm,\"Satellite\");setElm(unit,\" \");\n"
+	"}else if (x==26) {\n"
+	"setElm(parm,\"HDOP\");setElm(unit,\" \");\n"
+	"}else if (x==27) {\n"
+	"setElm(parm,\"Battery\");setElm(unit,\"V\");\n"
+	"}else if (x==28) {\n"
+	"setElm(parm,\"BattLevel\");setElm(unit,\"%\");\n"
+	"}\n}\n"
+	"function selSensor(idx) {\n"
+	"var x=0;\n"
+	"x = document.getElementById(\"sensorP\"+idx).value;\n"
+	"if (x>=10 && x<=13) {\n"
+	"document.getElementById(\"address\"+idx).value={{#if beamS3}}119{{else}}118{{/if}};\n"
+	"}else if (x==16 || x==17) {\n"
+	"document.getElementById(\"address\"+idx).value=90;\n"
+	"}else if (x==23) {\n"
+	"document.getElementById(\"address\"+idx).value=1;\n"
+	"}else if (x==24 || x==25) {\n"
+	"document.getElementById(\"address\"+idx).value=1000;\n"
+	"}else{\n"
+	"document.getElementById(\"address\"+idx).value=0;\n"
+	"}\n}\n"
+	"</script>\n"
+	"<table>\n"
+	"<th colspan=\"5\"><span><b>Sensor Monitor</b></span></th>\n"
+	"{{#each monitorRows}}<tr>\n"
+	"{{#each this}}<td align=\"center\">\n"
+	"<fieldset id=\"SenGrp{{idx}}\" {{#if enabled}}{{else}}disabled{{/if}}>\n"
+	"<legend>{{legend}}</legend>\n"
+	"<input id=\"sVal{{idx}}\" style=\"text-align:right;\" size=\"5\" type=\"text\" value=\"{{value}}\" readonly/> {{unit}}\n"
+	"</td>\n"
+	"{{/each}}"
+	"</tr>\n"
+	"{{/each}}"
+	"</table>< /br>\n"
+	"<form id='formSENSOR' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>Sensor Config</b></span></th>\n"
+	"{{#each sensorConfigs}}<tr><td align=\"right\"><b>SENSOR#{{num}}:</b><br />\n"
+	"<label class=\"switch\"><input type=\"checkbox\" name=\"En{{idx}}\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label>"
+	"</td><td align=\"center\">\n"
+	"<table>"
+	"<tr><td style=\"text-align: right;\">Type:</td>\n"
+	"<td style=\"text-align: left;\"><select name=\"sensorCH{{idx}}\" id=\"sensorCH{{idx}}\" onchange=\"selSensorType({{idx}})\">\n"
+	"</select></td>\n"
+	"<td style=\"text-align: left;\">Name: <input maxlength=\"15\" size=\"15\" name=\"param{{idx}}\" id=\"param{{idx}}\" type=\"text\" value=\"{{parm}}\" /></td>\n"
+	"<td style=\"text-align: left;\">Unit: <input maxlength=\"10\" size=\"5\" name=\"unit{{idx}}\" id=\"unit{{idx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
+	"</tr>\n"
+	"<tr><td style=\"text-align: right;\">PORT:</td>\n<td style=\"text-align: left;\">\n<select name=\"sensorP{{idx}}\" id=\"sensorP{{idx}}\" onchange=\"selSensor({{idx}})\">\n"
+	"</select></td>\n"
+	"<td style=\"text-align: left;\">Addr/Reg/GPIO: <input style=\"text-align:right;\" min=\"0\" max=\"6500\" step=\"1\" name=\"address{{idx}}\" id=\"address{{idx}}\" type=\"number\" value=\"{{port}}\" /></td>\n"
+	"<td style=\"text-align: left;\">Sample: <input style=\"text-align:right;\" min=\"0\" max=\"9999\" step=\"1\" name=\"sample{{idx}}\" type=\"number\" value=\"{{sample}}\" />Sec.\n"
+	"Average: <input style=\"text-align:right;\" min=\"0\" max=\"999\" step=\"1\" name=\"avg{{idx}}\" type=\"number\" value=\"{{avg}}\" />Sec.</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-999\" max=\"999\" step=\"0.00001\" name=\"eqns{{idx}}a\" type=\"number\" value=\"{{eqnsA}}\" />  b:<input min=\"-999\" max=\"999\" step=\"0.00001\" name=\"eqns{{idx}}b\" type=\"number\" value=\"{{eqnsB}}\" /> c:<input min=\"-999\" max=\"999\" step=\"0.00001\" name=\"eqns{{idx}}c\" type=\"number\" value=\"{{eqnsC}}\" /> (av<sup>2</sup>+bv+c)</td></tr>\n"
+	"</table></td>"
+	"</tr>\n"
+	"{{/each}}"
+	"<tr><td colspan=\"2\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitSENSOR'  name=\"commitSENSOR\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitSENSOR\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form><br />"
+	"<script type=\"text/javascript\">\n"
+	"if (typeof typeArry === 'undefined'){let typeArry = [];};\n"
+	"typeArry = new Array({{#each typeNames}}'{{.}}',{{/each}});\n"
+	"if (typeof portArry === 'undefined'){let portArry = [];};\n"
+	"portArry = new Array({{#each portNames}}'{{.}}',{{/each}});\n"
+	"if (typeof typeSel === 'undefined'){var typeSel = [];};\n"
+	"if (typeof listType === 'undefined'){var listType = [];};\n"
+	"if (typeof portSel === 'undefined'){var portSel = [];};\n"
+	"if (typeof listPort === 'undefined'){var listPort = [];};\n"
+	"{{#each initSensors}}listType[{{i}}] = document.querySelector('#sensorCH{{i}}');typeSel[{{i}}]={{type}};\n"
+	"listPort[{{i}}] = document.querySelector('#sensorP{{i}}');portSel[{{i}}]={{port}};\n"
+	"{{/each}}"
+	"for (let n = 0; n < 10; n++){\n"
+	"for (let i = 0; i < typeArry.length; i++) {\n"
+	"const optionType = new Option(typeArry[i], i);\n"
+	"listType[n].add(optionType, undefined);\n"
+	"};\n"
+	"listType[n].options[typeSel[n]].selected = true;\n"
+	"for (let p = 0; p < portArry.length; p++) {\n"
+	"const optionPort = new Option(portArry[p], p);\n"
+	"listPort[n].add(optionPort, undefined);\n"
+	"};\n"
+	"listPort[n].options[portSel[n]].selected = true;\n"
+	"};\n"
+	"</script>\n";
 
 void handle_sensor(AsyncWebServerRequest *request)
 {
@@ -10597,319 +9028,282 @@ void handle_sensor(AsyncWebServerRequest *request)
 	}
 	else
 	{
-		// Allocate initial memory for HTML content
-		char temp_buffer[512];
+		JsonDocument data;
+#ifdef TTGO_T_Beam_S3_SUPREME_V3
+		data["beamS3"] = true;
+#else
+		data["beamS3"] = false;
+#endif
+
+		JsonArray monitorRows = data["monitorRows"].to<JsonArray>();
+		{
+			int ax = 0;
+			for (int r = 0; r < 3; r++)
+			{
+				JsonArray row = monitorRows.add<JsonArray>();
+				for (int c = 0; c < 5; c++)
+				{
+					JsonObject cell = row.add<JsonObject>();
+					cell["idx"] = ax;
+					cell["enabled"] = config.sensor[ax].enable;
+					cell["legend"] = "SEN#" + String(ax + 1) + "-" + String(config.sensor[ax].parm);
+					char buf[24];
+					snprintf(buf, sizeof(buf), "%.2f", sen[ax].sample);
+					cell["value"] = buf;
+					cell["unit"] = config.sensor[ax].unit;
+					ax++;
+					if (ax >= SENSOR_NUMBER)
+						break;
+				}
+				if (ax >= SENSOR_NUMBER)
+					break;
+			}
+		}
+
+		JsonArray sensorConfigs = data["sensorConfigs"].to<JsonArray>();
+		for (int ax = 0; ax < SENSOR_NUMBER; ax++)
+		{
+			JsonObject s = sensorConfigs.add<JsonObject>();
+			s["idx"] = ax;
+			s["num"] = ax + 1;
+			s["enabled"] = config.sensor[ax].enable;
+			s["parm"] = config.sensor[ax].parm;
+			s["unit"] = config.sensor[ax].unit;
+			s["port"] = config.sensor[ax].address;
+			s["sample"] = config.sensor[ax].samplerate;
+			s["avg"] = config.sensor[ax].averagerate;
+			char buf[24];
+			snprintf(buf, sizeof(buf), "%.5f", config.sensor[ax].eqns[0]);
+			s["eqnsA"] = buf;
+			snprintf(buf, sizeof(buf), "%.5f", config.sensor[ax].eqns[1]);
+			s["eqnsB"] = buf;
+			snprintf(buf, sizeof(buf), "%.5f", config.sensor[ax].eqns[2]);
+			s["eqnsC"] = buf;
+		}
+
+		JsonArray typeNames = data["typeNames"].to<JsonArray>();
+		for (uint8_t idx = 0; idx < SENSOR_NAME_NUM; idx++)
+			typeNames.add(SENSOR_NAME[idx]);
+
+		JsonArray portNames = data["portNames"].to<JsonArray>();
+		for (uint8_t idx = 0; idx < SENSOR_PORT_NUM; idx++)
+			portNames.add(SENSOR_PORT[idx]);
+
+		JsonArray initSensors = data["initSensors"].to<JsonArray>();
+		for (int i = 0; i < 10; i++)
+		{
+			JsonObject s = initSensors.add<JsonObject>();
+			s["i"] = i;
+			s["type"] = config.sensor[i].type;
+			s["port"] = config.sensor[i].port;
+		}
+
 		log_e("[SENSOR] before alloc: freeHeap=%u largestFreeBlock=%u", ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+		esp_task_wdt_reset();
+		String html_str = renderTemplate(SENSOR_TEMPLATE, data.as<JsonVariant>());
 		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", 36000);
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
 		if (!html)
 		{
 			request->send(500, "text/html", "Memory allocation failed");
 			return;
 		}
-		html->print("<script type=\"text/javascript\">\n");
-		html->print("$('form').submit(function (e) {\n");
-		html->print("e.preventDefault();\n");
-		html->print("var data = new FormData(e.currentTarget);\n");
-		html->print("document.getElementById(\"submitSENSOR\").disabled=true;\n");
-		html->print("$.ajax({\n");
-		html->print("url: '/sensor',\n");
-		html->print("type: 'POST',\n");
-		html->print("data: data,\n");
-		html->print("contentType: false,\n");
-		html->print("processData: false,\n");
-		html->print("success: function (data) {\n");
-		html->print("alert(\"Submited Successfully\");\n");
-		html->print("},\n");
-		html->print("error: function (data) {\n");
-		html->print("alert(\"An error occurred.\");\n");
-		html->print("}\n");
-		html->print("});\n");
-		html->print("});\n");
-		html->print("function setElm(name,val) {\n");
-		html->print("document.getElementById(name).value=val;\n");
-		html->print("};\n");
-		html->print("function selSensorType(idx) {\n");
-		html->print("var x=0;\n");
-		html->print("var parm=\"param\"+idx;\n");
-		html->print("var unit=\"unit\"+idx;\n");
-		html->print("x = document.getElementById(\"sensorCH\"+idx).value;\n");
-		html->print("if (x==1) {\n");
-		html->print("setElm(parm,\"Co2\");");
-		html->print("setElm(unit,\"ppm\");\n");
-		html->print("}else if (x==2) {\n");
-		html->print("setElm(parm,\"CH2O\");");
-		html->print("setElm(unit,\"μg/m³\");\n");
-		html->print("}else if (x==3) {\n");
-		html->print("setElm(parm,\"TVOC\");");
-		html->print("setElm(unit,\"μg/m³\");\n");
-		html->print("}else if (x==4) {\n");
-		html->print("setElm(parm,\"PM2.5\");");
-		html->print("setElm(unit,\"μg/m³\");\n");
-		html->print("}else if (x==5) {\n");
-		html->print("setElm(parm,\"PM10.0\");");
-		html->print("setElm(unit,\"μg/m³\");\n");
-		html->print("}else if (x==6) {\n");
-		html->print("setElm(parm,\"Temperature\");");
-		html->print("setElm(unit,\"°C\");\n");
-		html->print("}else if (x==7) {\n");
-		html->print("setElm(parm,\"Humidity\");");
-		html->print("setElm(unit,\"%RH\");\n");
-		html->print("}else if (x==8) {\n");
-		html->print("setElm(parm,\"Pressure\");");
-		html->print("setElm(unit,\"hPa\");\n");
-		html->print("}else if (x==9) {\n");
-		html->print("setElm(parm,\"WindSpeed\");");
-		html->print("setElm(unit,\"kPh\");\n");
-		html->print("}else if (x==10) {\n");
-		html->print("setElm(parm,\"WindCourse\");");
-		html->print("setElm(unit,\"°\");\n");
-		html->print("}else if (x==11) {\n");
-		html->print("setElm(parm,\"Rain\");");
-		html->print("setElm(unit,\"mm\");\n");
-		html->print("}else if (x==12) {\n");
-		html->print("setElm(parm,\"Luminosity\");");
-		html->print("setElm(unit,\"W/m³\");\n");
-		html->print("}else if (x==13) {\n");
-		html->print("setElm(parm,\"SoilTemp\");");
-		html->print("setElm(unit,\"°C\");\n");
-		html->print("}else if (x==14) {\n");
-		html->print("setElm(parm,\"SoilMoisture\");");
-		html->print("setElm(unit,\"%VWC\");\n");
-		html->print("}else if (x==15) {\n");
-		html->print("setElm(parm,\"WaterTemp\");");
-		html->print("setElm(unit,\"°C\");\n");
-		html->print("}else if (x==16) {\n");
-		html->print("setElm(parm,\"WaterTDS\");");
-		html->print("setElm(unit,\" \");\n");
-		html->print("}else if (x==17) {\n");
-		html->print("setElm(parm,\"WaterLevel\");");
-		html->print("setElm(unit,\"mm\");\n");
-		html->print("}else if (x==18) {\n");
-		html->print("setElm(parm,\"WaterFlow\");");
-		html->print("setElm(unit,\"L/min\");\n");
-		html->print("}else if (x==19) {\n");
-		html->print("setElm(parm,\"Voltage\");");
-		html->print("setElm(unit,\"V\");\n");
-		html->print("}else if (x==20) {\n");
-		html->print("setElm(parm,\"Current\");");
-		html->print("setElm(unit,\"A\");\n");
-		html->print("}else if (x==21) {\n");
-		html->print("setElm(parm,\"Power\");");
-		html->print("setElm(unit,\"W\");\n");
-		html->print("}else if (x==22) {\n");
-		html->print("setElm(parm,\"Energy\");");
-		html->print("setElm(unit,\"Wh\");\n");
-		html->print("}else if (x==23) {\n");
-		html->print("setElm(parm,\"Frequency\");");
-		html->print("setElm(unit,\"Hz\");\n");
-		html->print("}else if (x==24) {\n");
-		html->print("setElm(parm,\"PF\");");
-		html->print("setElm(unit,\" \");\n");
-		html->print("}else if (x==25) {\n");
-		html->print("setElm(parm,\"Satellite\");");
-		html->print("setElm(unit,\" \");\n");
-		html->print("}else if (x==26) {\n");
-		html->print("setElm(parm,\"HDOP\");");
-		html->print("setElm(unit,\" \");\n");
-		html->print("}else if (x==27) {\n");
-		html->print("setElm(parm,\"Battery\");");
-		html->print("setElm(unit,\"V\");\n");
-		html->print("}else if (x==28) {\n");
-		html->print("setElm(parm,\"BattLevel\");");
-		html->print("setElm(unit,\"%\");\n");
-		html->print("}\n}\n");
-
-		html->print("function selSensor(idx) {\n");
-		html->print("var x=0;\n");
-		html->print("x = document.getElementById(\"sensorP\"+idx).value;\n");
-		html->print("if (x>=10 && x<=13) {\n");
-#ifdef TTGO_T_Beam_S3_SUPREME_V3
-		html->print("document.getElementById(\"address\"+idx).value=119;\n");
-#else
-		html->print("document.getElementById(\"address\"+idx).value=118;\n");
-#endif
-		html->print("}else if (x==16 || x==17) {\n");
-		html->print("document.getElementById(\"address\"+idx).value=90;\n");
-		html->print("}else if (x==23) {\n");
-		html->print("document.getElementById(\"address\"+idx).value=1;\n");
-		html->print("}else if (x==24 || x==25) {\n");
-		html->print("document.getElementById(\"address\"+idx).value=1000;\n");
-		html->print("}else{\n");
-		html->print("document.getElementById(\"address\"+idx).value=0;\n");
-		html->print("}\n}\n");
-		html->print("</script>\n");
-
-		/************************ Sensor Monitor **************************/
-		// html->print("<form id='formSENSOR' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		html->print("<table>\n");
-		html->print("<th colspan=\"5\"><span><b>Sensor Monitor</b></span></th>\n");
-		int ax = 0;
-		for (int r = 0; r < 3; r++)
-		{
-			html->print("<tr>\n");
-			for (int c = 0; c < 5; c++)
-			{
-				html->print("<td align=\"center\">\n");
-				if (config.sensor[ax].enable)
-				{
-					snprintf(temp_buffer, sizeof(temp_buffer), "<fieldset id=\"SenGrp%d\">\n", ax + 1);
-					html->print(temp_buffer);
-				}
-				else
-				{
-					snprintf(temp_buffer, sizeof(temp_buffer), "<fieldset id=\"SenGrp%d\" disabled>\n", ax + 1);
-					html->print(temp_buffer);
-				}
-
-				snprintf(temp_buffer, sizeof(temp_buffer), "<legend>SEN#%d-%s</legend>\n", ax + 1, config.sensor[ax].parm);
-				html->print(temp_buffer);
-				snprintf(temp_buffer, sizeof(temp_buffer), "<input id=\"sVal%d\" style=\"text-align:right;\" size=\"5\" type=\"text\" value=\"%.2f\" readonly/> %s\n", ax, sen[ax].sample, config.sensor[ax].unit);
-				html->print(temp_buffer);
-				html->print("</td>\n");
-				ax++;
-				if (ax >= SENSOR_NUMBER)
-					break;
-			}
-			html->print("</tr>\n");
-			if (ax >= SENSOR_NUMBER)
-				break;
-		}
-		html->print("</table>< /br>\n");
-
-		/************************ Sensor Config Mode **************************/
-		html->print("<form id='formSENSOR' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>Sensor Config</b></span></th>\n");
-		String EnFlag = "";
-
-		for (int ax = 0; ax < SENSOR_NUMBER; ax++)
-		{
-			snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td align=\"right\"><b>SENSOR#%d:</b><br />\n", ax + 1);
-			html->print(temp_buffer);
-			EnFlag = "";
-			if (config.sensor[ax].enable)
-				EnFlag = "checked";
-			{
-				snprintf(temp_buffer, sizeof(temp_buffer), "<label class=\"switch\"><input type=\"checkbox\" name=\"En%d\" value=\"OK\" %s><span class=\"slider round\"></span></label>", ax, EnFlag.c_str());
-				html->print(temp_buffer);
-			}
-			html->print("</td><td align=\"center\">\n");
-			html->print("<table>");
-
-			html->print("<tr><td style=\"text-align: right;\">Type:</td>\n");
-			html->print("<td style=\"text-align: left;\">");
-			{
-				snprintf(temp_buffer, sizeof(temp_buffer), "<select name=\"sensorCH%d\" id=\"sensorCH%d\" onchange=\"selSensorType(%d)\">\n", ax, ax, ax);
-				html->print(temp_buffer);
-			}
-			// for (uint8_t idx = 0; idx < SENSOR_NAME_NUM; idx++)
-			// {
-			// 	if (config.sensor[ax].type == idx)
-			// 	{
-			// 		html->print("<option value=\"" + String(idx) + "\" selected>" + String(SENSOR_NAME[idx]) + "</option>\n");
-			// 	}
-			// 	else
-			// 	{
-			// 		html->print("<option value=\"" + String(idx) + "\">" + String(SENSOR_NAME[idx]) + "</option>\n");
-			// 	}
-			// }
-			html->print("</select></td>\n");
-
-			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\">Name: <input maxlength=\"15\" size=\"15\" name=\"param%d\" id=\"param%d\" type=\"text\" value=\"%s\" /></td>\n", ax, ax, config.sensor[ax].parm);
-			html->print(temp_buffer);
-
-			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\">Unit: <input maxlength=\"10\" size=\"5\" name=\"unit%d\" id=\"unit%d\" type=\"text\" value=\"%s\" /></td>\n", ax, ax, config.sensor[ax].unit);
-			html->print(temp_buffer);
-			html->print("</tr>\n");
-			// html->print("<tr><td style=\"text-align: right;\">Port:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax) + "a\" type=\"number\" value=\"" + String(config.sensor[ax].eqns[0], 3) + "\" />  b:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax) + "b\" type=\"number\" value=\"" + String(config.sensor[ax].eqns[1], 3) + "\" /> c:<input min=\"-999\" max=\"999\" step=\"0.1\" name=\"eqns" + String(ax) + "c\" type=\"number\" value=\"" + String(config.sensor[ax].eqns[2], 3) + "\" /> (av<sup>2</sup>+bv+c)</td></tr>\n";
-			snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td style=\"text-align: right;\">PORT:</td>\n<td style=\"text-align: left;\">\n<select name=\"sensorP%d\" id=\"sensorP%d\" onchange=\"selSensor(%d)\">\n", ax, ax, ax);
-			html->print(temp_buffer);
-			// for (uint8_t idx = 0; idx < SENSOR_PORT_NUM; idx++)
-			// {
-			// 	if (config.sensor[ax].port == idx)
-			// 	{
-			// 		html->print("<option value=\"" + String(idx) + "\" selected>" + String(SENSOR_PORT[idx]) + "</option>\n";
-			// 	}
-			// 	else
-			// 	{
-			// 		strcat(html, "<option value=\"" + String(idx) + "\">" + String(SENSOR_PORT[idx]) + "</option>\n";
-			// 	}
-			// }
-			html->print("</select></td>\n");
-			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\">Addr/Reg/GPIO: <input style=\"text-align:right;\" min=\"0\" max=\"6500\" step=\"1\" name=\"address%d\" id=\"address%d\" type=\"number\" value=\"%d\" /></td>\n", ax, ax, config.sensor[ax].address);
-			html->print(temp_buffer);
-			snprintf(temp_buffer, sizeof(temp_buffer), "<td style=\"text-align: left;\">Sample: <input style=\"text-align:right;\" min=\"0\" max=\"9999\" step=\"1\" name=\"sample%d\" type=\"number\" value=\"%d\" />Sec.\n", ax, config.sensor[ax].samplerate);
-			html->print(temp_buffer);
-			snprintf(temp_buffer, sizeof(temp_buffer), "Average: <input style=\"text-align:right;\" min=\"0\" max=\"999\" step=\"1\" name=\"avg%d\" type=\"number\" value=\"%d\" />Sec.</td></tr>\n", ax, config.sensor[ax].averagerate);
-			html->print(temp_buffer);
-			snprintf(temp_buffer, sizeof(temp_buffer), "<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-999\" max=\"999\" step=\"0.00001\" name=\"eqns%da\" type=\"number\" value=\"%.5f\" />  b:<input min=\"-999\" max=\"999\" step=\"0.00001\" name=\"eqns%db\" type=\"number\" value=\"%.5f\" /> c:<input min=\"-999\" max=\"999\" step=\"0.00001\" name=\"eqns%dc\" type=\"number\" value=\"%.5f\" /> (av<sup>2</sup>+bv+c)</td></tr>\n",
-							 ax, config.sensor[ax].eqns[0], ax, config.sensor[ax].eqns[1], ax, config.sensor[ax].eqns[2]);
-			html->print(temp_buffer);
-			html->print("</table></td>");
-			html->print("</tr>\n");
-		}
-
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitSENSOR'  name=\"commitSENSOR\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitSENSOR\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form><br />");
-
-		html->print("<script type=\"text/javascript\">\n");
-		html->print("if (typeof typeArry === 'undefined'){let typeArry = [];};\n");
-		html->print("typeArry = new Array(");
-		for (uint8_t idx = 0; idx < SENSOR_NAME_NUM; idx++)
-		{
-			snprintf(temp_buffer, sizeof(temp_buffer), "'%s'", SENSOR_NAME[idx]);
-			html->print(temp_buffer);
-			if (idx < SENSOR_NAME_NUM - 1)
-				html->print(",");
-		}
-		html->print(");\n");
-		html->print("if (typeof portArry === 'undefined'){let portArry = [];};\n");
-		html->print("portArry = new Array(");
-		for (uint8_t idx = 0; idx < SENSOR_PORT_NUM; idx++)
-		{
-			snprintf(temp_buffer, sizeof(temp_buffer), "'%s'", SENSOR_PORT[idx]);
-			html->print(temp_buffer);
-			if (idx < SENSOR_PORT_NUM - 1)
-				html->print(",");
-		}
-		html->print(");\n");
-		// html->print("delete typeSel;delete listType;delete portSel;delete listPort;\n";
-		html->print("if (typeof typeSel === 'undefined'){var typeSel = [];};\n");
-		html->print("if (typeof listType === 'undefined'){var listType = [];};\n");
-		html->print("if (typeof portSel === 'undefined'){var portSel = [];};\n");
-		html->print("if (typeof listPort === 'undefined'){var listPort = [];};\n");
-		for (int i = 0; i < 10; i++)
-		{
-			snprintf(temp_buffer, sizeof(temp_buffer), "listType[%d] = document.querySelector('#sensorCH%d');typeSel[%d]=%d;\n", i, i, i, config.sensor[i].type);
-			html->print(temp_buffer);
-			snprintf(temp_buffer, sizeof(temp_buffer), "listPort[%d] = document.querySelector('#sensorP%d');portSel[%d]=%d;\n", i, i, i, config.sensor[i].port);
-			html->print(temp_buffer);
-		}
-
-		html->print("for (let n = 0; n < 10; n++){\n");
-		html->print("for (let i = 0; i < typeArry.length; i++) {\n");
-		html->print("const optionType = new Option(typeArry[i], i);\n");
-		html->print("listType[n].add(optionType, undefined);\n");
-		html->print("};\n");
-		html->print("listType[n].options[typeSel[n]].selected = true;\n");
-		html->print("for (let p = 0; p < portArry.length; p++) {\n");
-		html->print("const optionPort = new Option(portArry[p], p);\n");
-		html->print("listPort[n].add(optionPort, undefined);\n");
-		html->print("};\n");
-		html->print("listPort[n].options[portSel[n]].selected = true;\n");
-		html->print("};\n");
-
-		html->print("</script>\n");
-
+		html->print(html_str);
 		html->addHeader("Sensor", "content");
 		html->addHeader("Cache-Control", "no-cache");
 		request->send(html);
 	}
 }
+
+static const char *TRACKER_TEMPLATE =
+	"<script type=\"text/javascript\">\n"
+	"$('form').submit(function (e) {\n"
+	"e.preventDefault();\n"
+	"var data = new FormData(e.currentTarget);\n"
+	"document.getElementById(\"submitTRACKER\").disabled=true;\n"
+	"$.ajax({\n"
+	"url: '/tracker',\n"
+	"type: 'POST',\n"
+	"data: data,\n"
+	"contentType: false,\n"
+	"processData: false,\n"
+	"success: function (data) {\n"
+	"alert(\"Submited Successfully\");\n"
+	"},\n"
+	"error: function (data) {\n"
+	"alert(\"An error occurred.\");\n"
+	"}\n"
+	"});\n"
+	"});\n"
+	"</script>\n<script type=\"text/javascript\">\n"
+	"function openWindowSymbol(sel) {\n"
+	"var i, l, options = [{\n"
+	"value: 'first',\n"
+	"text: 'First'\n"
+	"}, {\n"
+	"value: 'second',\n"
+	"text: 'Second'\n"
+	"}],\n"
+	"newWindow = window.open(\"/symbol?sel=\"+sel.toString(), null, \"height=400,width=400,status=no,toolbar=no,menubar=no,location=no\");\n"
+	"}\n"
+	"function setValue(sel,symbol,table) {\n"
+	"var txtsymbol=document.getElementById('trackerSymbol');\n"
+	"var txttable=document.getElementById('trackerTable');\n"
+	"var imgicon=document.getElementById('trackerImgSymbol');\n"
+	"if(sel==1){\n"
+	"txtsymbol=document.getElementById('moveSymbol');\n"
+	"txttable=document.getElementById('moveTable');\n"
+	"imgicon= document.getElementById('moveImgSymbol');\n"
+	"}else if(sel==2){\n"
+	"txtsymbol=document.getElementById('stopSymbol');\n"
+	"txttable=document.getElementById('stopTable');\n"
+	"imgicon= document.getElementById('stopImgSymbol');\n"
+	"}\n"
+	"txtsymbol.value = String.fromCharCode(symbol);\n"
+	"if(table==1){\n txttable.value='/';\n"
+	"}else if(table==2){\n txttable.value='\\\\';\n}\n"
+	"imgicon.src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n"
+	"\n}\n"
+	"function onSmartCheck() {\n"
+	"if (document.querySelector('#smartBcnEnable').checked) {\n"
+	"document.getElementById(\"smartbcnGrp\").disabled=false;\n"
+	"} else {\n"
+	"document.getElementById(\"smartbcnGrp\").disabled=true;\n"
+	"}\n}\n"
+	"function selPrecision(idx) {\n"
+	"var x=0;\n"
+	"x = document.getElementsByName(\"precision\"+idx)[0].value;\n"
+	"document.getElementsByName(\"eqns\"+idx+\"b\")[0].value=1/Math.pow(10,x);\n"
+	"}\n"
+	"function selOffset(idx) {\n"
+	"var x=0;\n"
+	"x = document.getElementsByName(\"offset\"+idx)[0].value;\n"
+	"document.getElementsByName(\"eqns\"+idx+\"c\")[0].value=x*(-1);\n"
+	"}\n"
+	"</script>\n"
+	"<form id='formtracker' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>[TRACKER] Tracker Position Mode</b></span></th>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Enable:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"trackerEnable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Station Callsign:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"{{myCall}}\" /></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Station SSID:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"mySSID\" id=\"mySSID\">\n"
+	"{{#each ssidOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{value}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Item/Obj Name:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"9\" size=\"9\" id=\"trackerObject\" name=\"trackerObject\" type=\"text\" value=\"{{object}}\" /><i> *If not used, leave it blank.In use 3-9 charactor</i></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>PATH:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"trackerPath\" id=\"trackerPath\">\n"
+	"{{#each pathOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Text Comment:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"25\" size=\"30\" id=\"trackerComment\" name=\"trackerComment\" type=\"text\" value=\"{{comment}}\" /></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Text Status:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"60\" id=\"trkStatus\" name=\"trkStatus\" type=\"text\" value=\"{{status}}\" />  Interval:<input min=\"0\" max=\"3600\" step=\"1\" name=\"trkSTSInv\" type=\"number\" value=\"{{statusInterval}}\" />Sec.</td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Smart Beacon:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"smartBcnEnable\" name=\"smartBcnEnable\" onclick=\"onSmartCheck()\" value=\"OK\" {{#if smartBcnEn}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch use to smart beacon mode</i></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Compress:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"compressEnable\" value=\"OK\" {{#if compressEn}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch compress packet</i></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Mic-E Type:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"trkMicEType\" id=\"trkMicEType\">\n"
+	"{{#each micEOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select><label style=\"vertical-align: bottom;font-size: 8pt;\"><i>*Support if Compress is enabled and not use Item/Obj,Time Stamp or UnUsed</i></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Time Stamp:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"trackerTimeStamp\" value=\"OK\" {{#if timestamp}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n"
+	"<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"trackerPos2RF\" value=\"OK\" {{#if pos2RF}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"trackerPos2INET\" value=\"OK\" {{#if pos2INET}}checked{{/if}}/>Internet </td></tr>\n"
+	"<tr><td style=\"text-align: right;\"><b>Option:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"trackerOptCST\" value=\"OK\" {{#if optCST}}checked{{/if}}/>Telemetry <input type=\"checkbox\" name=\"trackerOptAlt\" value=\"OK\" {{#if optAlt}}checked{{/if}}/>Altutude <input type=\"checkbox\" name=\"trackerOptBat\" value=\"OK\" {{#if optBat}}checked{{/if}}/>Audio Request </td></tr>\n"
+	"<tr>"
+	"<td align=\"right\"><b>POSITION:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<table>"
+	"<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"3600\" step=\"1\" id=\"trackerPosInv\" name=\"trackerPosInv\" type=\"number\" value=\"{{posInterval}}\" />Sec.</label></td></tr>"
+	"<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"trackerPosSel\" value=\"0\" {{#if posFix}}checked=\"checked\"{{/if}}/>Fix <input type=\"radio\" name=\"trackerPosSel\" value=\"1\" {{#if posGPS}}checked=\"checked\"{{/if}}/>GPS </td></tr>\n"
+	"<tr>\n"
+	"<td align=\"right\">Symbol Icon:</td>\n"
+	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"trackerTable\" name=\"trackerTable\" type=\"text\" value=\"{{symTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"trackerSymbol\" name=\"trackerSymbol\" type=\"text\" value=\"{{symSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"trackerImgSymbol\" onclick=\"openWindowSymbol(0);\" src=\"http://aprs.nakhonthai.net/symbols/icons/{{symImgNum}}-{{symImgTable}}.png\"> <i>*Click icon for select symbol</i></td>\n"
+	"</tr>\n"
+	"<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" id=\"trackerPosLat\" name=\"trackerPosLat\" type=\"number\" value=\"{{lat}}\" />degrees (positive for North, negative for South)</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" id=\"trackerPosLon\" name=\"trackerPosLon\" type=\"number\" value=\"{{lon}}\" />degrees (positive for East, negative for West)</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" id=\"trackerPosAlt\" name=\"trackerPosAlt\" type=\"number\" value=\"{{alt}}\" /> meter. *Value 0 is not send height</td></tr>\n"
+	"</table></td>"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Smart Beacon:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<fieldset id=\"smartbcnGrp\" {{#if smartbeaconDisabled}}disabled{{/if}}>\n"
+	"<legend>Smart beacon configuration</legend>\n<table>"
+	"<tr>\n"
+	"<td align=\"right\">Move Symbol:</td>\n"
+	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"moveTable\" name=\"moveTable\" type=\"text\" value=\"{{moveTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"moveSymbol\" name=\"moveSymbol\" type=\"text\" value=\"{{moveSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"moveImgSymbol\" onclick=\"openWindowSymbol(1);\" src=\"http://aprs.nakhonthai.net/symbols/icons/{{moveImgNum}}-{{moveImgTable}}.png\"> <i>*Click icon for select MOVE symbol</i></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\">Stop Symbol:</td>\n"
+	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"stopTable\" name=\"stopTable\" type=\"text\" value=\"{{stopTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"stopSymbol\" name=\"stopSymbol\" type=\"text\" value=\"{{stopSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"stopImgSymbol\" onclick=\"openWindowSymbol(2);\" src=\"http://aprs.nakhonthai.net/symbols/icons/{{stopImgNum}}-{{stopImgTable}}.png\"> <i>*Click icon for select STOP symbol</i></td>\n"
+	"</tr>\n"
+	"<tr><td style=\"text-align: right;\">High Speed:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"10\" max=\"1000\" step=\"1\" id=\"hspeed\" name=\"hspeed\" type=\"number\" value=\"{{hspeed}}\" /> km/h</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Low Speed:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"1\" max=\"250\" step=\"1\" id=\"lspeed\" name=\"lspeed\" type=\"number\" value=\"{{lspeed}}\" /> km/h</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Slow Interval:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"60\" max=\"3600\" step=\"1\" id=\"slowInterval\" name=\"slowInterval\" type=\"number\" value=\"{{slowInterval}}\" /> Sec.</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Max Interval:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"10\" max=\"255\" step=\"1\" id=\"maxInterval\" name=\"maxInterval\" type=\"number\" value=\"{{maxInterval}}\" /> Sec.</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Min Interval:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"1\" max=\"100\" step=\"1\" id=\"minInterval\" name=\"minInterval\" type=\"number\" value=\"{{minInterval}}\" /> Sec.</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Min Angle:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"1\" max=\"359\" step=\"1\" id=\"minAngle\" name=\"minAngle\" type=\"number\" value=\"{{minAngle}}\" /> Degree.</td></tr>\n"
+	"</table></fieldset></tr>"
+	"<tr>\n"
+	"<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n"
+	"<td align=\"center\"><table>\n"
+	"<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"trkTlmInv\" name=\"trkTlmInv\" type=\"number\" value=\"{{tlmInterval}}\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>"
+	"{{#each tlmChannels}}<tr><td align=\"right\"><b>CH A{{num}}:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<table>"
+	"<tr><td style=\"text-align: right;\">Sensor:</td>\n"
+	"<td style=\"text-align: left;\">CH: "
+	"<select name=\"sensorCH{{idx}}\" id=\"sensorCH{{idx}}\">\n"
+	"{{#each sensorOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"<td style=\"text-align: left;\">Name: <input maxlength=\"10\" size=\"8\" name=\"param{{idx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
+	"<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{idx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
+	"<td style=\"text-align: left;\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision{{idx}}\" type=\"text\" value=\"{{precision}}\" onchange=\"selPrecision({{idx}})\" /></td></tr>\n"
+	"<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}a\" type=\"number\" value=\"{{eqnsA}}\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}b\" type=\"number\" value=\"{{eqnsB}}\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}c\" type=\"number\" value=\"{{eqnsC}}\" /> (av<sup>2</sup>+bv+c) </td>\n"
+	"<td style=\"text-align: left;\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset{{idx}}\" type=\"text\" value=\"{{offset}}\"  onchange=\"selOffset({{idx}})\" /></td></tr>\n"
+	"</table></td>"
+	"</tr>\n"
+	"{{/each}}"
+	"</table></td></tr>\n"
+	"<tr><td colspan=\"2\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitTRACKER'  name=\"commitTRACKER\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitTRACKER\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form><br />";
 
 void handle_tracker(AsyncWebServerRequest *request)
 {
@@ -11304,388 +9698,284 @@ void handle_tracker(AsyncWebServerRequest *request)
 		saveConfig(request);
 	}
 
+	JsonDocument data;
+	data["enabled"] = config.trk_en;
+	data["myCall"] = config.trk_mycall;
+
+	JsonArray ssidOptions = data["ssidOptions"].to<JsonArray>();
+	for (uint8_t ssid = 0; ssid <= 15; ssid++)
+	{
+		JsonObject o = ssidOptions.add<JsonObject>();
+		o["value"] = ssid;
+		o["selected"] = (config.trk_ssid == ssid);
+	}
+
+	data["object"] = config.trk_item;
+
+	JsonArray pathOptions = data["pathOptions"].to<JsonArray>();
+	for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
+	{
+		JsonObject o = pathOptions.add<JsonObject>();
+		o["value"] = pthIdx;
+		o["label"] = PATH_NAME[pthIdx];
+		o["selected"] = (config.trk_path == pthIdx);
+	}
+
+	data["comment"] = config.trk_comment;
+	data["status"] = config.trk_status;
+	data["statusInterval"] = config.trk_sts_interval;
+	data["smartBcnEn"] = config.trk_smartbeacon;
+	data["compressEn"] = config.trk_compress;
+
+	JsonArray micEOptions = data["micEOptions"].to<JsonArray>();
+	for (uint8_t micEIdx = 0; micEIdx < 9; micEIdx++)
+	{
+		JsonObject o = micEOptions.add<JsonObject>();
+		o["value"] = micEIdx;
+		o["label"] = MIC_E_MSG[micEIdx];
+		o["selected"] = (config.trk_mice_type == micEIdx);
+	}
+
+	data["timestamp"] = config.trk_timestamp;
+	data["pos2RF"] = config.trk_loc2rf;
+	data["pos2INET"] = config.trk_loc2inet;
+	data["optCST"] = config.trk_log;
+	data["optAlt"] = config.trk_altitude;
+	data["optBat"] = config.trk_rssi;
+
+	data["posInterval"] = config.trk_interval;
+	data["posFix"] = !config.trk_gps;
+	data["posGPS"] = config.trk_gps;
+
+	char cbuf[2];
+	auto tableFor = [](char first) -> const char *
+	{
+		if (first == 92)
+			return "2";
+		return "1"; // default and table==47 ('/') both map to "1", matching original
+	};
+
+	cbuf[0] = config.trk_symbol[0];
+	cbuf[1] = 0;
+	data["symTable"] = cbuf;
+	cbuf[0] = config.trk_symbol[1];
+	cbuf[1] = 0;
+	data["symSymbol"] = cbuf;
+	data["symImgNum"] = (int)config.trk_symbol[1];
+	data["symImgTable"] = tableFor(config.trk_symbol[0]);
+
+	char buf[32];
+	snprintf(buf, sizeof(buf), "%.5f", config.trk_lat);
+	data["lat"] = buf;
+	snprintf(buf, sizeof(buf), "%.5f", config.trk_lon);
+	data["lon"] = buf;
+	snprintf(buf, sizeof(buf), "%.2f", config.trk_alt);
+	data["alt"] = buf;
+
+	data["smartbeaconDisabled"] = !config.trk_smartbeacon;
+
+	cbuf[0] = config.trk_symmove[0];
+	cbuf[1] = 0;
+	data["moveTable"] = cbuf;
+	cbuf[0] = config.trk_symmove[1];
+	cbuf[1] = 0;
+	data["moveSymbol"] = cbuf;
+	data["moveImgNum"] = (int)config.trk_symmove[1];
+	data["moveImgTable"] = tableFor(config.trk_symmove[0]);
+
+	cbuf[0] = config.trk_symstop[0];
+	cbuf[1] = 0;
+	data["stopTable"] = cbuf;
+	cbuf[0] = config.trk_symstop[1];
+	cbuf[1] = 0;
+	data["stopSymbol"] = cbuf;
+	data["stopImgNum"] = (int)config.trk_symstop[1];
+	data["stopImgTable"] = tableFor(config.trk_symstop[0]);
+
+	data["hspeed"] = config.trk_hspeed;
+	data["lspeed"] = config.trk_lspeed;
+	data["slowInterval"] = config.trk_slowinterval;
+	data["maxInterval"] = config.trk_maxinterval;
+	data["minInterval"] = config.trk_mininterval;
+	data["minAngle"] = config.trk_minangle;
+
+	data["tlmInterval"] = config.trk_tlm_interval;
+
+	JsonArray tlmChannels = data["tlmChannels"].to<JsonArray>();
+	for (int ax = 0; ax < 5; ax++)
+	{
+		JsonObject c = tlmChannels.add<JsonObject>();
+		c["idx"] = ax;
+		c["num"] = ax + 1;
+		c["param"] = config.trk_tlm_PARM[ax];
+		c["unit"] = config.trk_tlm_UNIT[ax];
+		c["precision"] = config.trk_tlm_precision[ax];
+		snprintf(buf, sizeof(buf), "%.5f", config.trk_tlm_EQNS[ax][0]);
+		c["eqnsA"] = buf;
+		snprintf(buf, sizeof(buf), "%.5f", config.trk_tlm_EQNS[ax][1]);
+		c["eqnsB"] = buf;
+		snprintf(buf, sizeof(buf), "%.5f", config.trk_tlm_EQNS[ax][2]);
+		c["eqnsC"] = buf;
+		snprintf(buf, sizeof(buf), "%.5f", config.trk_tlm_offset[ax]);
+		c["offset"] = buf;
+
+		JsonArray sensorOptions = c["sensorOptions"].to<JsonArray>();
+		for (uint8_t idx = 0; idx < 11; idx++)
+		{
+			JsonObject o = sensorOptions.add<JsonObject>();
+			o["value"] = idx;
+			o["label"] = (idx == 0) ? String("NONE") : ("SENSOR#" + String(idx));
+			o["selected"] = (config.trk_tlm_sensor[ax] == idx);
+		}
+	}
+
+	delay(1);
+	esp_task_wdt_reset();
+	String html_str = renderTemplate(TRACKER_TEMPLATE, data.as<JsonVariant>());
 	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-	char tempHtml[500];
-	AsyncResponseStream *html = request->beginResponseStream("text/html", 30000);
+	AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
 	if (!html)
 	{
 		request->send(500, "text/html", "Memory allocation failed");
 		return;
 	}
-	html->print("<script type=\"text/javascript\">\n");
-	html->print("$('form').submit(function (e) {\n");
-	html->print("e.preventDefault();\n");
-	html->print("var data = new FormData(e.currentTarget);\n");
-	html->print("document.getElementById(\"submitTRACKER\").disabled=true;\n");
-	html->print("$.ajax({\n");
-	html->print("url: '/tracker',\n");
-	html->print("type: 'POST',\n");
-	html->print("data: data,\n");
-	html->print("contentType: false,\n");
-	html->print("processData: false,\n");
-	html->print("success: function (data) {\n");
-	html->print("alert(\"Submited Successfully\");\n");
-	html->print("},\n");
-	html->print("error: function (data) {\n");
-	html->print("alert(\"An error occurred.\");\n");
-	html->print("}\n");
-	html->print("});\n");
-	html->print("});\n");
-	html->print("</script>\n<script type=\"text/javascript\">\n");
-	html->print("function openWindowSymbol(sel) {\n");
-	html->print("var i, l, options = [{\n");
-	html->print("value: 'first',\n");
-	html->print("text: 'First'\n");
-	html->print("}, {\n");
-	html->print("value: 'second',\n");
-	html->print("text: 'Second'\n");
-	html->print("}],\n");
-	html->print("newWindow = window.open(\"/symbol?sel=\"+sel.toString(), null, \"height=400,width=400,status=no,toolbar=no,menubar=no,location=no\");\n");
-	html->print("}\n");
-
-	html->print("function setValue(sel,symbol,table) {\n");
-	html->print("var txtsymbol=document.getElementById('trackerSymbol');\n");
-	html->print("var txttable=document.getElementById('trackerTable');\n");
-	html->print("var imgicon=document.getElementById('trackerImgSymbol');\n");
-	html->print("if(sel==1){\n");
-	html->print("txtsymbol=document.getElementById('moveSymbol');\n");
-	html->print("txttable=document.getElementById('moveTable');\n");
-	html->print("imgicon= document.getElementById('moveImgSymbol');\n");
-	html->print("}else if(sel==2){\n");
-	html->print("txtsymbol=document.getElementById('stopSymbol');\n");
-	html->print("txttable=document.getElementById('stopTable');\n");
-	html->print("imgicon= document.getElementById('stopImgSymbol');\n");
-	html->print("}\n");
-	html->print("txtsymbol.value = String.fromCharCode(symbol);\n");
-	html->print("if(table==1){\n txttable.value='/';\n");
-	html->print("}else if(table==2){\n txttable.value='\\\\';\n}\n");
-	html->print("imgicon.src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n");
-	html->print("\n}\n");
-	html->print("function onSmartCheck() {\n");
-	html->print("if (document.querySelector('#smartBcnEnable').checked) {\n");
-	// Checkbox has been checked
-	html->print("document.getElementById(\"smartbcnGrp\").disabled=false;\n");
-	html->print("} else {\n");
-	// Checkbox has been unchecked
-	html->print("document.getElementById(\"smartbcnGrp\").disabled=true;\n");
-	html->print("}\n}\n");
-
-	html->print("function selPrecision(idx) {\n");
-	html->print("var x=0;\n");
-	html->print("x = document.getElementsByName(\"precision\"+idx)[0].value;\n");
-	html->print("document.getElementsByName(\"eqns\"+idx+\"b\")[0].value=1/Math.pow(10,x);\n");
-	html->print("}\n");
-	html->print("function selOffset(idx) {\n");
-	html->print("var x=0;\n");
-	html->print("x = document.getElementsByName(\"offset\"+idx)[0].value;\n");
-	html->print("document.getElementsByName(\"eqns\"+idx+\"c\")[0].value=x*(-1);\n");
-	html->print("}\n");
-	html->print("</script>\n");
-
-	delay(1);
-	/************************ tracker Mode **************************/
-	html->print("<form id='formtracker' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-	// html->print("<h2>[TRACKER] Tracker Position Mode</h2>\n");
-	html->print("<table>\n");
-	// html->print("<tr>\n");
-	// html->print("<th width=\"200\"><span><b>Setting</b></span></th>\n");
-	// html->print("<th><span><b>Value</b></span></th>\n");
-	// html->print("</tr>\n");
-	html->print("<th colspan=\"2\"><span><b>[TRACKER] Tracker Position Mode</b></span></th>\n");
-	html->print("<tr>\n");
-	html->print("<td align=\"right\"><b>Enable:</b></td>\n");
-	char trackerEnFlag[10] = "";
-	if (config.trk_en)
-		strcpy(trackerEnFlag, "checked");
-	else
-		strcpy(trackerEnFlag, "");
-
-	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"trackerEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", trackerEnFlag);
-	html->print(tempHtml);
-
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	html->print("<td align=\"right\"><b>Station Callsign:</b></td>\n");
-	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"%s\" /></td>\n", config.trk_mycall);
-	html->print(tempHtml);
-
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	html->print("<td align=\"right\"><b>Station SSID:</b></td>\n");
-	html->print("<td style=\"text-align: left;\">\n");
-	html->print("<select name=\"mySSID\" id=\"mySSID\">\n");
-	for (uint8_t ssid = 0; ssid <= 15; ssid++)
-	{
-		if (config.trk_ssid == ssid)
-		{
-			snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>%d</option>\n", ssid, ssid);
-		}
-		else
-		{
-			snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%d</option>\n", ssid, ssid);
-		}
-		html->print(tempHtml);
-	}
-	html->print("</select></td>\n");
-	html->print("</tr>\n");
-
-	html->print("<tr>\n");
-	html->print("<td align=\"right\"><b>Item/Obj Name:</b></td>\n");
-	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"9\" size=\"9\" id=\"trackerObject\" name=\"trackerObject\" type=\"text\" value=\"%s\" /><i> *If not used, leave it blank.In use 3-9 charactor</i></td>\n", config.trk_item);
-	html->print(tempHtml);
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	html->print("<td align=\"right\"><b>PATH:</b></td>\n");
-	html->print("<td style=\"text-align: left;\">\n");
-	html->print("<select name=\"trackerPath\" id=\"trackerPath\">\n");
-	for (uint8_t pthIdx = 0; pthIdx < PATH_LEN; pthIdx++)
-	{
-		if (config.trk_path == pthIdx)
-		{
-			snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>%s</option>\n", pthIdx, PATH_NAME[pthIdx]);
-		}
-		else
-		{
-			snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%s</option>\n", pthIdx, PATH_NAME[pthIdx]);
-		}
-		html->print(tempHtml);
-	}
-	html->print("</select></td>\n");
-	// html->print("<td style=\"text-align: left;\"><input maxlength=\"72\" size=\"72\" id=\"trackerPath\" name=\"trackerPath\" type=\"text\" value=\"" + String(config.trk_path) + "\" /></td>\n";
-	html->print("</tr>\n");
-
-	html->print("<tr>\n");
-	html->print("<td align=\"right\"><b>Text Comment:</b></td>\n");
-	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"25\" size=\"30\" id=\"trackerComment\" name=\"trackerComment\" type=\"text\" value=\"%s\" /></td>\n", config.trk_comment);
-	html->print(tempHtml);
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	html->print("<td align=\"right\"><b>Text Status:</b></td>\n");
-	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"60\" id=\"trkStatus\" name=\"trkStatus\" type=\"text\" value=\"%s\" />  Interval:<input min=\"0\" max=\"3600\" step=\"1\" name=\"trkSTSInv\" type=\"number\" value=\"%d\" />Sec.</td>\n", config.trk_status, config.trk_sts_interval);
-	html->print(tempHtml);
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	html->print("<td align=\"right\"><b>Smart Beacon:</b></td>\n");
-	char smartBcnEnFlag[10] = "";
-	if (config.trk_smartbeacon)
-		strcpy(smartBcnEnFlag, "checked");
-
-	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"smartBcnEnable\" name=\"smartBcnEnable\" onclick=\"onSmartCheck()\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch use to smart beacon mode</i></label></td>\n", smartBcnEnFlag);
-	html->print(tempHtml);
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	html->print("<td align=\"right\"><b>Compress:</b></td>\n");
-	char compressEnFlag[10] = "";
-	if (config.trk_compress)
-		strcpy(compressEnFlag, "checked");
-
-	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"compressEnable\" value=\"OK\" %s><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch compress packet</i></label></td>\n", compressEnFlag);
-	html->print(tempHtml);
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	html->print("<td align=\"right\"><b>Mic-E Type:</b></td>\n");
-	html->print("<td style=\"text-align: left;\">\n");
-	html->print("<select name=\"trkMicEType\" id=\"trkMicEType\">\n");
-	for (uint8_t micEIdx = 0; micEIdx < 9; micEIdx++)
-	{
-		if (config.trk_mice_type == micEIdx)
-		{
-			snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>%s</option>\n", micEIdx, MIC_E_MSG[micEIdx]);
-		}
-		else
-		{
-			snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">%s</option>\n", micEIdx, MIC_E_MSG[micEIdx]);
-		}
-		html->print(tempHtml);
-	}
-	html->print("</select><label style=\"vertical-align: bottom;font-size: 8pt;\"><i>*Support if Compress is enabled and not use Item/Obj,Time Stamp or UnUsed</i></label></td>\n");
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	html->print("<td align=\"right\"><b>Time Stamp:</b></td>\n");
-
-	char timeStampFlag[10] = "";
-	if (config.trk_timestamp)
-		strcpy(timeStampFlag, "checked");
-	{
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"trackerTimeStamp\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", timeStampFlag);
-		html->print(tempHtml);
-	}
-	html->print("</tr>\n");
-	char trackerPos2RFFlag[10] = "";
-	char trackerPos2INETFlag[10] = "";
-	if (config.trk_loc2rf)
-		strcpy(trackerPos2RFFlag, "checked");
-	if (config.trk_loc2inet)
-		strcpy(trackerPos2INETFlag, "checked");
-	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"trackerPos2RF\" value=\"OK\" %s/>RF <input type=\"checkbox\" name=\"trackerPos2INET\" value=\"OK\" %s/>Internet </td></tr>\n", trackerPos2RFFlag, trackerPos2INETFlag);
-	html->print(tempHtml);
-	char trackerOptBatFlag[10] = "";
-	char trackerOptSatFlag[10] = "";
-	char trackerOptAltFlag[10] = "";
-	char trackerOptCSTFlag[10] = "";
-	if (config.trk_rssi)
-		strcpy(trackerOptBatFlag, "checked");
-	if (config.trk_sat)
-		strcpy(trackerOptSatFlag, "checked");
-	if (config.trk_altitude)
-		strcpy(trackerOptAltFlag, "checked");
-	if (config.trk_log)
-		strcpy(trackerOptCSTFlag, "checked");
-
-	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\"><b>Option:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"trackerOptCST\" value=\"OK\" %s/>Telemetry <input type=\"checkbox\" name=\"trackerOptAlt\" value=\"OK\" %s/>Altutude <input type=\"checkbox\" name=\"trackerOptBat\" value=\"OK\" %s/>Audio Request </td></tr>\n",
-			 trackerOptCSTFlag, trackerOptAltFlag, trackerOptBatFlag);
-	html->print(tempHtml);
-
-	html->print("<tr>");
-	html->print("<td align=\"right\"><b>POSITION:</b></td>\n");
-	html->print("<td align=\"center\">\n");
-	html->print("<table>");
-	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"3600\" step=\"1\" id=\"trackerPosInv\" name=\"trackerPosInv\" type=\"number\" value=\"%d\" />Sec.</label></td></tr>", config.trk_interval);
-	html->print(tempHtml);
-	char trackerPosFixFlag[20] = "";
-	char trackerPosGPSFlag[20] = "";
-
-	if (config.trk_gps)
-		strcpy(trackerPosGPSFlag, "checked=\"checked\"");
-	else
-		strcpy(trackerPosFixFlag, "checked=\"checked\"");
-
-	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"trackerPosSel\" value=\"0\" %s/>Fix <input type=\"radio\" name=\"trackerPosSel\" value=\"1\" %s/>GPS </td></tr>\n",
-			 trackerPosFixFlag, trackerPosGPSFlag);
-	html->print(tempHtml);
-	html->print("<tr>\n");
-	html->print("<td align=\"right\">Symbol Icon:</td>\n");
-	char table[5] = "1";
-	if (config.trk_symbol[0] == 47)
-		strcpy(table, "1");
-	if (config.trk_symbol[0] == 92)
-		strcpy(table, "2");
-	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"trackerTable\" name=\"trackerTable\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"trackerSymbol\" name=\"trackerSymbol\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"trackerImgSymbol\" onclick=\"openWindowSymbol(0);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-%s.png\"> <i>*Click icon for select symbol</i></td>\n",
-			 config.trk_symbol[0], config.trk_symbol[1], (int)config.trk_symbol[1], table);
-	html->print(tempHtml);
-	html->print("</tr>\n");
-	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" id=\"trackerPosLat\" name=\"trackerPosLat\" type=\"number\" value=\"%.5f\" />degrees (positive for North, negative for South)</td></tr>\n", config.trk_lat);
-	html->print(tempHtml);
-	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" id=\"trackerPosLon\" name=\"trackerPosLon\" type=\"number\" value=\"%.5f\" />degrees (positive for East, negative for West)</td></tr>\n", config.trk_lon);
-	html->print(tempHtml);
-	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" id=\"trackerPosAlt\" name=\"trackerPosAlt\" type=\"number\" value=\"%.2f\" /> meter. *Value 0 is not send height</td></tr>\n", config.trk_alt);
-	html->print(tempHtml);
-	html->print("</table></td>");
-	html->print("</tr>\n");
-
-	html->print("<tr>\n");
-	html->print("<td align=\"right\"><b>Smart Beacon:</b></td>\n");
-	html->print("<td align=\"center\">\n");
-	if (config.trk_smartbeacon)
-		html->print("<fieldset id=\"smartbcnGrp\">\n");
-	else
-		html->print("<fieldset id=\"smartbcnGrp\" disabled>\n");
-	html->print("<legend>Smart beacon configuration</legend>\n<table>");
-	html->print("<tr>\n");
-	html->print("<td align=\"right\">Move Symbol:</td>\n");
-	strcpy(table, "1");
-	if (config.trk_symmove[0] == 47)
-		strcpy(table, "1");
-	if (config.trk_symmove[0] == 92)
-		strcpy(table, "2");
-	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"moveTable\" name=\"moveTable\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"moveSymbol\" name=\"moveSymbol\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"moveImgSymbol\" onclick=\"openWindowSymbol(1);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-%s.png\"> <i>*Click icon for select MOVE symbol</i></td>\n",
-			 config.trk_symmove[0], config.trk_symmove[1], (int)config.trk_symmove[1], table);
-	html->print(tempHtml);
-	html->print("</tr>\n");
-	html->print("<tr>\n");
-	html->print("<td align=\"right\">Stop Symbol:</td>\n");
-	strcpy(table, "1");
-	if (config.trk_symstop[0] == 47)
-		strcpy(table, "1");
-	if (config.trk_symstop[0] == 92)
-		strcpy(table, "2");
-	snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"stopTable\" name=\"stopTable\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"stopSymbol\" name=\"stopSymbol\" type=\"text\" value=\"%c\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"stopImgSymbol\" onclick=\"openWindowSymbol(2);\" src=\"http://aprs.nakhonthai.net/symbols/icons/%d-%s.png\"> <i>*Click icon for select STOP symbol</i></td>\n",
-			 config.trk_symstop[0], config.trk_symstop[1], (int)config.trk_symstop[1], table);
-	html->print(tempHtml);
-	html->print("</tr>\n");
-	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">High Speed:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"10\" max=\"1000\" step=\"1\" id=\"hspeed\" name=\"hspeed\" type=\"number\" value=\"%d\" /> km/h</td></tr>\n", config.trk_hspeed);
-	html->print(tempHtml);
-	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Low Speed:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"1\" max=\"250\" step=\"1\" id=\"lspeed\" name=\"lspeed\" type=\"number\" value=\"%d\" /> km/h</td></tr>\n", config.trk_lspeed);
-	html->print(tempHtml);
-	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Slow Interval:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"60\" max=\"3600\" step=\"1\" id=\"slowInterval\" name=\"slowInterval\" type=\"number\" value=\"%d\" /> Sec.</td></tr>\n", config.trk_slowinterval);
-	html->print(tempHtml);
-	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Max Interval:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"10\" max=\"255\" step=\"1\" id=\"maxInterval\" name=\"maxInterval\" type=\"number\" value=\"%d\" /> Sec.</td></tr>\n", config.trk_maxinterval);
-	html->print(tempHtml);
-	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Min Interval:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"1\" max=\"100\" step=\"1\" id=\"minInterval\" name=\"minInterval\" type=\"number\" value=\"%d\" /> Sec.</td></tr>\n", config.trk_mininterval);
-	html->print(tempHtml);
-	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Min Angle:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"1\" max=\"359\" step=\"1\" id=\"minAngle\" name=\"minAngle\" type=\"number\" value=\"%d\" /> Degree.</td></tr>\n", config.trk_minangle);
-	html->print(tempHtml);
-
-	html->print("</table></fieldset></tr>");
-
-	html->print("<tr>\n");
-	html->print("<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n");
-	html->print("<td align=\"center\"><table>\n");
-	snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"trkTlmInv\" name=\"trkTlmInv\" type=\"number\" value=\"%d\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>", config.trk_tlm_interval);
-	html->print(tempHtml);
-	for (int ax = 0; ax < 5; ax++)
-	{
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td align=\"right\"><b>CH A%d:</b></td>\n", ax + 1);
-		html->print(tempHtml);
-		html->print("<td align=\"center\">\n");
-		html->print("<table>");
-
-		html->print("<tr><td style=\"text-align: right;\">Sensor:</td>\n");
-		html->print("<td style=\"text-align: left;\">CH: ");
-		snprintf(tempHtml, sizeof(tempHtml), "<select name=\"sensorCH%d\" id=\"sensorCH%d\">\n", ax, ax);
-		html->print(tempHtml);
-		for (uint8_t idx = 0; idx < 11; idx++)
-		{
-			if (idx == 0)
-			{
-				if (config.trk_tlm_sensor[ax] == idx)
-				{
-					snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>NONE</option>\n", idx);
-				}
-				else
-				{
-					snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">NONE</option>\n", idx);
-				}
-			}
-			else
-			{
-				if (config.trk_tlm_sensor[ax] == idx)
-				{
-					snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>SENSOR#%d</option>\n", idx, idx);
-				}
-				else
-				{
-					snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\">SENSOR#%d</option>\n", idx, idx);
-				}
-			}
-			html->print(tempHtml);
-		}
-		html->print("</select></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Name: <input maxlength=\"10\" size=\"8\" name=\"param%d\" type=\"text\" value=\"%s\" /></td>\n", ax, config.trk_tlm_PARM[ax]);
-		html->print(tempHtml);
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit%d\" type=\"text\" value=\"%s\" /></td>\n", ax, config.trk_tlm_UNIT[ax]);
-		html->print(tempHtml);
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision%d\" type=\"text\" value=\"%d\" onchange=\"selPrecision(%d)\" /></td></tr>\n", ax, config.trk_tlm_precision[ax], ax);
-		html->print(tempHtml);
-		snprintf(tempHtml, sizeof(tempHtml), "<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%da\" type=\"number\" value=\"%.5f\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%db\" type=\"number\" value=\"%.5f\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns%dc\" type=\"number\" value=\"%.5f\" /> (av<sup>2</sup>+bv+c) </td>\n",
-				 ax, config.trk_tlm_EQNS[ax][0], ax, config.trk_tlm_EQNS[ax][1], ax, config.trk_tlm_EQNS[ax][2]);
-		html->print(tempHtml);
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset%d\" type=\"text\" value=\"%.5f\"  onchange=\"selOffset(%d)\" /></td></tr>\n", ax, config.trk_tlm_offset[ax], ax);
-		html->print(tempHtml);
-		html->print("</table></td>");
-		html->print("</tr>\n");
-	}
-	html->print("</table></td></tr>\n");
-	html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-	html->print("<div><button class=\"button\" type='submit' id='submitTRACKER'  name=\"commitTRACKER\"> Apply Change </button></div>\n");
-	html->print("<input type=\"hidden\" name=\"commitTRACKER\"/>\n");
-	html->print("</td></tr></table><br />\n");
-	html->print("</form><br />");
-
+	html->print(html_str);
 	html->addHeader("Tracker", "content");
 	html->addHeader("Cache-Control", "no-cache");
 	request->send(html);
 }
+
+static const char *WIRELESS_TEMPLATE =
+	"<script type=\"text/javascript\">\n"
+	"$('form').submit(function (e) {\n"
+	"e.preventDefault();\n"
+	"var data = new FormData(e.currentTarget);\n"
+	"if(e.currentTarget.id===\"formBluetooth\") document.getElementById(\"submitBluetooth\").disabled=true;\n"
+	"if(e.currentTarget.id===\"formWiFiAP\") document.getElementById(\"submitWiFiAP\").disabled=true;\n"
+	"if(e.currentTarget.id===\"formWiFiClient\") document.getElementById(\"submitWiFiClient\").disabled=true;\n"
+	"$.ajax({\n"
+	"url: '/wireless',\n"
+	"type: 'POST',\n"
+	"data: data,\n"
+	"contentType: false,\n"
+	"processData: false,\n"
+	"success: function (data) {\n"
+	"alert(\"Submited Successfully\");\n"
+	"},\n"
+	"error: function (data) {\n"
+	"alert(\"An error occurred.\");\n"
+	"}\n"
+	"});\n"
+	"});\n"
+	"</script>\n"
+	"<form id='formWiFiAP' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>WiFi Access Point</b></span></th>\n"
+	"<tr>\n"
+	"<td align=\"right\" width=\"120\"><b>Enable:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wifiAP\" value=\"OK\" {{#if wifiAPEnabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>WiFi AP SSID:</b></td>\n"
+	"<td style=\"text-align: left;\"><input size=\"32\" maxlength=\"32\" class=\"form-control\" id=\"wifi_ssidAP\" name=\"wifi_ssidAP\" type=\"text\" value=\"{{apSSID}}\" /></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>WiFi AP PASSWORD:</b></td>\n"
+	"<td style=\"text-align: left;\"><input size=\"63\" maxlength=\"63\" class=\"form-control\" id=\"wifi_passAP\" name=\"wifi_passAP\" type=\"password\" value=\"{{apPass}}\" /></td>\n"
+	"</tr>\n"
+	"<tr><td colspan=\"2\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitWiFiAP'  name=\"commitWiFiAP\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitWiFiAP\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form><br />"
+	"<br />\n"
+	"<form id='formWiFiClient' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>WiFi Multi Station</b></span></th>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>WiFi STA Enable:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wificlient\" value=\"OK\" {{#if wifiClientEnabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>WiFi RF Power:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"wifi_pwr\" id=\"wifi_pwr\">\n"
+	"{{#each wifiPowerOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select>\n"
+	"</td>\n"
+	"</tr>\n"
+	"{{#each stations}}<tr>\n"
+	"<td align=\"right\"><b>Station #{{num}}:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<fieldset id=\"filterDispGrp{{num}}\">\n"
+	"<legend>WiFi Station #{{num}}</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">"
+	"<tr style=\"background:unset;\">"
+	"<td align=\"right\" width=\"120\"><b>Enable:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wifiStation{{n}}\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>WiFi SSID:</b></td>\n"
+	"<td style=\"text-align: left;\"><input size=\"32\" maxlength=\"32\" name=\"wifi_ssid{{n}}\" type=\"text\" value=\"{{ssid}}\" /></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>WiFi PASSWORD:</b></td>\n"
+	"<td style=\"text-align: left;\"><input size=\"63\" maxlength=\"63\" name=\"wifi_pass{{n}}\" type=\"password\" value=\"{{pass}}\" /></td>\n"
+	"</tr>\n"
+	"</tr></table></fieldset>\n"
+	"</td></tr>\n"
+	"{{/each}}"
+	"<tr><td colspan=\"2\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitWiFiClient'  name=\"commitWiFiClient\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitWiFiClient\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form><br />"
+	"{{#if bluetooth}}"
+	"<br />\n"
+	"<form id='formBluetooth' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>Bluetooth Master (BLE)</b></span></th>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Enable:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"btMaster\" value=\"OK\" {{#if btEnabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>NAME:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"20\" id=\"bt_name\" name=\"bt_name\" type=\"text\" value=\"{{btName}}\" /></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>PIN:</b></td>\n"
+	"<td style=\"text-align: left;\"><input min=\"0\" max=\"999999\" id=\"bt_pin\" name=\"bt_pin\" type=\"number\" value=\"{{btPin}}\" /></td> <i>*Value 0 is no auth.</i>\n"
+	"</tr>\n"
+	"{{#if btUuidSupport}}"
+	"<tr>\n"
+	"<td align=\"right\"><b>UUID:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"37\" size=\"38\" id=\"bt_uuid\" name=\"bt_uuid\" type=\"text\" value=\"{{btUuid}}\" /></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>UUID RX:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"37\" size=\"38\" id=\"bt_uuid_rx\" name=\"bt_uuid_rx\" type=\"text\" value=\"{{btUuidRx}}\" /></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>UUID TX:</b></td>\n"
+	"<td style=\"text-align: left;\"><input maxlength=\"37\" size=\"38\" id=\"bt_uuid_tx\" name=\"bt_uuid_tx\" type=\"text\" value=\"{{btUuidTx}}\" /></td>\n"
+	"</tr>\n"
+	"{{/if}}"
+	"<td align=\"right\"><b>MODE:</b></td>\n"
+	"<td style=\"text-align: left;\">\n"
+	"<select name=\"bt_mode\" id=\"bt_mode\">\n"
+	"<option value=\"0\" {{#if btModeOff}}selected{{/if}}>NONE</option>\n"
+	"<option value=\"1\" {{#if btModeTNC2}}selected{{/if}}>TNC2</option>\n"
+	"<option value=\"2\" {{#if btModeKISS}}selected{{/if}}>KISS</option>\n"
+	"</select>\n"
+	"<label style=\"font-size: 8pt;text-align: right;\">*See the following for generating UUIDs: <a href=\"https://www.uuidgenerator.net\" target=\"_blank\">https://www.uuidgenerator.net</a></label></td>\n"
+	"</tr>\n"
+	"<tr><td colspan=\"2\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitBluetooth'  name=\"commitBluetooth\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitBluetooth\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form>"
+	"{{/if}}";
 
 void handle_wireless(AsyncWebServerRequest *request)
 {
@@ -11877,223 +10167,67 @@ void handle_wireless(AsyncWebServerRequest *request)
 	#endif
 	else
 	{
+		JsonDocument data;
+		data["wifiAPEnabled"] = (config.wifi_mode & WIFI_AP_FIX) != 0;
+		data["apSSID"] = config.wifi_ap_ssid;
+		data["apPass"] = config.wifi_ap_pass;
+		data["wifiClientEnabled"] = (config.wifi_mode & WIFI_STA_FIX) != 0;
+
+		JsonArray wifiPowerOptions = data["wifiPowerOptions"].to<JsonArray>();
+		for (int i = 0; i < 12; i++)
+		{
+			JsonObject o = wifiPowerOptions.add<JsonObject>();
+			o["value"] = (int8_t)wifiPwr[i][0];
+			char buf[16];
+			snprintf(buf, sizeof(buf), "%.1f dBm", wifiPwr[i][1]);
+			o["label"] = buf;
+			o["selected"] = (config.wifi_power == (int8_t)wifiPwr[i][0]);
+		}
+
+		JsonArray stations = data["stations"].to<JsonArray>();
+		for (int n = 0; n < 5; n++)
+		{
+			JsonObject s = stations.add<JsonObject>();
+			s["n"] = n;
+			s["num"] = n + 1;
+			s["enabled"] = config.wifi_sta[n].enable;
+			s["ssid"] = config.wifi_sta[n].wifi_ssid;
+			s["pass"] = config.wifi_sta[n].wifi_pass;
+		}
+
+#ifdef BLUETOOTH
+		data["bluetooth"] = true;
+		data["btEnabled"] = config.bt_master;
+		data["btName"] = config.bt_name;
+		data["btPin"] = config.bt_pin;
+#if !defined(CONFIG_IDF_TARGET_ESP32)
+		data["btUuidSupport"] = true;
+		data["btUuid"] = config.bt_uuid;
+		data["btUuidRx"] = config.bt_uuid_rx;
+		data["btUuidTx"] = config.bt_uuid_tx;
+#else
+		data["btUuidSupport"] = false;
+#endif
+		data["btModeOff"] = (config.bt_mode == 0);
+		data["btModeTNC2"] = (config.bt_mode == 1);
+		data["btModeKISS"] = (config.bt_mode == 2);
+#else
+		data["bluetooth"] = false;
+#endif
+
+		esp_task_wdt_reset();
+		String html_str = renderTemplate(WIRELESS_TEMPLATE, data.as<JsonVariant>());
 		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		char tempHtml[256] = "";
-		AsyncResponseStream *html = request->beginResponseStream("text/html", 20000);
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
 		if (!html)
 		{
 			request->send(500, "text/html", "Memory allocation failed");
 			return;
 		}
-		html->print("<script type=\"text/javascript\">\n");
-		html->print("$('form').submit(function (e) {\n");
-		html->print("e.preventDefault();\n");
-		html->print("var data = new FormData(e.currentTarget);\n");
-		html->print("if(e.currentTarget.id===\"formBluetooth\") document.getElementById(\"submitBluetooth\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formWiFiAP\") document.getElementById(\"submitWiFiAP\").disabled=true;\n");
-		html->print("if(e.currentTarget.id===\"formWiFiClient\") document.getElementById(\"submitWiFiClient\").disabled=true;\n");
-		html->print("$.ajax({\n");
-		html->print("url: '/wireless',\n");
-		html->print("type: 'POST',\n");
-		html->print("data: data,\n");
-		html->print("contentType: false,\n");
-		html->print("processData: false,\n");
-		html->print("success: function (data) {\n");
-		html->print("alert(\"Submited Successfully\");\n");
-		html->print("},\n");
-		html->print("error: function (data) {\n");
-		html->print("alert(\"An error occurred.\");\n");
-		html->print("}\n");
-		html->print("});\n");
-		html->print("});\n");
-		html->print("</script>\n");
-		
-		/************************ WiFi AP **************************/
-		html->print("<form id='formWiFiAP' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>WiFi Access Point</b></span></th>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\" width=\"120\"><b>Enable:</b></td>\n");
-		const char *wifiAPEnFlagMode = (config.wifi_mode & WIFI_AP_FIX) ? "checked" : "";
-		{
-			char *temp_flag = allocateStringMemory(512);
-			if (temp_flag)
-			{
-				snprintf(temp_flag, 512, "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wifiAP\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", wifiAPEnFlagMode);
-				html->print(temp_flag);
-				free(temp_flag);
-			}
-		}
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>WiFi AP SSID:</b></td>\n");
-		{
-			char *temp_ssid = allocateStringMemory(512);
-			if (temp_ssid)
-			{
-				snprintf(temp_ssid, 512, "<td style=\"text-align: left;\"><input size=\"32\" maxlength=\"32\" class=\"form-control\" id=\"wifi_ssidAP\" name=\"wifi_ssidAP\" type=\"text\" value=\"%s\" /></td>\n", config.wifi_ap_ssid);
-				html->print(temp_ssid);
-				free(temp_ssid);
-			}
-		}
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>WiFi AP PASSWORD:</b></td>\n");
-		{
-			char *temp_pass = allocateStringMemory(512);
-			if (temp_pass)
-			{
-				snprintf(temp_pass, 512, "<td style=\"text-align: left;\"><input size=\"63\" maxlength=\"63\" class=\"form-control\" id=\"wifi_passAP\" name=\"wifi_passAP\" type=\"password\" value=\"%s\" /></td>\n", config.wifi_ap_pass);
-				html->print(temp_pass);
-				free(temp_pass);
-			}
-		}
-		html->print("</tr>\n");
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitWiFiAP'  name=\"commitWiFiAP\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitWiFiAP\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form><br />");
-		/************************ WiFi Client **************************/
-		html->print("<br />\n");
-		html->print("<form id='formWiFiClient' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		html->print("<table>\n");
-		html->print("<th colspan=\"2\"><span><b>WiFi Multi Station</b></span></th>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>WiFi STA Enable:</b></td>\n");
-		String wifiClientEnFlag = "";
-		if (config.wifi_mode & WIFI_STA_FIX)
-			wifiClientEnFlag = "checked";
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wificlient\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", wifiClientEnFlag);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>WiFi RF Power:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"wifi_pwr\" id=\"wifi_pwr\">\n");
-		for (int i = 0; i < 12; i++)
-		{
-			if (config.wifi_power == (int8_t)wifiPwr[i][0])
-				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" selected>%.1f dBm</option>\n", (int8_t)wifiPwr[i][0], wifiPwr[i][1]);
-			else
-				snprintf(tempHtml, sizeof(tempHtml), "<option value=\"%d\" >%.1f dBm</option>\n", (int8_t)wifiPwr[i][0], wifiPwr[i][1]);
-			html->print(tempHtml);
-		}
-		html->print("</select>\n");
-		html->print("</td>\n");
-		html->print("</tr>\n");
-		for (int n = 0; n < 5; n++)
-		{
-			html->print("<tr>\n");
-			snprintf(tempHtml, sizeof(tempHtml), "<td align=\"right\"><b>Station #%d:</b></td>\n", n + 1);
-			html->print(tempHtml);
-			html->print("<td align=\"center\">\n");
-			snprintf(tempHtml, sizeof(tempHtml), "<fieldset id=\"filterDispGrp%d\">\n", n + 1);
-			html->print(tempHtml);
-			snprintf(tempHtml, sizeof(tempHtml), "<legend>WiFi Station #%d</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">", n + 1);
-			html->print(tempHtml);
-			html->print("<tr style=\"background:unset;\">");
-			// html->print("<tr>\n";
-			html->print("<td align=\"right\" width=\"120\"><b>Enable:</b></td>\n");
-			char wifiClientEnFlag[10];
-			if (config.wifi_sta[n].enable)
-				strcpy(wifiClientEnFlag, "checked");
-			else
-				strcpy(wifiClientEnFlag, "");
-
-			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wifiStation%d\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", n, wifiClientEnFlag);
-			html->print(tempHtml);
-			html->print("</tr>\n");
-			html->print("<tr>\n");
-			html->print("<td align=\"right\"><b>WiFi SSID:</b></td>\n");
-			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input size=\"32\" maxlength=\"32\" name=\"wifi_ssid%d\" type=\"text\" value=\"%s\" /></td>\n", n, config.wifi_sta[n].wifi_ssid);
-			html->print(tempHtml);
-			html->print("</tr>\n");
-			html->print("<tr>\n");
-			html->print("<td align=\"right\"><b>WiFi PASSWORD:</b></td>\n");
-			snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input size=\"63\" maxlength=\"63\" name=\"wifi_pass%d\" type=\"password\" value=\"%s\" /></td>\n", n, config.wifi_sta[n].wifi_pass);
-			html->print(tempHtml);
-			html->print("</tr>\n");
-			html->print("</tr></table></fieldset>\n");
-			html->print("</td></tr>\n");
-		}
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitWiFiClient'  name=\"commitWiFiClient\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitWiFiClient\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form><br />");
-		/************************ Bluetooth **************************/
-#ifdef BLUETOOTH
-		html->print("<br />\n");
-		html->print("<form id='formBluetooth' method=\"POST\" action='#' enctype='multipart/form-data'>\n");
-		// html->print("<h2>Bluetooth Master (BLE)</h2>\n";
-		html->print("<table>\n");
-		// html->print("<tr>\n";
-		// strcat(html, "<th width=\"200\"><span><b>Setting</b></span></th>\n";
-		// strcat(html, "<th><span><b>Value</b></span></th>\n";
-		// strcat(html, "</tr>\n";
-		html->print("<th colspan=\"2\"><span><b>Bluetooth Master (BLE)</b></span></th>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>Enable:</b></td>\n");
-
-		char btFlag[10];
-		if (config.bt_master)
-			strcpy(btFlag, "checked");
-		else
-			strcpy(btFlag, "");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"btMaster\" value=\"OK\" %s><span class=\"slider round\"></span></label></td>\n", btFlag);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>NAME:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"20\" id=\"bt_name\" name=\"bt_name\" type=\"text\" value=\"%s\" /></td>\n", config.bt_name);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>PIN:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input min=\"0\" max=\"999999\" id=\"bt_pin\" name=\"bt_pin\" type=\"number\" value=\"%d\" /></td> <i>*Value 0 is no auth.</i>\n", config.bt_pin);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		#if !defined(CONFIG_IDF_TARGET_ESP32)
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>UUID:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"37\" size=\"38\" id=\"bt_uuid\" name=\"bt_uuid\" type=\"text\" value=\"%s\" /></td>\n", config.bt_uuid);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>UUID RX:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"37\" size=\"38\" id=\"bt_uuid_rx\" name=\"bt_uuid_rx\" type=\"text\" value=\"%s\" /></td>\n", config.bt_uuid_rx);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		html->print("<tr>\n");
-		html->print("<td align=\"right\"><b>UUID TX:</b></td>\n");
-		snprintf(tempHtml, sizeof(tempHtml), "<td style=\"text-align: left;\"><input maxlength=\"37\" size=\"38\" id=\"bt_uuid_tx\" name=\"bt_uuid_tx\" type=\"text\" value=\"%s\" /></td>\n", config.bt_uuid_tx);
-		html->print(tempHtml);
-		html->print("</tr>\n");
-		#endif
-		html->print("<td align=\"right\"><b>MODE:</b></td>\n");
-		html->print("<td style=\"text-align: left;\">\n");
-		html->print("<select name=\"bt_mode\" id=\"bt_mode\">\n");
-		const char *btModeOff = (config.bt_mode == 0) ? "selected" : "";
-		const char *btModeTNC2 = (config.bt_mode == 1) ? "selected" : "";
-		const char *btModeKISS = (config.bt_mode == 2) ? "selected" : "";
-		snprintf(tempHtml, sizeof(tempHtml), "<option value=\"0\" %s>NONE</option>\n<option value=\"1\" %s>TNC2</option>\n<option value=\"2\" %s>KISS</option>\n", btModeOff, btModeTNC2, btModeKISS);
-		html->print(tempHtml);
-		html->print("</select>\n");
-
-		html->print("<label style=\"font-size: 8pt;text-align: right;\">*See the following for generating UUIDs: <a href=\"https://www.uuidgenerator.net\" target=\"_blank\">https://www.uuidgenerator.net</a></label></td>\n");
-		html->print("</tr>\n");
-		html->print("<tr><td colspan=\"2\" align=\"right\">\n");
-		html->print("<div><button class=\"button\" type='submit' id='submitBluetooth'  name=\"commitBluetooth\"> Apply Change </button></div>\n");
-		html->print("<input type=\"hidden\" name=\"commitBluetooth\"/>\n");
-		html->print("</td></tr></table><br />\n");
-		html->print("</form>");
-#endif
-
-	html->addHeader("wifi", "content");
-	html->addHeader("Cache-Control", "no-cache");
-	request->send(html);
-
+		html->print(html_str);
+		html->addHeader("wifi", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
 	}
 }
 
@@ -12373,6 +10507,164 @@ void handle_check_version(AsyncWebServerRequest *request)
 	request->send(200, "application/json", resp);
 }
 
+// LU6JMF - Marcelo Ferreira:
+// Fase 6 (motor de templates): handle_about reescrito pra usar renderTemplate()
+// em vez de ~430 linhas de webString->print()/snprintf espalhados. O template
+// fica embutido no firmware (string normal, NAO no LittleFS - nao precisamos
+// de espaco extra de filesystem pra isso, so estabilidade). Mesma saida HTML
+// de antes, so que montada como 1 String e enviada com tamanho exato (elimina
+// a classe de bug do buffer "chutado" que achamos na pagina IGATE).
+static const char *ABOUT_TEMPLATE =
+	"<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;\"><td width=\"49%\" style=\"border:unset;\">"
+	"<table style=\"height:100%;\">"
+	"<th colspan=\"2\"><span><b>System Information</b></span></th>\n"
+	"<tr><td align=\"right\"><b>Hardware Version: </b></td><td align=\"left\">{{hwVersion}}</td></tr>"
+	"<tr><td align=\"right\"><b>Firmware Version: </b></td><td align=\"left\"> V{{firmwareVersion}}</td></tr>\n"
+	"<tr><td align=\"right\"><b>RF Module: </b></td><td align=\"left\"> {{rfModule}}</td></tr>\n"
+	"<tr><td align=\"right\"><b>ESP32 Model: </b></td><td align=\"left\"> {{chipModel}}</td></tr>"
+	"<tr><td align=\"right\"><b>Revision: </b></td><td align=\"left\"> {{chipRevision}}</td></tr>"
+	"<tr><td align=\"right\"><b>Chip ID: </b></td><td align=\"left\"> {{chipId}}</td></tr>"
+	"<tr><td align=\"right\"><b>Flash: </b></td><td align=\"left\">{{flashKB}} KByte</td></tr>"
+	"<tr><td align=\"right\"><b>PSRAM: </b></td><td align=\"left\">{{psram}} KByte</td></tr>"
+	"<tr><td align=\"right\"><b>FILE SYSTEM: </b></td><td align=\"left\">{{filesystem}} KByte</td></tr>"
+	"</table>"
+	"</td><td width=\"2%\" style=\"border:unset;\"></td>"
+	"<td width=\"49%\" style=\"border:unset;\">"
+	"<table style=\"height:100%;\">"
+	"<th colspan=\"2\"><span><b>Developer/Support Information</b></span></th>\n"
+	"<tr><td align=\"right\"><b>Author: </b></td><td align=\"left\">Marcelo Ferreira (fork/mods)</td></tr>"
+	"<tr><td align=\"right\"><b>Callsign: </b></td><td align=\"left\">LU6JMF-10</td></tr>"
+	"<tr><td align=\"right\"><b>Country: </b></td><td align=\"left\">Concepcion del Uruguay, Entre Rios, Argentina</td></tr>\n"
+	"<tr><td align=\"right\"><b>Github: </b></td><td align=\"left\"><a href=\"https://github.com/marceloferreirachile/ESP32APRS_Audio\" target=\"_blank\">github.com/marceloferreirachile/ESP32APRS_Audio</a></td></tr>"
+	"<tr><td align=\"right\"><b>Original: </b></td><td align=\"left\">Mr.Somkiat Nakhonthai (HS5TQA) - <a href=\"https://github.com/nakhonthai\" target=\"_blank\">github.com/nakhonthai</a></td></tr>\n"
+	"<tr><td align=\"right\"><b>WhatsApp: </b></td><td align=\"left\"><a href=\"https://wa.me/5493442311119\" target=\"_blank\">wa.me/5493442311119</a></td></tr>"
+	"<tr><td align=\"right\"><b>Donate: </b></td><td align=\"left\"><a href=\"https://www.paypal.me/MarceloFerreira673\" target=\"_blank\">paypal.me/MarceloFerreira673</a></td></tr>"
+	"</table>"
+	"</td></tr></table><br />"
+	"<table>\n"
+	"<tr><td align=\"right\"><b>Contributor: </b></td><td align=\"left\">LU6JMF Marcelo</td></tr>\n"
+	"<tr><td align=\"right\"><b>Version: </b></td><td align=\"left\">v2.0-lu6jmf (custom mods on top of V1.8a)</td></tr>\n"
+	"<tr><td align=\"right\" style=\"vertical-align:top;\"><b>Changes: </b></td><td align=\"left\" style=\"white-space:normal;\">\n"
+	"See README / git log in the repository for full change history, or "
+	"<a href=\"https://github.com/marceloferreirachile/ESP32APRS_Audio/releases\" target=\"_blank\">"
+	"the Releases page</a> for per-version notes."
+	"</td></tr>\n"
+	"</table><br />\n"
+	"<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;\"><td width=\"49%\" style=\"border:unset;\">"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>WiFi Status</b></span></th>\n"
+	"<tr><td align=\"right\"><b>Mode:</b></td>\n"
+	"<td align=\"left\">{{wifiMode}} ({{wifiProto}}){{wifiPowerSuffix}}</td></tr>\n"
+	"<tr><td align=\"right\" width=\"30%\"><b>MAC:</b></td>\n<td align=\"left\">{{mac}}</td></tr>\n"
+	"<tr><td align=\"right\"><b>Channel:</b></td>\n<td align=\"left\">{{channel}}</td></tr>\n"
+	"<tr><td align=\"right\"><b>TX Power:</b></td>\n<td align=\"left\">{{wifiPower}}</td></tr>\n"
+	"<tr><td align=\"right\"><b>SSID:</b></td>\n<td align=\"left\">{{ssid}}</td></tr>\n"
+	"<tr><td align=\"right\"><b>Local IP:</b></td>\n<td align=\"left\">{{localIP}}</td></tr>\n"
+	"<tr><td align=\"right\"><b>Gateway IP:</b></td>\n<td align=\"left\">{{gatewayIP}}</td></tr>\n"
+	"<tr><td align=\"right\"><b>DNS:</b></td>\n<td align=\"left\">{{dns}}</td></tr>\n"
+	"</table>\n"
+	"</td><td width=\"2%\" style=\"border:unset;\"></td>"
+	"<td width=\"49%\" style=\"border:unset;\">"
+	"<table>\n"
+	"{{#if pppos}}"
+	"<th colspan=\"2\"><span><b>PPPoS Status</b></span></th>\n"
+	"<tr><td align=\"right\" width=\"30%\"><b>Manufacturer:</b></td>\n<td align=\"left\">{{pppos.manufacturer}}</td></tr>\n"
+	"<tr><td align=\"right\"><b>Model:</b></td>\n<td align=\"left\">{{pppos.model}}</td></tr>\n"
+	"<tr><td align=\"right\"><b>IMEI:</b></td>\n<td align=\"left\">{{pppos.imei}}</td></tr>\n"
+	"<tr><td align=\"right\"><b>IMSI:</b></td>\n<td align=\"left\">{{pppos.imsi}}</td></tr>\n"
+	"<tr><td align=\"right\"><b>Operator:</b></td>\n<td align=\"left\">{{pppos.oper}}</td></tr>\n"
+	"<tr><td align=\"right\"><b>RSSI:</b></td>\n<td align=\"left\">{{pppos.rssi}} dBm</td></tr>\n"
+	"<tr><td align=\"right\"><b>IP:</b></td>\n<td align=\"left\">{{pppos.ip}}</td></tr>\n"
+	"<tr><td align=\"right\"><b>Gateway:</b></td>\n<td align=\"left\">{{pppos.gateway}}</td></tr>\n"
+	"{{/if}}"
+	"</table>\n"
+	"</td></tr></table><br />"
+	"{{#if ota}}"
+	"<form method='POST' action='#' enctype='multipart/form-data' id='upload_form' class=\"form-horizontal\">\n"
+	"<table>"
+	"<th colspan=\"2\"><span><b>Manual Firmware Update</b></span></th>\n"
+	"<tr><td align=\"right\"><b>File:</b></td><td align=\"left\"><input id=\"file\" name=\"update\" type=\"file\" onchange='sub(this)' /></td></tr>\n"
+	"<tr><td align=\"right\"><b>Progress:</b></td><td><div id='prgbar'><div id='bar' style=\"width: 0px;\"><label id='prg'></label></div></div></td></tr>\n"
+	"<tr><td align=\"right\"><b>Support Firmware:</b></td><td align=\"left\"><a target=\"_download\" href=\"https://github.com/marceloferreirachile/ESP32APRS_Audio/releases\">https://github.com/marceloferreirachile/ESP32APRS_Audio/releases</a></td></tr>\n"
+	"<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\"><input type='submit' class=\"btn btn-danger\" id=\"update_sumbit\" value='Firmware UpLoad'></div></td></tr>\n"
+	"</table><br />\n"
+	"</form>\n"
+	"<script>"
+	"function sub(obj){"
+	"var fileName = obj.value.split('\\\\');"
+	"document.getElementById('file-input').innerHTML = '   '+ fileName[fileName.length-1];"
+	"};"
+	"$('#upload_form').submit(function(e){"
+	"e.preventDefault();"
+	"var form = $('#upload_form')[0];"
+	"var data = new FormData(form);"
+	"document.getElementById('update_sumbit').disabled = true;"
+	"$.ajax({"
+	"url: '/update',"
+	"type: 'POST',"
+	"data: data,"
+	"contentType: false,"
+	"processData:false,"
+	"xhr: function() {"
+	"var xhr = new window.XMLHttpRequest();"
+	"xhr.upload.addEventListener('progress', function(evt) {"
+	"if (evt.lengthComputable) {"
+	"var per = evt.loaded / evt.total;"
+	"$('#prg').html(Math.round(per*100) + '%');"
+	"$('#bar').css('width',Math.round(per*100) + '%');"
+	"}"
+	"}, false);"
+	"return xhr;"
+	"},"
+	"success:function(d, s) {"
+	"alert('Wait for system reboot 10sec');"
+	"},"
+	"error: function (a, b, c) {"
+	"}"
+	"});"
+	"});"
+	"</script>"
+	// LU6JMF - Marcelo Ferreira: "Manual Filesystem Update (icons/data)" form
+	// removido antes (postava pro /updatefs, que apaga o LittleFS inteiro
+	// incluindo a config salva). O endpoint /updatefs continua existindo no
+	// servidor, so o botao que convidava a usa-lo por engano foi tirado.
+	"<table>"
+	"<th colspan=\"2\"><span><b>OTA Online Firmware Update</b></span></th>\n"
+	"<tr><td align=\"right\"><b>Firmware File:</b></td><td align=\"left\"><a id=\"fw_file_link\" href=\"{{otaUrl}}\" target=\"_blank\">{{otaFile}}</a></td></tr>\n"
+	"<tr><td align=\"right\"><b>Current Version:</b></td><td align=\"left\">V{{firmwareVersion}}</td></tr>\n"
+	"<tr><td align=\"right\"><b>Status:</b></td><td><span id='ota_prg'>Ready</span></td></tr>\n"
+	"<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\"><input type='button' class=\"btn btn-danger\" id=\"check_ver_btn\" value='Check New Version'></div></td></tr>\n"
+	"</table><br />\n"
+	"<script>"
+	"document.getElementById('check_ver_btn').addEventListener('click', function(){"
+	"document.getElementById('check_ver_btn').disabled = true;"
+	"document.getElementById('ota_prg').innerHTML = 'Checking...';"
+	"$.ajax({"
+	"url: '/check_version',"
+	"type: 'GET',"
+	"dataType: 'json',"
+	"success: function(d) {"
+	"document.getElementById('check_ver_btn').disabled = false;"
+	"if (d.update_available) {"
+	"var newUrl = 'https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/download/' + d.latest_tag + '/' + d.latest_filename;"
+	"var fwLink = document.getElementById('fw_file_link');"
+	"fwLink.href = newUrl;"
+	"fwLink.innerHTML = d.latest_filename;"
+	"document.getElementById('ota_prg').innerHTML = 'New version available: V' + d.latest_version + d.latest_build + '. Download link above, install via Manual Firmware Update.';"
+	"} else {"
+	"document.getElementById('ota_prg').innerHTML = 'You are using the latest version.';"
+	"}"
+	"},"
+	"error: function(a, b, c) {"
+	"document.getElementById('check_ver_btn').disabled = false;"
+	"document.getElementById('ota_prg').innerHTML = 'Error checking version: ' + c;"
+	"}"
+	"});"
+	"});"
+	"</script>"
+	"{{/if}}"
+	"</body></html>\n";
+
 void handle_about(AsyncWebServerRequest *request)
 {
 	if (!request->authenticate(config.http_username, config.http_password))
@@ -12383,462 +10675,1192 @@ void handle_about(AsyncWebServerRequest *request)
 	uint64_t chipid = ESP.getEfuseMac();
 	sprintf(strCID, "%04X%08X", (uint16_t)(chipid >> 32), (uint32_t)chipid);
 
-	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-	AsyncResponseStream *webString = request->beginResponseStream("text/html", 25000);
+	JsonDocument data;
+	char temp_buffer[512];
+
+	char FirmwareOTA[50];
+	char hwVersion[48];
+	// Build a dot-free version string for use in firmware filenames
+	char ver[20];
+	sprintf(ver, "v%s-%s.bin", VERSION, VERSION_BUILD);
+#if defined(TTGO_TWR)
+	strcpy(hwVersion, "LiLyGo T-TWRPlus");
+	sprintf(FirmwareOTA, "ESP32S3_TWR_%s", ver);
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+	#ifdef SH1106
+		strcpy(hwVersion, "ESP32-WROOM+SH1106 OLED");
+		sprintf(FirmwareOTA, "ESP32_SH1106_%s", ver);
+	#elif defined(SSD1306)
+		strcpy(hwVersion, "ESP32-WROOM+SSD1306 OLED");
+		sprintf(FirmwareOTA, "ESP32_SSD1306_%s", ver);
+	#elif defined(NO_OTA)
+		strcpy(hwVersion, "ESP32-WROOM NO OTA,ESP32 DoIt DevKit");
+		sprintf(FirmwareOTA, "ESP32_NOOTA_%s", ver);
+	#else
+		strcpy(hwVersion, "ESP32-WROOM,ESP32 DoIt DevKit");
+		sprintf(FirmwareOTA, "ESP32_NODISP_%s", ver);
+	#endif
+#elif defined(CONFIG_IDF_TARGET_ESP32C3)
+	#ifdef SH1106
+		strcpy(hwVersion, "ESP32C3+SH1106 OLED");
+		sprintf(FirmwareOTA, "ESP32C3_SH1106_%s", ver);
+	#elif defined(SSD1306)
+		strcpy(hwVersion, "ESP32C3+SSD1306 OLED");
+		sprintf(FirmwareOTA, "ESP32C3_SSD1306_%s", ver);
+	#elif defined(NO_OTA)
+		strcpy(hwVersion, "ESP32C3 NO OTA,ESP32-C3 DIY");
+		sprintf(FirmwareOTA, "ESP32C3_NOOTA_%s", ver);
+	#else
+		strcpy(hwVersion, "ESP32C3,ESP32-C3 DIY");
+		sprintf(FirmwareOTA, "ESP32C3_NODISP_%s", ver);
+	#endif
+#elif defined(CONFIG_IDF_TARGET_ESP32C6)
+	#ifdef SH1106
+		strcpy(hwVersion, "ESP32C6+SH1106 OLED");
+		sprintf(FirmwareOTA, "ESP32C6_SH1106_%s", ver);
+	#elif defined(SSD1306)
+		strcpy(hwVersion, "ESP32C6+SSD1306 OLED");
+		sprintf(FirmwareOTA, "ESP32C6_SSD1306_%s", ver);
+	#elif defined(NO_OTA)
+		strcpy(hwVersion, "ESP32C6_NOOTA,ESP32-C6 DIY");
+		sprintf(FirmwareOTA, "ESP32C6_NOOTA_%s", ver);
+	#else
+		strcpy(hwVersion, "ESP32C6,ESP32-C6 DIY");
+		sprintf(FirmwareOTA, "ESP32C6_%s", ver);
+	#endif
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+	#ifdef ESP32S3_N16R8
+		strcpy(hwVersion, "ESP32-S3_16MB,ESP32-S3-DevKit");
+		sprintf(FirmwareOTA, "ESP32S3_N16R8_%s", ver);
+	#elif defined(SH1106)
+		strcpy(hwVersion, "ESP32-S3_8MB,SH1106 OLED");
+		sprintf(FirmwareOTA, "ESP32S3_SH1106_%s", ver);
+	#elif defined(SSD1306)
+		strcpy(hwVersion, "ESP32-S3_8MB,SSD1306 OLED");
+		sprintf(FirmwareOTA, "ESP32S3_SSD1306_%s", ver);
+	#elif defined(NO_OTA)
+		strcpy(hwVersion, "ESP32-S3 Super mini,No OTA");
+		sprintf(FirmwareOTA, "ESP32S3_NOOTA_%s", ver);
+	#endif
+#else
+	strcpy(hwVersion, "UNKNOWN,ESP32 DIY");
+#endif
+
+	data["hwVersion"] = hwVersion;
+	snprintf(temp_buffer, sizeof(temp_buffer), "%s%s", VERSION, VERSION_BUILD);
+	data["firmwareVersion"] = temp_buffer;
+	data["rfModule"] = RF_TYPE[config.rf_type];
+	data["chipModel"] = ESP.getChipModel();
+	data["chipRevision"] = ESP.getChipRevision();
+	data["chipId"] = strCID;
+	data["flashKB"] = ESP.getFlashChipSize() / 1024;
+	snprintf(temp_buffer, sizeof(temp_buffer), "%.1f/%.1f", (float)ESP.getFreePsram() / 1024, (float)ESP.getPsramSize() / 1024);
+	data["psram"] = temp_buffer;
+	snprintf(temp_buffer, sizeof(temp_buffer), "%.1f/%.1f", (float)LITTLEFS.usedBytes() / 1024, (float)LITTLEFS.totalBytes() / 1024);
+	data["filesystem"] = temp_buffer;
+
+	if (config.wifi_mode == WIFI_AP_FIX)
+		data["wifiMode"] = "AP";
+	else if (config.wifi_mode == WIFI_STA_FIX)
+		data["wifiMode"] = "STA";
+	else if (config.wifi_mode == WIFI_AP_STA_FIX)
+		data["wifiMode"] = "AP+STA";
+	else
+		data["wifiMode"] = "OFF";
+
+	uint8_t proto = 0;
+	esp_wifi_get_protocol(WIFI_IF_STA, &proto);
+	{
+		String protoStr = "802.11";
+		if (proto & WIFI_PROTOCOL_11B) protoStr += "b";
+		if (proto & WIFI_PROTOCOL_11G) protoStr += "g";
+		if (proto & WIFI_PROTOCOL_11N) protoStr += "n";
+		if (proto & WIFI_PROTOCOL_LR) protoStr += "lr";
+		data["wifiProto"] = protoStr;
+	}
+	data["wifiPowerSuffix"] = ""; // kept for template parity, unused (power shown in its own row below, same as before)
+
+	wifi_power_t wpr = WiFi.getTxPower();
+	const char *wifipower;
+	if (wpr < 8) wifipower = "-1 dBm";
+	else if (wpr < 21) wifipower = "2 dBm";
+	else if (wpr < 29) wifipower = "5 dBm";
+	else if (wpr < 35) wifipower = "8.5 dBm";
+	else if (wpr < 45) wifipower = "11 dBm";
+	else if (wpr < 53) wifipower = "13 dBm";
+	else if (wpr < 61) wifipower = "15 dBm";
+	else if (wpr < 69) wifipower = "17 dBm";
+	else if (wpr < 75) wifipower = "18.5 dBm";
+	else if (wpr < 77) wifipower = "19 dBm";
+	else if (wpr < 80) wifipower = "19.5 dBm";
+	else wifipower = "20 dBm";
+	data["wifiPower"] = wifipower;
+
+	data["mac"] = WiFi.macAddress();
+	data["channel"] = WiFi.channel();
+	data["ssid"] = WiFi.SSID();
+	data["localIP"] = WiFi.localIP().toString();
+	data["gatewayIP"] = WiFi.gatewayIP().toString();
+	data["dns"] = WiFi.dnsIP().toString();
+
+#ifdef PPPOS
+	JsonObject pppos = data["pppos"].to<JsonObject>();
+	pppos["manufacturer"] = pppStatus.manufacturer;
+	pppos["model"] = pppStatus.model;
+	pppos["imei"] = pppStatus.imei;
+	pppos["imsi"] = pppStatus.imsi;
+	pppos["oper"] = pppStatus.oper;
+	pppos["rssi"] = pppStatus.rssi;
+	pppos["ip"] = IPAddress(pppStatus.ip).toString();
+	pppos["gateway"] = IPAddress(pppStatus.gateway).toString();
+#endif
+
+#ifndef NO_OTA
+	data["ota"] = true;
+	char ota_url_buf[200];
+	snprintf(ota_url_buf, sizeof(ota_url_buf), "https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/download/v%s-%s/%s", VERSION, VERSION_BUILD, FirmwareOTA);
+	data["otaUrl"] = ota_url_buf;
+	data["otaFile"] = FirmwareOTA;
+#endif
+
+	String html = renderTemplate(ABOUT_TEMPLATE, data.as<JsonVariant>());
+	AsyncResponseStream *webString = request->beginResponseStream("text/html", html.length() + 200);
 	if (!webString)
 	{
 		request->send(500, "text/html", "Memory allocation failed");
 		return;
 	}
-	webString->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;\"><td width=\"49%\" style=\"border:unset;\">");
-
-	webString->print("<table style=\"height:100%;\">");
-	webString->print("<th colspan=\"2\"><span><b>System Information</b></span></th>\n");
-	// webString->print("<tr><th width=\"200\"><span><b>Name</b></span></th><th><span><b>Information</b></span></th></tr>";
-	webString->print("<tr><td align=\"right\"><b>Hardware Version: </b></td><td align=\"left\">");
-	
-	char FirmwareOTA[50];
-	// Build a dot-free version string for use in firmware filenames
-	char verNoDot[20];
-	{
-		const char *src = VERSION;
-		char *dst = verNoDot;
-		while (*src) { if (*src != '.') *dst++ = *src; src++; }
-		*dst = '\0';
-	}
-	char ver[20];
-	sprintf(ver, "v%s-%s.bin", VERSION, VERSION_BUILD);
-#if defined(TTGO_TWR)	
-	webString->print("LiLyGo T-TWRPlus");
-	sprintf(FirmwareOTA, "ESP32S3_TWR_%s", ver);
-#elif defined(CONFIG_IDF_TARGET_ESP32)	
-	#ifdef SH1106
-		webString->print("ESP32-WROOM+SH1106 OLED");
-		sprintf(FirmwareOTA, "ESP32_SH1106_%s", ver);
-	#elif defined(SSD1306)
-		webString->print("ESP32-WROOM+SSD1306 OLED");
-		sprintf(FirmwareOTA, "ESP32_SSD1306_%s", ver);
-	#elif defined(NO_OTA)
-		webString->print("ESP32-WROOM NO OTA,ESP32 DoIt DevKit");
-		sprintf(FirmwareOTA, "ESP32_NOOTA_%s", ver);
-	#else
-		webString->print("ESP32-WROOM,ESP32 DoIt DevKit");
-		sprintf(FirmwareOTA, "ESP32_NODISP_%s", ver);	
-	#endif
-#elif defined(CONFIG_IDF_TARGET_ESP32C3)
-	#ifdef SH1106
-		webString->print("ESP32C3+SH1106 OLED");
-		sprintf(FirmwareOTA, "ESP32C3_SH1106_%s", ver);
-	#elif defined(SSD1306)
-		webString->print("ESP32C3+SSD1306 OLED");
-		sprintf(FirmwareOTA, "ESP32C3_SSD1306_%s", ver);
-	#elif defined(NO_OTA)
-		webString->print("ESP32C3 NO OTA,ESP32-C3 DIY");
-		sprintf(FirmwareOTA, "ESP32C3_NOOTA_%s", ver);
-	#else	
-		webString->print("ESP32C3,ESP32-C3 DIY");
-		sprintf(FirmwareOTA, "ESP32C3_NODISP_%s", ver);
-	#endif
-#elif defined(CONFIG_IDF_TARGET_ESP32C6)
-	#ifdef SH1106
-		webString->print("ESP32C6+SH1106 OLED");
-		sprintf(FirmwareOTA, "ESP32C6_SH1106_%s", ver);
-	#elif defined(SSD1306)	
-		webString->print("ESP32C6+SSD1306 OLED");
-		sprintf(FirmwareOTA, "ESP32C6_SSD1306_%s", ver);
-	#elif defined(NO_OTA)
-		webString->print("ESP32C6_NOOTA,ESP32-C6 DIY");
-		sprintf(FirmwareOTA, "ESP32C6_NOOTA_%s", ver);
-	#else
-		webString->print("ESP32C6,ESP32-C6 DIY");
-		sprintf(FirmwareOTA, "ESP32C6_%s", ver);
-	#endif
-#elif defined(CONFIG_IDF_TARGET_ESP32S3)
-	#ifdef ESP32S3_N16R8
-		webString->print("ESP32-S3_16MB,ESP32-S3-DevKit");
-		sprintf(FirmwareOTA, "ESP32S3_N16R8_%s", ver);
-	#elif defined(SH1106)
-		webString->print("ESP32-S3_8MB,SH1106 OLED");
-		sprintf(FirmwareOTA, "ESP32S3_SH1106_%s", ver);	
-	#elif defined(SSD1306)
-		webString->print("ESP32-S3_8MB,SSD1306 OLED");
-		sprintf(FirmwareOTA, "ESP32S3_SSD1306_%s", ver);
-	#elif defined(NO_OTA)
-		webString->print("ESP32-S3 Super mini,No OTA");
-		sprintf(FirmwareOTA, "ESP32S3_NOOTA_%s", ver);
-	#endif
-#else
-	webString->print("UNKNOWN,ESP32 DIY");
-#endif
-	webString->print("</td></tr>");
-
-	char *temp_str = allocateStringMemory(512);
-	if (temp_str)
-	{
-		snprintf(temp_str, 512, "<tr><td align=\"right\"><b>Firmware Version: </b></td><td align=\"left\"> V%s%s</td></tr>\n", VERSION, VERSION_BUILD);
-		webString->print(temp_str);
-
-		snprintf(temp_str, 512, "<tr><td align=\"right\"><b>RF Module: </b></td><td align=\"left\"> %s</td></tr>\n", RF_TYPE[config.rf_type]);
-		webString->print(temp_str);
-
-		snprintf(temp_str, 512, "<tr><td align=\"right\"><b>ESP32 Model: </b></td><td align=\"left\"> %s</td></tr>", ESP.getChipModel());
-		webString->print(temp_str);
-
-		snprintf(temp_str, 512, "<tr><td align=\"right\"><b>Revision: </b></td><td align=\"left\"> %d</td></tr>", ESP.getChipRevision());
-		webString->print(temp_str);
-
-		snprintf(temp_str, 512, "<tr><td align=\"right\"><b>Chip ID: </b></td><td align=\"left\"> %s</td></tr>", strCID);
-		webString->print(temp_str);
-
-		snprintf(temp_str, 512, "<tr><td align=\"right\"><b>Flash: </b></td><td align=\"left\">%d KByte</td></tr>", ESP.getFlashChipSize() / 1024);
-		webString->print(temp_str);
-
-		snprintf(temp_str, 512, "<tr><td align=\"right\"><b>PSRAM: </b></td><td align=\"left\">%.1f/%.1f KByte</td></tr>",
-				 (float)ESP.getFreePsram() / 1024, (float)ESP.getPsramSize() / 1024);
-		webString->print(temp_str);
-
-		snprintf(temp_str, 512, "<tr><td align=\"right\"><b>FILE SYSTEM: </b></td><td align=\"left\">%.1f/%.1f KByte</td></tr>",
-				 (float)LITTLEFS.usedBytes() / 1024, (float)LITTLEFS.totalBytes() / 1024);
-		webString->print(temp_str);
-
-		free(temp_str);
-	}
-
-	webString->print("</table>");
-	webString->print("</td><td width=\"2%\" style=\"border:unset;\"></td>");
-	webString->print("<td width=\"49%\" style=\"border:unset;\">");
-
-	webString->print("<table style=\"height:100%;\">");
-    webString->print("<th colspan=\"2\"><span><b>Developer/Support Information</b></span></th>\n");
-    webString->print("<tr><td align=\"right\"><b>Author: </b></td><td align=\"left\">Marcelo Ferreira (fork/mods)</td></tr>");
-    webString->print("<tr><td align=\"right\"><b>Callsign: </b></td><td align=\"left\">LU6JMF-10</td></tr>");
-    webString->print("<tr><td align=\"right\"><b>Country: </b></td><td align=\"left\">Concepcion del Uruguay, Entre Rios, Argentina</td></tr>\n");
-    webString->print("<tr><td align=\"right\"><b>Github: </b></td><td align=\"left\"><a href=\"https://github.com/marceloferreirachile/ESP32APRS_Audio\" target=\"_blank\">github.com/marceloferreirachile/ESP32APRS_Audio</a></td></tr>");
-    webString->print("<tr><td align=\"right\"><b>Original: </b></td><td align=\"left\">Mr.Somkiat Nakhonthai (HS5TQA) - <a href=\"https://github.com/nakhonthai\" target=\"_blank\">github.com/nakhonthai</a></td></tr>\n");
-    webString->print("<tr><td align=\"right\"><b>WhatsApp: </b></td><td align=\"left\"><a href=\"https://wa.me/5493442311119\" target=\"_blank\">wa.me/5493442311119</a></td></tr>");
-    webString->print("<tr><td align=\"right\"><b>Donate: </b></td><td align=\"left\"><a href=\"https://www.paypal.me/MarceloFerreira673\" target=\"_blank\">paypal.me/MarceloFerreira673</a></td></tr>");
-
-	webString->print("</table>");
-	webString->print("</td></tr></table><br />");
-
-	webString->print("<table>\n");
-	webString->print("<tr><td align=\"right\"><b>Contributor: </b></td><td align=\"left\">LU6JMF Marcelo</td></tr>\n");
-	webString->print("<tr><td align=\"right\"><b>Version: </b></td><td align=\"left\">v2.0-lu6jmf (custom mods on top of V1.8a)</td></tr>\n");
-	webString->print("<tr><td align=\"right\" style=\"vertical-align:top;\"><b>Changes: </b></td><td align=\"left\" style=\"white-space:normal;\">\n");
-	webString->print("- Fixed CPU temperature display in web interface (sensor was reinitialized on every dashboard refresh)<br />\n");
-	webString->print("- Added recurring Bulletins BLN1-BLN9 (MSG tab): auto-repeat with per-bulletin Interval and optional send-count Limit (0=unlimited)<br />\n");
-	webString->print("- Bulletins never retry (nobody ACKs a BLN), unlike normal messages<br />\n");
-	webString->print("- Dashboard LAST HEARD: Callsign links to QRZ.com, plus a small map icon linking to aprs.fi (both open in a new tab)<br />\n");
-	webString->print("- Dashboard LAST HEARD icons now work without internet: loads from the internet first, falls back to a local copy already included on the device, then to a simple drawn icon (never blank)<br />\n");
-	webString->print("- Dashboard icons now match the aprs.fi style (previously used a different icon set)<br />\n");
-	webString->print("- New: TCP KISS Server (MOD tab) lets PC software (Xastir, APRSIS32, etc) use this device as a network TNC over WiFi, 2 ports, no cable needed. Off by default<br />\n");
-webString->print("- Fixed a buffer overflow risk in the IGATE/DIGI PHG Text field (unbounded strcpy on an 8-byte buffer)<br />\n");
-webString->print("- Simplified OTA Online Firmware Update: now only checks and links to the new version, no more auto-download/auto-flash. Use Manual Firmware Update to install<br />\n");
-webString->print("- Manual Filesystem Update now auto-restores your WiFi/APRS config after writing icons, so it survives even without USB access<br />\n");
-webString->print("- Fixed a bug where submitting Manual Filesystem Update also fired a stray request from Manual Firmware Update, breaking the icons write<br />\n");
-	webString->print("</td></tr>\n");
-	webString->print("</table><br />\n");
-
-	webString->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;\"><td width=\"49%\" style=\"border:unset;\">");
-
-	webString->print("<table>\n");
-	webString->print("<th colspan=\"2\"><span><b>WiFi Status</b></span></th>\n");
-	webString->print("<tr><td align=\"right\"><b>Mode:</b></td>\n");
-	webString->print("<td align=\"left\">");
-	if (config.wifi_mode == WIFI_AP_FIX)
-	{
-		webString->print("AP");
-	}
-	else if (config.wifi_mode == WIFI_STA_FIX)
-	{
-		webString->print("STA");
-	}
-	else if (config.wifi_mode == WIFI_AP_STA_FIX)
-	{
-		webString->print("AP+STA");
-	}
-	else
-	{
-		webString->print("OFF");
-	}
-	uint8_t proto = 0;
-	esp_wifi_get_protocol(WIFI_IF_STA, &proto);
-	webString->print(" (802.11");
-	if (proto & WIFI_PROTOCOL_11B)
-		webString->print("b");
-	if (proto & WIFI_PROTOCOL_11G)
-		webString->print("g");
-	if (proto & WIFI_PROTOCOL_11N)
-		webString->print("n");
-	if (proto & WIFI_PROTOCOL_LR)
-		webString->print("lr");
-	webString->print(")");
-
-	wifi_power_t wpr = WiFi.getTxPower();
-	char wifipower[20] = "";
-	if (wpr < 8)
-	{
-		strcpy(wifipower, "-1 dBm");
-	}
-	else if (wpr < 21)
-	{
-		strcpy(wifipower, "2 dBm");
-	}
-	else if (wpr < 29)
-	{
-		strcpy(wifipower, "5 dBm");
-	}
-	else if (wpr < 35)
-	{
-		strcpy(wifipower, "8.5 dBm");
-	}
-	else if (wpr < 45)
-	{
-		strcpy(wifipower, "11 dBm");
-	}
-	else if (wpr < 53)
-	{
-		strcpy(wifipower, "13 dBm");
-	}
-	else if (wpr < 61)
-	{
-		strcpy(wifipower, "15 dBm");
-	}
-	else if (wpr < 69)
-	{
-		strcpy(wifipower, "17 dBm");
-	}
-	else if (wpr < 75)
-	{
-		strcpy(wifipower, "18.5 dBm");
-	}
-	else if (wpr < 77)
-	{
-		strcpy(wifipower, "19 dBm");
-	}
-	else if (wpr < 80)
-	{
-		strcpy(wifipower, "19.5 dBm");
-	}
-	else
-	{
-		strcpy(wifipower, "20 dBm");
-	}
-
-	webString->print("</td></tr>\n");
-
-	char *temp_str1 = allocateStringMemory(512);
-	if (temp_str1)
-	{
-		snprintf(temp_str1, 512, "<tr><td align=\"right\" width=\"30%%\"><b>MAC:</b></td>\n<td align=\"left\">%s</td></tr>\n", WiFi.macAddress().c_str());
-		webString->print(temp_str1);
-		snprintf(temp_str1, 512, "<tr><td align=\"right\"><b>Channel:</b></td>\n<td align=\"left\">%d</td></tr>\n", WiFi.channel());
-		webString->print(temp_str1);
-
-		snprintf(temp_str1, 512, "<tr><td align=\"right\"><b>TX Power:</b></td>\n<td align=\"left\">%s</td></tr>\n", wifipower);
-		webString->print(temp_str1);
-
-		snprintf(temp_str1, 512, "<tr><td align=\"right\"><b>SSID:</b></td>\n<td align=\"left\">%s</td></tr>\n", WiFi.SSID().c_str());
-		webString->print(temp_str1);
-
-		snprintf(temp_str1, 512, "<tr><td align=\"right\"><b>Local IP:</b></td>\n<td align=\"left\">%s</td></tr>\n", WiFi.localIP().toString().c_str());
-		webString->print(temp_str1);
-
-		snprintf(temp_str1, 512, "<tr><td align=\"right\"><b>Gateway IP:</b></td>\n<td align=\"left\">%s</td></tr>\n", WiFi.gatewayIP().toString().c_str());
-		webString->print(temp_str1);
-		snprintf(temp_str1, 512, "<tr><td align=\"right\"><b>DNS:</b></td>\n<td align=\"left\">%s</td></tr>\n", WiFi.dnsIP().toString().c_str());
-		webString->print(temp_str1);
-
-		free(temp_str1);
-	}
-
-	webString->print("</table>\n");
-
-	webString->print("</td><td width=\"2%\" style=\"border:unset;\"></td>");
-	webString->print("<td width=\"49%\" style=\"border:unset;\">");
-	webString->print("<table>\n");
-#ifdef PPPOS
-	webString->print("<th colspan=\"2\"><span><b>PPPoS Status</b></span></th>\n");
-
-	char *temp_str2 = allocateStringMemory(512);
-	if (temp_str2)
-	{
-		snprintf(temp_str2, 512, "<tr><td align=\"right\" width=\"30%%\"><b>Manufacturer:</b></td>\n<td align=\"left\">%s</td></tr>\n", pppStatus.manufacturer);
-		webString->print(temp_str2);
-
-		snprintf(temp_str2, 512, "<tr><td align=\"right\"><b>Model:</b></td>\n<td align=\"left\">%s</td></tr>\n", pppStatus.model);
-		webString->print(temp_str2);
-
-		snprintf(temp_str2, 512, "<tr><td align=\"right\"><b>IMEI:</b></td>\n<td align=\"left\">%s</td></tr>\n", pppStatus.imei);
-		webString->print(temp_str2);
-		snprintf(temp_str2, 512, "<tr><td align=\"right\"><b>IMSI:</b></td>\n<td align=\"left\">%s</td></tr>\n", pppStatus.imsi);
-		webString->print(temp_str2);
-
-		snprintf(temp_str2, 512, "<tr><td align=\"right\"><b>Operator:</b></td>\n<td align=\"left\">%s</td></tr>\n", pppStatus.oper);
-		webString->print(temp_str2);
-
-		snprintf(temp_str2, 512, "<tr><td align=\"right\"><b>RSSI:</b></td>\n<td align=\"left\">%d dBm</td></tr>\n", pppStatus.rssi);
-		webString->print(temp_str2);
-
-		snprintf(temp_str2, 512, "<tr><td align=\"right\"><b>IP:</b></td>\n<td align=\"left\">%s</td></tr>\n", IPAddress(pppStatus.ip).toString().c_str());
-		webString->print(temp_str2);
-
-		snprintf(temp_str2, 512, "<tr><td align=\"right\"><b>Gateway:</b></td>\n<td align=\"left\">%s</td></tr>\n", IPAddress(pppStatus.gateway).toString().c_str());
-		webString->print(temp_str2);
-		free(temp_str2);
-	}
-
-// webString->print("<tr><td align=\"right\"><b>DNS:</b></td>\n");
-// webString->print("<td align=\"left\">%s</td></tr>\n", IPAddress(pppStatus.dns).toString().c_str());
-#endif
-	webString->print("</table>\n");
-	webString->print("</td></tr></table><br />");
-
-	// webString->print("<table style=\"text-align:unset;border-width:0px;background:unset\"><tr style=\"background:unset;\"><td width=\"96%\" style=\"border:unset;\">");
-#ifndef NO_OTA
-	webString->print("<form method='POST' action='#' enctype='multipart/form-data' id='upload_form' class=\"form-horizontal\">\n");
-	webString->print("<table>");
-	webString->print("<th colspan=\"2\"><span><b>Manual Firmware Update</b></span></th>\n");
-	webString->print("<tr><td align=\"right\"><b>File:</b></td><td align=\"left\"><input id=\"file\" name=\"update\" type=\"file\" onchange='sub(this)' /></td></tr>\n");
-	webString->print("<tr><td align=\"right\"><b>Progress:</b></td><td><div id='prgbar'><div id='bar' style=\"width: 0px;\"><label id='prg'></label></div></div></td></tr>\n");
-	webString->print("<tr><td align=\"right\"><b>Support Firmware:</b></td><td align=\"left\"><a target=\"_download\" href=\"https://github.com/marceloferreirachile/ESP32APRS_Audio/releases\">https://github.com/marceloferreirachile/ESP32APRS_Audio/releases</a></td></tr>\n");
-	
-	webString->print("<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\"><input type='submit' class=\"btn btn-danger\" id=\"update_sumbit\" value='Firmware UpLoad'></div></td></tr>\n");
-	webString->print("</table><br />\n");
-	webString->print("</form>\n");
-	// webString->print("</td></tr></table><br />");
-
-	webString->print("<script>"
-					  "function sub(obj){"
-					  "var fileName = obj.value.split('\\\\');"
-					  "document.getElementById('file-input').innerHTML = '   '+ fileName[fileName.length-1];"
-					  "};"
-					  "$('#upload_form').submit(function(e){"
-					  "e.preventDefault();"
-					  "var form = $('#upload_form')[0];"
-					  "var data = new FormData(form);"
-					  "document.getElementById('update_sumbit').disabled = true;"
-					  "$.ajax({"
-					  "url: '/update',"
-					  "type: 'POST',"
-					  "data: data,"
-					  "contentType: false,"
-					  "processData:false,"
-					  "xhr: function() {"
-					  "var xhr = new window.XMLHttpRequest();"
-					  "xhr.upload.addEventListener('progress', function(evt) {"
-					  "if (evt.lengthComputable) {"
-					  "var per = evt.loaded / evt.total;"
-					  "$('#prg').html(Math.round(per*100) + '%');"
-					  "$('#bar').css('width',Math.round(per*100) + '%');"
-					  "}"
-					  "}, false);"
-					  "return xhr;"
-					  "},"
-					  "success:function(d, s) {"
-					  "alert('Wait for system reboot 10sec');"
-					  "},"
-					  "error: function (a, b, c) {"
-					  "}"
-					  "});"
-					  "});"
-					  "</script>");
-
-	webString->print("<form method='POST' action='#' enctype='multipart/form-data' id='updatefs_form' class=\"form-horizontal\">\n");
-	webString->print("<table>");
-	webString->print("<th colspan=\"2\"><span><b>Manual Filesystem Update (icons/data)</b></span></th>\n");
-	webString->print("<tr><td align=\"right\"><b>File:</b></td><td align=\"left\"><input id=\"filefs\" name=\"updatefs\" type=\"file\" /></td></tr>\n");
-	webString->print("<tr><td align=\"right\"><b>Progress:</b></td><td><div id='prgbarfs'><div id='barfs' style=\"width: 0px;\"><label id='prgfs'></label></div></div></td></tr>\n");
-	webString->print("<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\"><input type='submit' class=\"btn btn-danger\" id=\"updatefs_sumbit\" value='Filesystem UpLoad'></div></td></tr>\n");
-	webString->print("</table><br />\n");
-	webString->print("</form>\n");
-
-	webString->print("<script>"
-					  "$('#updatefs_form').submit(function(e){"
-					  "e.preventDefault();"
-					  "var form = $('#updatefs_form')[0];"
-					  "var data = new FormData(form);"
-					  "document.getElementById('updatefs_sumbit').disabled = true;"
-					  "$.ajax({"
-					  "url: '/updatefs',"
-					  "type: 'POST',"
-					  "data: data,"
-					  "contentType: false,"
-					  "processData:false,"
-					  "xhr: function() {"
-					  "var xhr = new window.XMLHttpRequest();"
-					  "xhr.upload.addEventListener('progress', function(evt) {"
-					  "if (evt.lengthComputable) {"
-					  "var per = evt.loaded / evt.total;"
-					  "$('#prgfs').html(Math.round(per*100) + '%');"
-					  "$('#barfs').css('width',Math.round(per*100) + '%');"
-					  "}"
-					  "}, false);"
-					  "return xhr;"
-					  "},"
-					  "success:function(d, s) {"
-					  "alert('Wait for system reboot 10sec');"
-					  "},"
-					  "error: function (a, b, c) {"
-					  "}"
-					  "});"
-					  "});"
-					  "</script>");
-
-	
-	{
-		char ota_url_buf[200];
-		snprintf(ota_url_buf, sizeof(ota_url_buf), "https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/download/v%s-%s/%s", VERSION, VERSION_BUILD, FirmwareOTA);
-
-		webString->print("<table>");
-		webString->print("<th colspan=\"2\"><span><b>OTA Online Firmware Update</b></span></th>\n");
-		char ota_row[512];
-		snprintf(ota_row, sizeof(ota_row),
-			"<tr><td align=\"right\"><b>Firmware File:</b></td><td align=\"left\"><a id=\"fw_file_link\" href=\"%s\" target=\"_blank\">%s</a></td></tr>\n",
-			ota_url_buf, FirmwareOTA);
-		webString->print(ota_row);
-		snprintf(ota_row, sizeof(ota_row),
-			"<tr><td align=\"right\"><b>Current Version:</b></td><td align=\"left\">V%s%s</td></tr>\n",
-			VERSION, VERSION_BUILD);
-		webString->print(ota_row);
-		webString->print("<tr><td align=\"right\"><b>Status:</b></td><td><span id='ota_prg'>Ready</span></td></tr>\n");
-		webString->print("<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\"><input type='button' class=\"btn btn-danger\" id=\"check_ver_btn\" value='Check New Version'></div></td></tr>\n");
-		webString->print("</table><br />\n");
-	}
-
-	webString->print("<script>"
-					  "document.getElementById('check_ver_btn').addEventListener('click', function(){"
-					  "document.getElementById('check_ver_btn').disabled = true;"
-					  "document.getElementById('ota_prg').innerHTML = 'Checking...';"
-					  "$.ajax({"
-					  "url: '/check_version',"
-					  "type: 'GET',"
-					  "dataType: 'json',"
-					  "success: function(d) {"
-					  "document.getElementById('check_ver_btn').disabled = false;"
-					  "if (d.update_available) {"
-					  "var newUrl = 'https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/download/' + d.latest_tag + '/' + d.latest_filename;"
-					  "var fwLink = document.getElementById('fw_file_link');"
-					  "fwLink.href = newUrl;"
-					  "fwLink.innerHTML = d.latest_filename;"
-					  "document.getElementById('ota_prg').innerHTML = 'New version available: V' + d.latest_version + d.latest_build + '. Download link above, install via Manual Firmware Update.';"
-					  "} else {"
-					  "document.getElementById('ota_prg').innerHTML = 'You are using the latest version.';"
-					  "}"
-					  "},"
-					  "error: function(a, b, c) {"
-					  "document.getElementById('check_ver_btn').disabled = false;"
-					  "document.getElementById('ota_prg').innerHTML = 'Error checking version: ' + c;"
-					  "}"
-					  "});"
-					  "});"
-					  "</script>");
-#endif
-	webString->print("</body></html>\n");
-
+	webString->print(html);
 	webString->addHeader("About", "content");
 	webString->addHeader("Cache-Control", "no-cache");
 	request->send(webString);
+}
+
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira: PRIME account system, ported from TX-SCHEDULER-TEST.
+// -----------------------------------------------------------------------------
+void handle_prime_login(AsyncWebServerRequest *request)
+{
+	if (!request->authenticate(config.http_username, config.http_password))
+	{
+		return request->requestAuthentication();
+	}
+
+	if (!request->hasParam("email", true) ||
+		!request->hasParam("password", true))
+	{
+		request->send(
+			400,
+			"application/json",
+			"{\"success\":false,\"error\":\"missing_credentials\"}"
+		);
+		return;
+	}
+
+	String email = request->getParam("email", true)->value();
+	String password = request->getParam("password", true)->value();
+
+	email.trim();
+
+	if (email.length() == 0 || password.length() == 0)
+	{
+		request->send(
+			400,
+			"application/json",
+			"{\"success\":false,\"error\":\"missing_credentials\"}"
+		);
+		return;
+	}
+
+	bool success = primeLogin(email, password);
+
+	// Remove credentials from the temporary Strings as soon as possible.
+	password = "";
+
+	if (!success)
+	{
+		request->send(
+			401,
+			"application/json",
+			"{\"success\":false,\"error\":\"login_failed\"}"
+		);
+		return;
+	}
+
+	request->send(
+		200,
+		"application/json",
+		"{\"success\":true}"
+	);
+}
+
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira:
+// PRIME account registration bridge.
+// -----------------------------------------------------------------------------
+void handle_prime_register(AsyncWebServerRequest *request)
+{
+	if (!request->authenticate(config.http_username, config.http_password))
+	{
+		return request->requestAuthentication();
+	}
+
+	if (!request->hasParam("callsign", true) ||
+		!request->hasParam("email", true) ||
+		!request->hasParam("password", true))
+	{
+		request->send(
+			400,
+			"application/json",
+			"{\"success\":false,\"error\":\"missing_fields\"}"
+		);
+		return;
+	}
+
+	String callsign = request->getParam("callsign", true)->value();
+	String email = request->getParam("email", true)->value();
+	String password = request->getParam("password", true)->value();
+
+	callsign.trim();
+	callsign.toUpperCase();
+	email.trim();
+	email.toLowerCase();
+
+	if (callsign.length() < 2 ||
+		callsign.length() > 20 ||
+		email.length() == 0 ||
+		password.length() < 8)
+	{
+		password = "";
+
+		request->send(
+			400,
+			"application/json",
+			"{\"success\":false,\"error\":\"invalid_fields\"}"
+		);
+		return;
+	}
+
+	bool success = primeRegister(callsign, email, password);
+
+	password = "";
+
+	if (!success)
+	{
+		request->send(
+			400,
+			"application/json",
+			"{\"success\":false,\"error\":\"register_failed\"}"
+		);
+		return;
+	}
+
+	request->send(
+		200,
+		"application/json",
+		"{\"success\":true}"
+	);
+}
+
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira:
+// PRIME password recovery bridge.
+// -----------------------------------------------------------------------------
+void handle_prime_recover(AsyncWebServerRequest *request)
+{
+	if (!request->authenticate(config.http_username, config.http_password))
+	{
+		return request->requestAuthentication();
+	}
+
+	if (!request->hasParam("email", true))
+	{
+		request->send(
+			400,
+			"application/json",
+			"{\"success\":false,\"error\":\"missing_email\"}"
+		);
+		return;
+	}
+
+	String email = request->getParam("email", true)->value();
+
+	email.trim();
+	email.toLowerCase();
+
+	if (email.length() == 0)
+	{
+		request->send(
+			400,
+			"application/json",
+			"{\"success\":false,\"error\":\"missing_email\"}"
+		);
+		return;
+	}
+
+	bool success = primeRecover(email);
+
+	if (!success)
+	{
+		request->send(
+			502,
+			"application/json",
+			"{\"success\":false,\"error\":\"recovery_failed\"}"
+		);
+		return;
+	}
+
+	request->send(
+		200,
+		"application/json",
+		"{\"success\":true}"
+	);
+}
+
+// LU6JMF - Marcelo Ferreira: fase 6 - template embutido no firmware (ver about).
+// A pagina tem 0 dados de config interpolados - so 2 booleans (autenticado,
+// feature txdebug liberada) decidem qual bloco estatico aparece.
+static const char *PRIME_TEMPLATE =
+	"{{#if authenticated}}"
+	"<div style='width:100%;max-width:520px;margin:20px auto;'>"
+	"<table style='width:100%;table-layout:fixed;'>"
+	"<tr><th>"
+	"<span><b>AR-APRS PRIME</b></span>"
+	"</th></tr>"
+	"<tr><td style='text-align:center;padding:15px;white-space:normal;'>"
+	"<h2 style='margin:5px 0 8px;'>PRIME</h2>"
+	"<div style='font-weight:bold;'>Authenticated</div>"
+	"</td></tr>"
+	"<tr><td style='padding:15px;white-space:normal;'>"
+	"<h3 style='text-align:center;margin:0 0 15px;'>PRIME RESOURCES</h3>"
+	"{{#if txDebugAllowed}}"
+	"<div style='border:1px solid #aaa;padding:15px;"
+	"box-sizing:border-box;width:100%;white-space:normal;"
+	"overflow-wrap:anywhere;text-align:center;'>"
+	"<div style='font-size:16px;font-weight:bold;margin-bottom:8px;'>"
+	"TX DEBUG"
+	"</div>"
+	"<div style='margin-bottom:15px;white-space:normal;'>"
+	"Advanced scheduler and RF transmission diagnostics."
+	"</div>"
+	"<a href='/txdebug' target='_blank' rel='noopener' "
+	"style='display:inline-block;border:1px solid #777;"
+	"border-radius:3px;padding:6px 16px;"
+	"background:#eee;color:#000;text-decoration:none;'>"
+	"OPEN"
+	"</a>"
+	"</div>"
+	"{{else}}"
+	"<div style='text-align:center;white-space:normal;'>"
+	"No PRIME resources available for this account."
+	"</div>"
+	"{{/if}}"
+	"</td></tr>"
+	"</table>"
+	"</div>"
+	// LU6JMF - Marcelo Ferreira:
+	// Refresh the authenticated view every 5s so a plan/feature change on
+	// the PRIME server reflects here without a manual reload - but only
+	// while this tab is actually visible AND the user hasn't navigated
+	// away from PRIME inside the app's own tab system (checked via the
+	// marker text still being present in #contentmain).
+	"<script>"
+	"(function(){"
+	"var primeTimer=null;"
+	"function primeTick(){"
+	"if(document.hidden){return;}"
+	"var c=document.getElementById('contentmain');"
+	"if(!c||c.innerHTML.indexOf('AR-APRS PRIME')===-1){"
+	"clearInterval(primeTimer);primeTimer=null;return;"
+	"}"
+	"$('#contentmain').load('/prime');"
+	"}"
+	"primeTimer=setInterval(primeTick,5000);"
+	"document.addEventListener('visibilitychange',function(){"
+	"if(document.hidden&&primeTimer){clearInterval(primeTimer);primeTimer=null;}"
+	"});"
+	"})();"
+	"</script>"
+	"{{else}}"
+	"<div style='width:100%;max-width:520px;margin:20px auto;'>"
+	"<table style='width:100%;table-layout:fixed;'>"
+	"<tr><th colspan='2'>"
+	"<span><b>AR-APRS PRIME</b></span>"
+	"</th></tr>"
+	"<tr><td colspan='2' style='text-align:center;padding:15px;'>"
+	"<h2 style='margin:5px 0 8px;'>PRIME</h2>"
+	"<p style='margin:0;'>Exclusive features and services for AR-APRS users.</p>"
+	"</td></tr>"
+	"<tr><td colspan='2' style='padding:15px;'>"
+	"<div id='primeLoginBox'>"
+	"<form id='primeLoginForm' style='width:100%;box-sizing:border-box;'>"
+	"<label style='display:block;text-align:left;margin-bottom:4px;'><b>E-mail</b></label>"
+	"<input id='primeEmail' type='email' "
+	"style='display:block;width:100%;box-sizing:border-box;margin:0 0 14px;padding:8px;' "
+	"required>"
+	"<label style='display:block;text-align:left;margin-bottom:4px;'><b>Password</b></label>"
+	"<input id='primePassword' type='password' "
+	"style='display:block;width:100%;box-sizing:border-box;margin:0 0 16px;padding:8px;' "
+	"required>"
+	"<button type='submit' class='btn btn-primary' style='display:block;margin:0 auto;'>"
+	"ENTRAR</button>"
+	"</form>"
+	"<hr style='margin:20px 0;'>"
+	"<div style='text-align:center;white-space:normal;'>"
+	"<button type='button' class='btn btn-success' "
+	"onclick='primeShowRegister()'>CRIAR CONTA</button>"
+	"&nbsp;"
+	"<button type='button' class='btn btn-secondary' "
+	"onclick='primeRecover()'>RECUPERAR SENHA</button>"
+	"</div>"
+	"</div>"
+	"<div id='primeRegisterBox' style='display:none;'>"
+	"<h3 style='text-align:center;margin-top:0;'>Criar conta PRIME</h3>"
+	"<form id='primeRegisterForm' style='width:100%;box-sizing:border-box;'>"
+	"<label style='display:block;text-align:left;margin-bottom:4px;'><b>Indicativo</b></label>"
+	"<input id='primeRegisterCallsign' type='text' maxlength='20' "
+	"style='display:block;width:100%;box-sizing:border-box;margin:0 0 14px;padding:8px;' "
+	"required>"
+	"<label style='display:block;text-align:left;margin-bottom:4px;'><b>E-mail</b></label>"
+	"<input id='primeRegisterEmail' type='email' "
+	"style='display:block;width:100%;box-sizing:border-box;margin:0 0 14px;padding:8px;' "
+	"required>"
+	"<label style='display:block;text-align:left;margin-bottom:4px;'><b>Password</b></label>"
+	"<input id='primeRegisterPassword' type='password' minlength='8' "
+	"style='display:block;width:100%;box-sizing:border-box;margin:0 0 14px;padding:8px;' "
+	"required>"
+	"<label style='display:block;text-align:left;margin-bottom:4px;'><b>Confirm Password</b></label>"
+	"<input id='primeRegisterPassword2' type='password' minlength='8' "
+	"style='display:block;width:100%;box-sizing:border-box;margin:0 0 16px;padding:8px;' "
+	"required>"
+	"<div style='text-align:center;'>"
+	"<button type='submit' class='btn btn-success'>CRIAR CONTA</button>"
+	"&nbsp;"
+	"<button type='button' class='btn btn-secondary' "
+	"onclick='primeShowLogin()'>VOLTAR</button>"
+	"</div>"
+	"</form>"
+	"</div>"
+	"<div id='primeMessage' style='margin:15px auto 0;width:100%;max-width:100%;padding:0 8px;box-sizing:border-box;text-align:center;white-space:normal;overflow-wrap:anywhere;word-break:normal;'></div>"
+	"</td></tr>"
+	"</table>"
+	"</div>"
+	"<script>"
+	"$('#primeLoginForm').on('submit',function(e){"
+	"e.preventDefault();"
+	"$('#primeMessage').html('Autenticando...');"
+	"$.post('/prime/login',"
+	"{email:$('#primeEmail').val(),password:$('#primePassword').val()},"
+	"function(data){"
+	"if(data.success){"
+	"$('#contentmain').load('/prime');"
+	"}else{"
+	"$('#primeMessage').html('<b>Login não autorizado.</b>');"
+	"}"
+	"},'json').fail(function(xhr){"
+	"if(xhr.status===401){"
+	"$('#primeMessage').html('<b>E-mail ou senha incorretos.</b>');"
+	"}else{"
+	"$('#primeMessage').html('<b>Erro ao conectar ao PRIME.</b>');"
+	"}"
+	"});"
+	"});"
+	"function primeShowRegister(){"
+	"$('#primeMessage').html('');"
+	"$('#primeLoginBox').hide();"
+	"$('#primeRegisterBox').show();"
+	"var e=$('#primeEmail').val();"
+	"if(e){$('#primeRegisterEmail').val(e);}"
+	"}"
+	"function primeShowLogin(){"
+	"$('#primeMessage').html('');"
+	"$('#primeRegisterBox').hide();"
+	"$('#primeLoginBox').show();"
+	"}"
+	"$('#primeRegisterForm').on('submit',function(e){"
+	"e.preventDefault();"
+	"var callsign=$('#primeRegisterCallsign').val().trim().toUpperCase();"
+	"var email=$('#primeRegisterEmail').val().trim();"
+	"var p1=$('#primeRegisterPassword').val();"
+	"var p2=$('#primeRegisterPassword2').val();"
+	"if(p1.length<8){"
+	"$('#primeMessage').html('<b>A senha deve ter pelo menos 8 caracteres.</b>');"
+	"return;"
+	"}"
+	"if(p1!==p2){"
+	"$('#primeMessage').html('<b>As senhas não coincidem.</b>');"
+	"return;"
+	"}"
+	"$('#primeMessage').html('Criando conta PRIME...');"
+	"$.post('/prime/register',"
+	"{callsign:callsign,email:email,password:p1},"
+	"function(data){"
+	"if(data.success){"
+	"$('#primeEmail').val(email);"
+	"$('#primePassword').val('');"
+	"$('#primeRegisterPassword').val('');"
+	"$('#primeRegisterPassword2').val('');"
+	"$('#primeRegisterBox').hide();"
+	"$('#primeLoginBox').show();"
+	"$('#primeMessage').html('<b>Conta PRIME criada com sucesso. Agora você pode entrar.</b>');"
+	"}else{"
+	"$('#primeMessage').html('<b>Não foi possível criar a conta.</b>');"
+	"}"
+	"},'json').fail(function(){"
+	"$('#primeMessage').html('<b>Não foi possível criar a conta. Verifique os dados ou se a conta já existe.</b>');"
+	"});"
+	"});"
+	"function primeRecover(){"
+	"var email=$('#primeEmail').val().trim();"
+	"if(!email){"
+	"$('#primeMessage').html('<b>Digite seu e-mail para recuperar a senha.</b>');"
+	"$('#primeEmail').focus();"
+	"return;"
+	"}"
+	"$('#primeMessage').html('Solicitando recuperação de senha...');"
+	"$.post('/prime/recover',"
+	"{email:email},"
+	"function(data){"
+	"if(data.success){"
+	"$('#primeMessage').html('<b>Se o e-mail estiver cadastrado, você receberá as instruções para redefinir sua senha.</b>');"
+	"}else{"
+	"$('#primeMessage').html('<b>Não foi possível solicitar a recuperação.</b>');"
+	"}"
+	"},'json').fail(function(){"
+	"$('#primeMessage').html('<b>Não foi possível conectar ao serviço de recuperação.</b>');"
+	"});"
+	"}"
+	"</script>"
+	"{{/if}}";
+
+void handle_prime(AsyncWebServerRequest *request)
+{
+	if (!request->authenticate(config.http_username, config.http_password))
+	{
+		return request->requestAuthentication();
+	}
+
+	// LU6JMF - Marcelo Ferreira:
+	// A valid PRIME token changes this page from the login form to the
+	// authenticated PRIME resources view.
+	JsonDocument data;
+	bool authenticated = primeValidate();
+	data["authenticated"] = authenticated;
+	if (authenticated)
+	{
+		data["txDebugAllowed"] = primeFeature("txdebug");
+	}
+
+	String html_str = renderTemplate(PRIME_TEMPLATE, data.as<JsonVariant>());
+	AsyncResponseStream *response = request->beginResponseStream("text/html", html_str.length() + 200);
+	response->addHeader("Cache-Control", "no-store");
+	response->print(html_str);
+	request->send(response);
+}
+
+void handle_txdebug(AsyncWebServerRequest *request)
+{
+    // LU6JMF - Marcelo Ferreira:
+    // TX DEBUG is a PRIME resource. Hiding the link is not authorization;
+    // direct access to /txdebug must pass the same PRIME checks.
+    if (!request->authenticate(config.http_username, config.http_password))
+    {
+        return request->requestAuthentication();
+    }
+
+    if (!primeValidate() || !primeFeature("txdebug"))
+    {
+        request->send(
+            403,
+            "text/plain",
+            "PRIME authorization required."
+        );
+        return;
+    }
+
+    bool schedulerBusy = false;
+    bool pttSeen = false;
+    bool txNow = false;
+    bool pttOffPending = false;
+    bool dcdBusy = false;
+
+    uint32_t completed = 0;
+    uint32_t rejected = 0;
+    uint32_t lastCycle = 0;
+    uint32_t lastWait = 0;
+    uint32_t currentCycle = 0;
+
+    lu6jmfTxDebugSnapshot(
+        &schedulerBusy,
+        &pttSeen,
+        &txNow,
+        &pttOffPending,
+        &dcdBusy,
+        &completed,
+        &rejected,
+        &lastCycle,
+        &lastWait,
+        &currentCycle
+    );
+
+    // LU6JMF - Marcelo Ferreira
+    // Copy the circular RAM log to a local snapshot before rendering.
+    Lu6jmfTxDebugEvent events[24];
+    uint8_t eventCount = lu6jmfTxDebugEvents(events, 24);
+
+    // LU6JMF - Marcelo Ferreira
+    // Phase 2J: local read-only snapshot of learned RF airtime.
+    Lu6jmfTxTimingDebug timing[15];
+    uint8_t timingCount = lu6jmfTxDebugTiming(timing, 15);
+
+    // -------------------------------------------------------------------------
+    // LU6JMF - Marcelo Ferreira
+    // Phase 2K: local read-only snapshot of central queue health and
+    // queue-to-RF-acceptance wait statistics.
+    // -------------------------------------------------------------------------
+    Lu6jmfTxQueueDebug queueDebug = {};
+    lu6jmfTxDebugQueue(&queueDebug);
+
+    Lu6jmfTxQueueWaitDebug queueWait[5]; // LU6JMF: 5 priorities incl. VERY_LOW
+    uint8_t queueWaitCount = lu6jmfTxDebugQueueWait(queueWait, 5);
+
+    // -------------------------------------------------------------------------
+    // LU6JMF - Marcelo Ferreira
+    // Phase 2L-A: persistent rejected-admission identity by producer.
+    // -------------------------------------------------------------------------
+    Lu6jmfTxQueueRejectDebug queueReject[15];
+    uint8_t queueRejectCount =
+        lu6jmfTxDebugQueueRejectedByJob(queueReject, 15);
+
+    const char *queueHealth = "NORMAL";
+    const char *queueHealthClass = "ok";
+
+    if (queueDebug.current >= queueDebug.capacity)
+    {
+        queueHealth = "SATURATED";
+        queueHealthClass = "bad";
+    }
+    else if (queueDebug.current >= 3)
+    {
+        queueHealth = "BUSY";
+        queueHealthClass = "on";
+    }
+
+    AsyncResponseStream *response = request->beginResponseStream("text/html");
+    response->addHeader("Cache-Control", "no-store");
+
+    response->print(
+        "<!DOCTYPE html>"
+        "<html><head>"
+        "<meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<meta http-equiv='refresh' content='5'>"
+        "<title>AR-APRS TX Debug</title>"
+        "<style>"
+        "body{font-family:Arial,sans-serif;background:#111;color:#eee;"
+        "max-width:1180px;margin:24px auto;padding:15px}"
+        "h2{margin-bottom:4px}"
+        "h3{margin:0 0 4px 0}"
+        "table{width:100%;border-collapse:collapse;margin-top:14px}"
+        "td,th{padding:8px;border-bottom:1px solid #444}"
+        "td:last-child{text-align:right;font-weight:bold}"
+        "th{text-align:left;color:#aaa;font-size:12px}"
+        ".on{color:#ffb000}.ok{color:#5fd35f}.bad{color:#ff5f5f}"
+        ".log td{font-family:monospace;font-size:12px}"
+        ".log td:last-child{text-align:right;font-weight:normal}"
+        "small{color:#aaa}"
+        ".grid{display:grid;"
+        "grid-template-columns:repeat(2,minmax(0,1fr));"
+        "gap:18px;margin-top:24px;align-items:start}"
+        ".card{border:1px solid #333;border-radius:8px;"
+        "padding:15px;background:#151515;min-width:0}"
+        ".full{grid-column:1/-1}"
+        "@media(max-width:820px){"
+        ".grid{grid-template-columns:1fr}"
+        ".full{grid-column:auto}"
+        "body{margin:10px auto;padding:10px}"
+        "}"
+        "</style></head><body>"
+        "<h2>AR-APRS TX DEBUG</h2>"
+        "<small>Argentina APRS System | refresh 5s<br>LU6JMF &mdash; Marcelo Ferreira &middot; Creator</small>"
+        "<div class='grid'>"
+        "<div class='card'>"
+        "<h3>RF SCHEDULER</h3>"
+        "<table>"
+    );
+
+    response->printf(
+        "<tr><td>RF Scheduler</td><td class='%s'>%s</td></tr>"
+        "<tr><td>PTT observed</td><td class='%s'>%s</td></tr>"
+        "<tr><td>TX state now</td><td class='%s'>%s</td></tr>"
+        "<tr><td>Deferred PTT OFF</td><td class='%s'>%s</td></tr>"
+        "<tr><td>DCD / Channel</td><td class='%s'>%s</td></tr>"
+        "<tr><td>Completed TX</td><td>%lu</td></tr>"
+        "<tr><td>AX.25 rejected</td><td>%lu</td></tr>"
+        "<tr><td>Last full cycle</td><td>%lu ms</td></tr>"
+        "<tr><td>Last wait to PTT</td><td>%lu ms</td></tr>"
+        "<tr><td>Current cycle</td><td>%lu ms</td></tr>"
+        "</table>",
+
+        schedulerBusy ? "on" : "ok",
+        schedulerBusy ? "BUSY" : "FREE",
+
+        pttSeen ? "on" : "ok",
+        pttSeen ? "YES" : "NO",
+
+        txNow ? "on" : "ok",
+        txNow ? "YES" : "NO",
+
+        pttOffPending ? "on" : "ok",
+        pttOffPending ? "YES" : "NO",
+
+        dcdBusy ? "on" : "ok",
+        dcdBusy ? "BUSY" : "FREE",
+
+        (unsigned long)completed,
+        (unsigned long)rejected,
+        (unsigned long)lastCycle,
+        (unsigned long)lastWait,
+        (unsigned long)currentCycle
+    );
+
+    // -------------------------------------------------------------------------
+    // LU6JMF - Marcelo Ferreira
+    // Phase 2K: central queue health.
+    //
+    // NORMAL / BUSY / SATURATED is diagnostic presentation only.
+    // It NEVER changes scheduler arbitration or queue admission.
+    // -------------------------------------------------------------------------
+    response->print(
+        "</div>"
+        "<div class='card'>"
+        "<h3>QUEUE HEALTH</h3>"
+        "<small>Central TX queue | RAM only | diagnostic</small>"
+        "<table>"
+    );
+
+    response->printf(
+        "<tr><td>Status</td><td class='%s'>%s</td></tr>"
+        "<tr><td>Current</td><td>%u / %u</td></tr>"
+        "<tr><td>Peak</td><td>%u / %u</td></tr>"
+        "<tr><td>Saturation events</td><td>%lu</td></tr>"
+        "<tr><td>Rejected admissions</td><td>%lu</td></tr>"
+        "</table>",
+        queueHealthClass,
+        queueHealth,
+        (unsigned int)queueDebug.current,
+        (unsigned int)queueDebug.capacity,
+        (unsigned int)queueDebug.peak,
+        (unsigned int)queueDebug.capacity,
+        (unsigned long)queueDebug.saturated,
+        (unsigned long)queueDebug.rejected
+    );
+
+    response->print(
+        "</div>"
+        "<div class='card'>"
+        "<h3>QUEUE WAIT BY PRIORITY</h3>"
+        "<small>Queue admission to RF ACCEPTED | RAM only | diagnostic</small>"
+        "<table class='log'>"
+        "<tr><th>Priority</th><th>Samples</th><th>Last</th>"
+        "<th>Average</th><th style='text-align:right'>Max</th></tr>"
+    );
+
+    // Display highest priority first for easier operational reading.
+    for (int p = (int)queueWaitCount - 1; p >= 0; p--)
+    {
+        const char *priorityName = "UNKNOWN";
+
+        switch (queueWait[p].priority)
+        {
+            case LU6JMF_TXPRIO_VERY_LOW:
+                priorityName = "VERY_LOW";
+                break;
+
+            case LU6JMF_TXPRIO_LOW:
+                priorityName = "LOW";
+                break;
+
+            case LU6JMF_TXPRIO_NORMAL:
+                priorityName = "NORMAL";
+                break;
+
+            case LU6JMF_TXPRIO_HIGH:
+                priorityName = "HIGH";
+                break;
+
+            case LU6JMF_TXPRIO_CRITICAL:
+                priorityName = "CRITICAL";
+                break;
+        }
+
+        response->printf(
+            "<tr><td>%s</td><td>%lu</td><td>%lu ms</td>"
+            "<td>%lu ms</td><td>%lu ms</td></tr>",
+            priorityName,
+            (unsigned long)queueWait[p].samples,
+            (unsigned long)queueWait[p].lastMs,
+            (unsigned long)queueWait[p].avgMs,
+            (unsigned long)queueWait[p].maxMs
+        );
+    }
+
+    response->print("</table>");
+
+    response->print("</div><div class='card'>");
+
+    // -------------------------------------------------------------------------
+    // LU6JMF - Marcelo Ferreira
+    // Phase 2J: learned real RF airtime.
+    // Observational only: these values never release or terminate RF TX.
+    // -------------------------------------------------------------------------
+    response->print(
+        "<h3>LEARNED RF AIRTIME</h3>"
+        "<small>PTT ON to real PTT OFF | RAM only | diagnostic</small>"
+        "<table class='log'>"
+        "<tr><th>Job</th><th>Samples</th><th>Last</th>"
+        "<th>Average</th><th style='text-align:right'>Max</th></tr>"
+    );
+
+    for (uint8_t i = 0; i < timingCount; i++)
+    {
+        const char *timingJobName = "GENERIC";
+
+        switch (timing[i].jobType)
+        {
+            case LU6JMF_TXJOB_ACK:
+                timingJobName = "ACK";
+                break;
+            case LU6JMF_TXJOB_MESSAGE:
+                timingJobName = "MESSAGE";
+                break;
+            case LU6JMF_TXJOB_MSG_RETRY:
+                timingJobName = "MSG RETRY";
+                break;
+            case LU6JMF_TXJOB_DIGI:
+                timingJobName = "DIGI";
+                break;
+            case LU6JMF_TXJOB_TRACKER:
+                timingJobName = "TRACKER";
+                break;
+            case LU6JMF_TXJOB_IGATE:
+                timingJobName = "IGATE";
+                break;
+            case LU6JMF_TXJOB_DIGI_POSITION:
+                timingJobName = "DIGI POS";
+                break;
+            case LU6JMF_TXJOB_WX:
+                timingJobName = "WX";
+                break;
+            case LU6JMF_TXJOB_TLM:
+                timingJobName = "TLM";
+                break;
+            case LU6JMF_TXJOB_BULLETIN:
+                timingJobName = "BULLETIN";
+                break;
+            case LU6JMF_TXJOB_NEWS:
+                timingJobName = "NEWS";
+                break;
+            case LU6JMF_TXJOB_OBJECT:
+                timingJobName = "OBJECT";
+                break;
+            case LU6JMF_TXJOB_INET2RF:
+                timingJobName = "INET->RF";
+                break;
+            case LU6JMF_TXJOB_EXTERNAL:
+                timingJobName = "EXTERNAL";
+                break;
+            default:
+                timingJobName = "GENERIC";
+                break;
+        }
+
+        response->printf(
+            "<tr><td>%s</td><td>%lu</td><td>%lu ms</td>"
+            "<td>%lu ms</td><td>%lu ms</td></tr>",
+            timingJobName,
+            (unsigned long)timing[i].samples,
+            (unsigned long)timing[i].lastAirMs,
+            (unsigned long)timing[i].avgAirMs,
+            (unsigned long)timing[i].maxAirMs
+        );
+    }
+
+    if (timingCount == 0)
+    {
+        response->print(
+            "<tr><td colspan='5'>Waiting for first completed RF TX...</td></tr>"
+        );
+    }
+
+    response->print("</table></div>");
+
+    // -------------------------------------------------------------------------
+    // LU6JMF - Marcelo Ferreira
+    // Phase 2L-A: identify actual producers rejected by a full central queue.
+    // Diagnostic only. No scheduler policy is changed here.
+    // -------------------------------------------------------------------------
+    response->print(
+        "<div class='card full'>"
+        "<h3>REJECTED ADMISSIONS BY PRODUCER</h3>"
+        "<small>Central queue full | accumulated since boot</small>"
+        "<table class='log'>"
+        "<tr><th>Job</th><th style='text-align:right'>Rejected</th></tr>"
+    );
+
+    for (uint8_t i = 0; i < queueRejectCount; i++)
+    {
+        const char *rejectJobName = "GENERIC";
+
+        switch (queueReject[i].jobType)
+        {
+            case LU6JMF_TXJOB_ACK:           rejectJobName = "ACK"; break;
+            case LU6JMF_TXJOB_MESSAGE:       rejectJobName = "MESSAGE"; break;
+            case LU6JMF_TXJOB_MSG_RETRY:     rejectJobName = "MSG RETRY"; break;
+            case LU6JMF_TXJOB_DIGI:          rejectJobName = "DIGI"; break;
+            case LU6JMF_TXJOB_TRACKER:       rejectJobName = "TRACKER"; break;
+            case LU6JMF_TXJOB_IGATE:         rejectJobName = "IGATE"; break;
+            case LU6JMF_TXJOB_DIGI_POSITION: rejectJobName = "DIGI POS"; break;
+            case LU6JMF_TXJOB_WX:            rejectJobName = "WX"; break;
+            case LU6JMF_TXJOB_TLM:           rejectJobName = "TLM"; break;
+            case LU6JMF_TXJOB_BULLETIN:      rejectJobName = "BULLETIN"; break;
+            case LU6JMF_TXJOB_NEWS:          rejectJobName = "NEWS"; break;
+            case LU6JMF_TXJOB_OBJECT:        rejectJobName = "OBJECT"; break;
+            case LU6JMF_TXJOB_INET2RF:       rejectJobName = "INET->RF"; break;
+            case LU6JMF_TXJOB_EXTERNAL:      rejectJobName = "EXTERNAL"; break;
+            default:                         rejectJobName = "GENERIC"; break;
+        }
+
+        response->printf(
+            "<tr><td>%s</td><td>%lu</td></tr>",
+            rejectJobName,
+            (unsigned long)queueReject[i].rejected
+        );
+    }
+
+    if (queueRejectCount == 0)
+    {
+        response->print(
+            "<tr><td colspan='2'>No rejected admissions since boot.</td></tr>"
+        );
+    }
+
+    response->print(
+        "</table>"
+        "</div>"
+        "<div class='card full'>"
+        "<h3>TX EVENT LOG</h3>"
+        "<small>RAM only | newest first | cleared on reboot</small>"
+        "<table class='log'>"
+        "<tr><th>Uptime</th><th>Event</th><th>Job</th><th style='text-align:right'>Value</th></tr>"
+    );
+
+    for (uint8_t i = 0; i < eventCount; i++)
+    {
+        const char *eventName = "UNKNOWN";
+        const char *jobName = "GENERIC";
+        char value[32];
+        value[0] = '\0';
+
+        // LU6JMF - Marcelo Ferreira
+        // Human-readable producer identity for RF Scheduler diagnostics.
+        switch (events[i].jobType)
+        {
+            case LU6JMF_TXJOB_ACK:           jobName = "ACK"; break;
+            case LU6JMF_TXJOB_MESSAGE:       jobName = "MESSAGE"; break;
+            case LU6JMF_TXJOB_MSG_RETRY:     jobName = "MSG RETRY"; break;
+            case LU6JMF_TXJOB_DIGI:          jobName = "DIGI"; break;
+            case LU6JMF_TXJOB_TRACKER:       jobName = "TRACKER"; break;
+            case LU6JMF_TXJOB_IGATE:         jobName = "IGATE"; break;
+            case LU6JMF_TXJOB_DIGI_POSITION: jobName = "DIGI POS"; break;
+            case LU6JMF_TXJOB_WX:            jobName = "WX"; break;
+            case LU6JMF_TXJOB_TLM:           jobName = "TLM"; break;
+            case LU6JMF_TXJOB_BULLETIN:      jobName = "BULLETIN"; break;
+            case LU6JMF_TXJOB_NEWS:          jobName = "NEWS"; break;
+            case LU6JMF_TXJOB_OBJECT:        jobName = "OBJECT"; break;
+            case LU6JMF_TXJOB_INET2RF:       jobName = "INET->RF"; break;
+            case LU6JMF_TXJOB_EXTERNAL:      jobName = "EXTERNAL"; break;
+            default:                         jobName = "GENERIC"; break;
+        }
+
+        switch (events[i].code)
+        {
+            case 1:
+                eventName = "RF ACCEPTED";
+                snprintf(value, sizeof(value), "slot %lu",
+                         (unsigned long)events[i].value);
+                break;
+
+            case 2:
+                eventName = "PTT ON";
+                snprintf(value, sizeof(value), "%lu ms",
+                         (unsigned long)events[i].value);
+                break;
+
+            case 3:
+                eventName = "PTT OFF TASK";
+                break;
+
+            case 4:
+                eventName = "PTT OFF DONE";
+                break;
+
+            case 5:
+                eventName = "RF RELEASE";
+                snprintf(value, sizeof(value), "%lu ms",
+                         (unsigned long)events[i].value);
+                break;
+
+            case 6:
+                eventName = "AX25 REJECT";
+                snprintf(value, sizeof(value), "count %lu",
+                         (unsigned long)events[i].value);
+                break;
+
+            // LU6JMF - Marcelo Ferreira
+            // Phase 2G: queue admission and queue saturation diagnostics.
+            // value carries Lu6jmfTxPriority for these event types.
+            case 7:
+            case 8:
+            {
+                eventName = (events[i].code == 7)
+                                ? "QUEUE PUSH"
+                                : "QUEUE FULL";
+
+                const char *priorityName = "UNKNOWN";
+
+                switch (events[i].value)
+                {
+                    case LU6JMF_TXPRIO_VERY_LOW:
+                        priorityName = "VERY_LOW";
+                        break;
+
+                    case LU6JMF_TXPRIO_LOW:
+                        priorityName = "LOW";
+                        break;
+
+                    case LU6JMF_TXPRIO_NORMAL:
+                        priorityName = "NORMAL";
+                        break;
+
+                    case LU6JMF_TXPRIO_HIGH:
+                        priorityName = "HIGH";
+                        break;
+
+                    case LU6JMF_TXPRIO_CRITICAL:
+                        priorityName = "CRITICAL";
+                        break;
+                }
+
+                snprintf(value, sizeof(value), "%s", priorityName);
+                break;
+            }
+
+            case 9:
+                eventName = "ACK WINDOW START";
+                snprintf(value, sizeof(value), "%lu ms",
+                         (unsigned long)events[i].value);
+                break;
+
+            case 10:
+                eventName = "ACK WINDOW END";
+                break;
+
+            case 11:
+            {
+                eventName = "QUEUE PREEMPT";
+
+                uint8_t displacedJob =
+                    (uint8_t)(events[i].value & 0xFF);
+
+                uint8_t displacedPriority =
+                    (uint8_t)((events[i].value >> 8) & 0xFF);
+
+                const char *displacedJobName = "GENERIC";
+                const char *displacedPriorityName = "UNKNOWN";
+
+                switch (displacedJob)
+                {
+                    case LU6JMF_TXJOB_ACK:           displacedJobName = "ACK"; break;
+                    case LU6JMF_TXJOB_MESSAGE:       displacedJobName = "MESSAGE"; break;
+                    case LU6JMF_TXJOB_MSG_RETRY:     displacedJobName = "MSG RETRY"; break;
+                    case LU6JMF_TXJOB_DIGI:          displacedJobName = "DIGI"; break;
+                    case LU6JMF_TXJOB_TRACKER:       displacedJobName = "TRACKER"; break;
+                    case LU6JMF_TXJOB_IGATE:         displacedJobName = "IGATE"; break;
+                    case LU6JMF_TXJOB_DIGI_POSITION: displacedJobName = "DIGI POS"; break;
+                    case LU6JMF_TXJOB_WX:            displacedJobName = "WX"; break;
+                    case LU6JMF_TXJOB_TLM:           displacedJobName = "TLM"; break;
+                    case LU6JMF_TXJOB_BULLETIN:      displacedJobName = "BULLETIN"; break;
+                    case LU6JMF_TXJOB_NEWS:          displacedJobName = "NEWS"; break;
+                    case LU6JMF_TXJOB_OBJECT:        displacedJobName = "OBJECT"; break;
+                    case LU6JMF_TXJOB_INET2RF:       displacedJobName = "INET->RF"; break;
+                    case LU6JMF_TXJOB_EXTERNAL:      displacedJobName = "EXTERNAL"; break;
+                    default:                         displacedJobName = "GENERIC"; break;
+                }
+
+                switch (displacedPriority)
+                {
+                    case LU6JMF_TXPRIO_VERY_LOW:
+                        displacedPriorityName = "VERY_LOW";
+                        break;
+
+                    case LU6JMF_TXPRIO_LOW:
+                        displacedPriorityName = "LOW";
+                        break;
+
+                    case LU6JMF_TXPRIO_NORMAL:
+                        displacedPriorityName = "NORMAL";
+                        break;
+
+                    case LU6JMF_TXPRIO_HIGH:
+                        displacedPriorityName = "HIGH";
+                        break;
+
+                    case LU6JMF_TXPRIO_CRITICAL:
+                        displacedPriorityName = "CRITICAL";
+                        break;
+                }
+
+                snprintf(value,
+                         sizeof(value),
+                         "%s %s",
+                         displacedJobName,
+                         displacedPriorityName);
+                break;
+            }
+        }
+
+        uint32_t seconds = events[i].timestamp / 1000;
+        uint32_t milliseconds = events[i].timestamp % 1000;
+
+        response->printf(
+            "<tr><td>%lu.%03lu s</td><td>%s</td><td>%s</td><td>%s</td></tr>",
+            (unsigned long)seconds,
+            (unsigned long)milliseconds,
+            eventName,
+            jobName,
+            value
+        );
+    }
+
+    if (eventCount == 0)
+    {
+        response->print(
+            "<tr><td>-</td><td>No TX events yet</td><td></td><td></td></tr>"
+        );
+    }
+
+    response->print(
+        "</table>"
+        "</div>"
+        "</div>"
+        "<p><small>"
+        "Scheduler completion is released only after real PTT OFF."
+        "</small></p>"
+        "</body></html>"
+    );
+
+    request->send(response);
 }
 
 void handle_gnss(AsyncWebServerRequest *request)
@@ -12994,25 +12016,85 @@ void handle_default()
 	defaultSetting = false;
 }
 
+// LU6JMF - Marcelo Ferreira:
+// The route's main callback (see async_server.on("/upload", ...)) used to
+// unconditionally reply "File uploaded successfully!" no matter what
+// happened in here - so a failed mkdir/open/write (silently swallowed,
+// nothing here ever checked a return value) still showed "Upload Success"
+// to the user. Track the real outcome here and let the route callback
+// report it truthfully.
+bool lastUploadOk = false;
+String lastUploadError = "";
+
 void handleUpload(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+    // LU6JMF - Marcelo Ferreira:
+    // The generic uploader saves to LittleFS root, but the firmware reads
+    // the packed symbol icons from /symbols/icons.dat (see ICON_PACK_PATH).
+    // Special-case this one filename so it lands where the firmware expects
+    // it - this lets the icon set be updated in place via the normal
+    // single-file upload, without touching /updatefs (which reflashes the
+    // whole partition and wipes the saved config).
+    String targetPath = "/" + filename;
+    if (filename == "icons.dat")
+    {
+        targetPath = "/symbols/icons.dat";
+    }
+    // LU6JMF - Marcelo Ferreira:
+    // Fase 6 - main_shell.html originally went under /templates/, but this
+    // vendored LittleFS_esp32 port doesn't reliably create/use a runtime
+    // mkdir()'d subfolder on this hardware (write silently produced nothing,
+    // reproduced live: "Upload Success" but file never actually landed).
+    // Keep it flat at root, same as style.css - avoids the whole issue.
+    else if (filename == "main_shell.html")
+    {
+        targetPath = "/main_shell.html";
+    }
+    else if (filename == "style.css")
+    {
+        targetPath = "/style.css";
+    }
     if (!index) {
+        lastUploadOk = false;
+        lastUploadError = "";
         // Open the file in write mode on the first chunk
-        request->_tempFile = LITTLEFS.open("/" + filename, "w");
+        request->_tempFile = LITTLEFS.open(targetPath, "w");
+        if (!request->_tempFile) {
+            lastUploadError = "Could not open " + targetPath + " for writing (missing parent dir?)";
+            log_e("%s", lastUploadError.c_str());
+            return;
+        }
+    }
+    if (!request->_tempFile) {
+        return; // open already failed on chunk 0 - nothing more we can do with later chunks
     }
     if (len < (LITTLEFS.totalBytes()-LITTLEFS.usedBytes())) {
         // Write the data chunk to the file
-        request->_tempFile.write(data, len);
+        size_t written = request->_tempFile.write(data, len);
+        if (written != len) {
+            lastUploadError = "Write failed at offset " + String(index) + " (" + String(written) + "/" + String(len) + " bytes)";
+            log_e("%s", lastUploadError.c_str());
+            request->_tempFile.close();
+            LITTLEFS.remove(targetPath);
+            return;
+        }
     }else{
 		// Not enough space to write the file
+		lastUploadError = "Not enough space to upload the file";
 		request->_tempFile.close();
-		LITTLEFS.remove("/" + filename); // Remove the incomplete file
-		request->send(500, "text/plain", "Not enough space to upload the file");
+		LITTLEFS.remove(targetPath); // Remove the incomplete file
 		return;
 	}
     if (final) {
-        // Close the file on the last chunk and redirect
+        // Close the file on the last chunk, then verify it actually landed
+        // with the expected content before calling it a success.
         request->_tempFile.close();
-        request->redirect("/"); // Redirect back to the main page
+        File check = LITTLEFS.open(targetPath, "r");
+        if (check && check.size() > 0) {
+            lastUploadOk = true;
+        } else if (lastUploadError == "") {
+            lastUploadError = "File missing or empty after write: " + targetPath;
+        }
+        if (check) check.close();
     }
 }
 
@@ -13078,6 +12160,9 @@ void webService()
 	// 				{ handle_symbol2(request); });
 	async_server.on("/logout", HTTP_GET, [](AsyncWebServerRequest *request)
 					{ handle_logout(request); });
+	// v2.1.3.1-lu6jmf: live view of the netlog diagnostic files - see handle_netdebug() above.
+	async_server.on("/netdebug", HTTP_GET, [](AsyncWebServerRequest *request)
+					{ handle_netdebug(request); });
 	async_server.on("/radio", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_radio(request); });
 	async_server.on("/vpn", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
@@ -13088,6 +12173,8 @@ void webService()
 #endif
 	async_server.on("/msg", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_msg(request); });
+	async_server.on("/object", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
+					{ handle_object(request); });
 	async_server.on("/mod", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_mod(request); });
 	async_server.on("/mod2", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
@@ -13118,8 +12205,26 @@ void webService()
 	// 				{ handle_realtime(request); });
 	async_server.on("/about", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_about(request); });
+	async_server.on("/prime", HTTP_GET, [](AsyncWebServerRequest *request)
+					{ handle_prime(request); });
+
+	// LU6JMF - Marcelo Ferreira: PRIME authentication endpoint.
+	async_server.on("/prime/login", HTTP_POST, [](AsyncWebServerRequest *request)
+					{ handle_prime_login(request); });
+
+	// LU6JMF - Marcelo Ferreira: PRIME account creation endpoint.
+	async_server.on("/prime/register", HTTP_POST, [](AsyncWebServerRequest *request)
+					{ handle_prime_register(request); });
+
+	// LU6JMF - Marcelo Ferreira: PRIME password recovery endpoint.
+	async_server.on("/prime/recover", HTTP_POST, [](AsyncWebServerRequest *request)
+					{ handle_prime_recover(request); });
 	async_server.on("/dashboard", HTTP_GET, [](AsyncWebServerRequest *request)
 					{ handle_dashboard(request); });
+
+	// LU6JMF - Marcelo Ferreira: temporary TX Scheduler diagnostics.
+	async_server.on("/txdebug", HTTP_GET, [](AsyncWebServerRequest *request)
+					{ handle_txdebug(request); });
 	async_server.on("/sidebarInfo", HTTP_GET, [](AsyncWebServerRequest *request)
 					{ handle_sidebar(request); });
 	async_server.on("/sysinfo", HTTP_GET, [](AsyncWebServerRequest *request)
@@ -13140,7 +12245,13 @@ void webService()
 					{ handle_format(request); });
 	// Route to handle the file upload
     async_server.on("/upload", HTTP_POST, [](AsyncWebServerRequest *request) {
-        request->send(200, "text/plain", "File uploaded successfully!");
+        // LU6JMF - Marcelo Ferreira: report what actually happened in
+        // handleUpload() instead of always claiming success (see there).
+        if (lastUploadOk) {
+            request->send(200, "text/plain", "File uploaded successfully!");
+        } else {
+            request->send(500, "text/plain", "Upload failed: " + lastUploadError);
+        }
     }, handleUpload); // Pass the handleUpload function as the upload handler
 
 	// async_server.on("/api/vpnreq", HTTP_GET, handle_vpn_request);

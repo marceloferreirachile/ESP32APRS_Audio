@@ -332,7 +332,7 @@ void APRS_sendPkt(void *_buffer, size_t length)
     //ax25_sendVia(&AX25, path, countof(path), buffer, length);
 }
 
-void APRS_sendTNC2Pkt(const uint8_t *raw, size_t length)
+bool APRS_sendTNC2Pkt(const uint8_t *raw, size_t length)
 {
     uint8_t data[300];
     int size=0;
@@ -340,12 +340,21 @@ void APRS_sendTNC2Pkt(const uint8_t *raw, size_t length)
     ax25_encode(frame, (char *)raw, length);
     size=hdlcFrame(data, 300, &AX25, &frame);
     log_d("TX HDLC Fram size=%d",size);
-    void *handle = NULL;
-    if(size>0){
-        if(NULL != (handle = Ax25WriteTxFrame(data,size))){
-         //Ax25TransmitCheck();
-        }
-    }
+
+    // -------------------------------------------------------------------------
+    // LU6JMF - Marcelo Ferreira
+    // TX Scheduler: propagate lower AX.25 queue acceptance to the caller.
+    // The upper queue must not discard RF data if AX.25 rejects the frame.
+    // -------------------------------------------------------------------------
+    if(size <= 0)
+        return false;
+
+    void *handle = Ax25WriteTxFrame(data,size);
+    if(handle == NULL)
+        return false;
+
+    return true;
+
     //ax25sendFrame(&AX25, &frame);
 
     // ax25frame *frame = (ax25frame *)calloc(1, sizeof(ax25frame));

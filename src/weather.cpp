@@ -91,7 +91,8 @@ bool getCSV2Wx(String stream)
         uint8_t SendMode = 0;
         if (config.wx_2rf) SendMode |= RF_CHANNEL;
         if (config.wx_2inet) SendMode |= INET_CHANNEL;
-        pkgTxPush(strData, lng, 0,SendMode);
+        pkgTxPushJob(strData, lng, 0, SendMode,
+                     LU6JMF_TXJOB_WX, LU6JMF_TXPRIO_VERY_LOW);
         // if (config.wx_2rf)
         // { // WX SEND POSITION TO RF
         //     pkgTxPush(strData, lng, 0);

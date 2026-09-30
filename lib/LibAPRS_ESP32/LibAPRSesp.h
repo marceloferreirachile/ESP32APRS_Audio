@@ -35,6 +35,9 @@ void APRS_sendMsg(void *_buffer, size_t length);
 void APRS_msgRetry();
 
 void APRS_printSettings();
-void APRS_sendTNC2Pkt(const uint8_t *raw, size_t length);
+// LU6JMF - Marcelo Ferreira
+// TX Scheduler: propagates lower AX.25 queue acceptance to the caller, ported
+// from TX-SCHEDULER-TEST alongside the priority queue in main.cpp.
+bool APRS_sendTNC2Pkt(const uint8_t *raw, size_t length);
 
 int freeMemory();

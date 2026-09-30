@@ -47,6 +47,15 @@ SPRITE_URLS = {
 }
 CELL_SIZE = 24
 GRID_COLS = 16
+# LU6JMF - Marcelo Ferreira:
+# The on-device LittleFS partition is tiny (~128KB usable) and icons.dat was
+# eating nearly all of it, leaving no room for anything else (style.css,
+# templates). The local copy is only ever a FALLBACK anyway - the web page
+# tries the full-quality icon from the internet first (aprs.nakhonthai.net)
+# and only falls back to this local packed set when there's no internet.
+# So: shrink the on-device fallback set (downsize before saving) and keep
+# quality for the common case, which comes from the web either way.
+OUTPUT_SIZE = 16  # downsized from the 24x24 source cells before saving
 # Rows are computed from the actual downloaded image size below - don't
 # hardcode it, the sprite sheet turned out to be 6 rows (144px / 24px),
 # not 8 as a leftover variable in aprs.fi's export script suggested.
@@ -127,8 +136,10 @@ for table, (sheet, rows) in sprites.items():
         alpha_sum = sum(cell.getchannel("A").getdata())
         if alpha_sum == 0:
             blank_count += 1
+        if OUTPUT_SIZE != CELL_SIZE:
+            cell = cell.resize((OUTPUT_SIZE, OUTPUT_SIZE), Image.LANCZOS)
         out_name = f"{code}-{table}.png"
-        cell.save(os.path.join(ICONS_DIR, out_name))
+        cell.save(os.path.join(ICONS_DIR, out_name), optimize=True)
         extracted += 1
 
 print(f"OK: {extracted} icones recortados e salvos em {ICONS_DIR}/ ({blank_count} vieram totalmente transparentes, {skipped_out_of_range} ficaram fora da grade - ambos normais, nem todo codigo ASCII tem simbolo definido).")

@@ -90,6 +90,25 @@ bool holdADC = false;
 hw_timer_t *timer_dac = NULL;
 hw_timer_t *timer_adc = NULL;
 
+// v2.1.3.1-lu6jmf: taskAPRSPoll (low priority) sets up timer_dac across several
+// non-atomic calls (timerBegin/timerAttachInterrupt/timerAlarm/timerStop) in
+// AFSK_hw_init() below. taskAPRS (higher priority, same core) polls
+// Ax25TransmitCheck() continuously and, once the boot stagger elapses, can
+// preempt taskAPRSPoll mid-sequence - timer_dac is already non-NULL (from
+// timerBegin) but not yet fully configured, so a TX attempt's
+// DAC_TimerEnable(true) calls timerStart() on a half-initialized timer,
+// producing "gptimer: gptimer_start(...): timer is not ready for a new
+// start" and a subsequent stack-canary crash. This flag is only set true at
+// the very end of AFSK_hw_init(), once the DAC timer is fully configured and
+// stopped, and Ax25TransmitCheck() (AX25.cpp) waits for it before starting
+// any transmission.
+static volatile bool afskHwReady = false;
+
+bool AFSK_IsHwReady(void)
+{
+    return afskHwReady;
+}
+
 static int Vref = 950;
 
 #define FILTER_TAPS 8 // Number of taps in the FIR filter
@@ -741,6 +760,18 @@ void IRAM_ATTR sample_adc_isr()
 // hw_timer_t *timer = NULL;
 
 bool adcStopFlag = false;
+// v2.1.3.1-lu6jmf: track actual hardware timer run-state so Start/Stop become
+// idempotent. Fixes "gptimer: gptimer_start(396): timer is not ready for a
+// new start" observed in the field: AFSK/DAC_TimerEnable() can be called from
+// task context (ModemTransmitStart, in taskAPRS) AND from ISR context
+// (ModemTransmitStop, called from the DAC timer's own ISR chain) - without a
+// state guard, a new TX starting right as the previous one's stop is still
+// in flight calls timerStart() on an already-running timer, which the
+// underlying gptimer driver rejects. Both flags are only touched inside
+// portENTER_CRITICAL_ISR(&timerMux), so the check-and-set is atomic against
+// the other call site (that's what the critical section is for).
+static volatile bool adcTimerRunning = false;
+static volatile bool dacTimerRunning = false;
 void AFSK_TimerEnable(bool sts)
 {
   // if (xSemaphoreTake(xI2CSemaphore, (TickType_t)DEFAULT_SEMAPHORE_TIMEOUT) == pdTRUE)
@@ -754,7 +785,7 @@ void AFSK_TimerEnable(bool sts)
 
 #ifdef ADC_SAMPLE
     RingBuffer_IsEmpty(&fifo);
-    timerStart(timer_adc);
+    if (!adcTimerRunning) { timerStart(timer_adc); adcTimerRunning = true; }
 #else
     //   timerAlarmEnable(timer);
     if (AdcHandle != NULL)
@@ -769,7 +800,7 @@ void AFSK_TimerEnable(bool sts)
   else
   {
 #ifdef ADC_SAMPLE
-    timerStop(timer_adc);
+    if (adcTimerRunning) { timerStop(timer_adc); adcTimerRunning = false; }
 #else
     //   timerAlarmDisable(timer);
     if (AdcHandle != NULL)
@@ -802,11 +833,11 @@ void DAC_TimerEnable(bool sts)
   portENTER_CRITICAL_ISR(&timerMux);
   if (sts == true)
   {
-    timerStart(timer_dac);
+    if (!dacTimerRunning) { timerStart(timer_dac); dacTimerRunning = true; }
   }
   else
   {
-    timerStop(timer_dac);
+    if (dacTimerRunning) { timerStop(timer_dac); dacTimerRunning = false; }
   }
   portEXIT_CRITICAL_ISR(&timerMux);
   dacEn = 0;
@@ -1299,6 +1330,7 @@ void AFSK_hw_init(void)
   // Repeat the alarm (third parameter) with unlimited count = 0 (fourth parameter).
   timerAlarm(timer_adc, (uint64_t)20000000 / SAMPLERATE, true, 0);
   timerStart(timer_adc);
+  adcTimerRunning = true; // v2.1.3.1-lu6jmf: keep guard flag in sync with hw state set here directly
 
 #else
   adc_continue_init();
@@ -1333,7 +1365,17 @@ void AFSK_hw_init(void)
   // Set alarm to call onTimer function every second (value in microseconds).
   // Repeat the alarm (third parameter) with unlimited count = 0 (fourth parameter).
   timerAlarm(timer_dac, (uint64_t)20000000 / CONFIG_AFSK_DAC_SAMPLERATE, true, 0);
-  timerStop(timer_dac);
+  // v2.1.3.1-lu6jmf: removed timerStop(timer_dac) here. timer_dac was just
+  // created by timerBegin() and never started, so it doesn't need stopping -
+  // and calling gptimer_stop() on a timer that was never gptimer_start()'d is
+  // suspected to leave the underlying gptimer driver's FSM in a state where
+  // the real, later timerStart() (at the first TX) always logs "gptimer:
+  // gptimer_start(...): timer is not ready for a new start", reproduced
+  // deterministically on every boot regardless of software-level guards
+  // (afskHwReady, dacTimerRunning) added earlier - those guards addressed
+  // real but different races and did not fix this. timer_adc (a few lines up)
+  // is never stopped after timerBegin() either, only ever started - mirroring
+  // that pattern here for timer_dac.
 
   //   ESP_LOGI(TAG, "Create timer handle");
   //   gptimer_handle_t gptimer = NULL;
@@ -1367,6 +1409,10 @@ void AFSK_hw_init(void)
   // }
 
   setTransmit(false);
+  // v2.1.3.1-lu6jmf: DAC timer (timer_dac) is now fully configured (begin +
+  // interrupt attached + alarm set + stopped) - safe for taskAPRS to start
+  // keying a transmission from here on. See afskHwReady comment above.
+  afskHwReady = true;
   log_d("AFSK Hardware Initialized");
 }
 

@@ -5,3 +5,11 @@
 .vscode/ipch
 *.py
 *.patch
+
+# Build/run junk, not source
+.DS_Store
+*.log
+screenlog.*
+build_upload.log
+firmware_releases/
+logs/

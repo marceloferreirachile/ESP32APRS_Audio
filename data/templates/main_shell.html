@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="robots" content="index" />
+<meta name="robots" content="follow" />
+<meta name="language" content="English" />
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta name="GENERATOR" content="configure 20230924" />
+<meta name="Author" content="Mr.Somkiat Nakhonthai (HS5TQA)" />
+<meta name="Description" content="Web Embedded Configuration" />
+<meta name="KeyWords" content="ESP32,ESP32C3,AFSK,APRS" />
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="pragma" content="no-cache" />
+<link rel="shortcut icon" href="http://aprs.nakhonthai.net/favicon.ico" type="image/x-icon" />
+<meta http-equiv="Expires" content="0" />
+{{TITLE}}<link rel="stylesheet" type="text/css" href="style.css" />
+<script src="/jquery-3.7.1.js"></script>
+<script type="text/javascript">
+function selectTab(evt, tabName) {
+var i, tabcontent, tablinks;
+tablinks = document.getElementsByClassName("nav-tabs");
+for (i = 0; i < tablinks.length; i++) {
+tablinks[i].className = tablinks[i].className.replace(" active", "");
+}
+//document.getElementById(tabName).style.display = "block";
+if (tabName == 'DashBoard') {
+$("#contentmain").load("/dashboard");
+} else if (tabName == 'Radio') {
+$("#contentmain").load("/radio");
+} else if (tabName == 'IGATE') {
+$("#contentmain").load("/igate");
+} else if (tabName == 'DIGI') {
+$("#contentmain").load("/digi");
+} else if (tabName == 'TRACKER') {
+$("#contentmain").load("/tracker");
+} else if (tabName == 'WX') {
+$("#contentmain").load("/wx");
+} else if (tabName == 'TLM') {
+$("#contentmain").load("/tlm");
+} else if (tabName == 'SENSOR') {
+$("#contentmain").load("/sensor");
+} else if (tabName == 'VPN') {
+$("#contentmain").load("/vpn");
+{{MQTT_TAB_JS}}} else if (tabName == 'MSG') {
+$("#contentmain").load("/msg");
+} else if (tabName == 'OBJ') {
+$("#contentmain").load("/object");
+} else if (tabName == 'WiFi') {
+$("#contentmain").load("/wireless");
+} else if (tabName == 'MOD') {
+$("#contentmain").load("/mod");
+} else if (tabName == 'IO') {
+$("#contentmain").load("/mod2");
+} else if (tabName == 'System') {
+$("#contentmain").load("/system");
+} else if (tabName == 'File') {
+$("#contentmain").load("/storage");
+} else if (tabName == 'About') {
+$("#contentmain").load("/about");
+} else if (tabName == 'PRIME') {
+$("#contentmain").load("/prime");
+}
+if (evt != null) evt.currentTarget.className += " active";
+}
+if (!!window.EventSource) {var source = new EventSource('/eventHeard');source.addEventListener('open', function(e) {console.log("Events Connected");}, false);source.addEventListener('error', function(e) {if (e.target.readyState != EventSource.OPEN) {console.log("Events Disconnected");}
+}, false);source.addEventListener('lastHeard', function(e) {var lh=document.getElementById("aprsTable");if(lh != null) {renderTable(e.data);}}, false);
+}if (!!window.EventSource) {var source = new EventSource('/eventMsg');source.addEventListener('open', function(e) {console.log("Events MSG Connected");}, false);source.addEventListener('error', function(e) {if (e.target.readyState != EventSource.OPEN) {console.log("Events MSG Disconnected");}
+}, false);source.addEventListener('chatMsg', function(e) {var lh=document.getElementById("chatMsg");if(lh != null) {lh.innerHTML = e.data;}}, false);
+}
+let sortDirection = {};
+let currentSortKey = "time";
+function renderTable(raw) {
+var data=JSON.parse(raw);
+lastHeardSort(data);
+document.querySelectorAll("#aprsTable th[data-sort]")
+.forEach(header => {
+header.addEventListener("click", () => {
+const key = header.dataset.sort;
+sortDirection[key] = !sortDirection[key];
+currentSortKey = key;
+clearArrows();
+const arrowSpan = header.querySelector(".arrow");
+arrowSpan.textContent = sortDirection[key] ? "▲" : "▼";
+lastHeardSort(data);
+printLastHeard(data);
+});
+});
+printLastHeard(data);
+}
+function iconFallback(imgEl, iconFile, initial) {
+  imgEl.style.display='none';
+  var span = imgEl.nextElementSibling;
+  if (!span) return;
+  span.style.display='inline-flex';
+  span.style.alignItems='center';
+  span.style.justifyContent='center';
+  var code = parseInt(iconFile.split('-')[0], 10);
+  var shapes = {
+    62: "<svg viewBox='0 0 24 24' width='18' height='18'><rect x='2' y='10' width='20' height='8' rx='2' fill='#1565c0'/><circle cx='7' cy='19' r='2' fill='#333'/><circle cx='17' cy='19' r='2' fill='#333'/></svg>",
+    45: "<svg viewBox='0 0 24 24' width='18' height='18'><polygon points='12,3 22,12 19,12 19,21 5,21 5,12 2,12' fill='#8d6e63'/></svg>",
+    35: "<svg viewBox='0 0 24 24' width='18' height='18'><polygon points='12,2 15,9 22,9 16,14 18,21 12,17 6,21 8,14 2,9 9,9' fill='#fbc02d'/></svg>",
+    95: "<svg viewBox='0 0 24 24' width='18' height='18'><ellipse cx='12' cy='13' rx='9' ry='6' fill='#90a4ae'/></svg>"
+  };
+  if (shapes[code]) {
+    span.innerHTML = shapes[code];
+  } else {
+    span.style.width='18px'; span.style.height='18px'; span.style.borderRadius='50%';
+    span.style.background='#607d8b'; span.style.color='#fff'; span.style.fontSize='11px'; span.style.fontWeight='bold';
+    span.style.display='inline-flex'; span.style.alignItems='center'; span.style.justifyContent='center';
+    span.textContent = (initial || '?').toUpperCase();
+  }
+}
+function iconError(imgEl, iconFile, initial) {
+  if (!imgEl.dataset.stage) {
+    imgEl.dataset.stage = 'local';
+    imgEl.src = '/symbols/icons/' + iconFile;
+  } else {
+    iconFallback(imgEl, iconFile, initial);
+  }
+}
+function printLastHeard(data) {
+const tableBody = document.getElementById("aprsTableBody");
+if(tableBody == null) {return;}
+tableBody.innerHTML = "";
+data.forEach(row => {
+const tr = document.createElement("tr");
+tr.innerHTML = `
+<td>${row.time}</td>
+<td><img src="http://aprs.nakhonthai.net/symbols/icons/${row.icon}" style="width:20px;height:20px;" onerror="iconError(this, '${row.icon}', '${(row.callsign||'?').charAt(0)}');"><span style="display:none;width:20px;height:20px;"></span></td>
+<td><a style="text-decoration:underline;" href="https://www.qrz.com/db/${encodeURIComponent(row.callsign.split('-')[0])}" target="_blank" rel="noopener">${row.callsign}</a> <a href="https://aprs.fi/#!z=12&call=a%2F${encodeURIComponent(row.callsign)}&timerange=3600&tail=3600" target="_blank" rel="noopener" title="Ver en aprs.fi">🗺</a></td>
+<td align="left">${row.path}</td>
+<td>${row.dx !== null ? row.dx : "-"}</td>
+<td>${row.packet}</td>
+<td style="color:green;">${row.audio !== '-' ? row.audio + "dBV" : "-"}</td>
+`;
+tableBody.appendChild(tr);
+});
+}
+function clearArrows() {
+document.querySelectorAll(".arrow").forEach(a => a.textContent = "");
+}
+function lastHeardSort(data) {
+var key=currentSortKey;
+data.sort((a, b) => {
+let valA = a[key];
+let valB = b[key];
+if (key === "time") {
+const [dayTime, timePart] = valA.split(' ');
+const [hours, minutes, seconds] = timePart.split(':');
+valA = parseInt(dayTime) * 86400 + parseInt(hours) * 3600 + parseInt(minutes) * 60 + parseInt(seconds);
+const [dayTimeB, timePartB] = valB.split(' ');
+const [hoursB, minutesB, secondsB] = timePartB.split(':');
+valB = parseInt(dayTimeB) * 86400 + parseInt(hoursB) * 3600 + parseInt(minutesB) * 60 + parseInt(secondsB);
+}
+if (valA === null) return 1;
+if (valB === null) return -1;
+if (valA < valB) return sortDirection[key] ? -1 : 1;
+if (valA > valB) return sortDirection[key] ? 1 : -1;
+return 0;
+});
+}
+</script>
+</head>
+<body onload="selectTab(event, 'DashBoard')">
+<div class="container">
+<div class="header">
+{{H1}}<div style="font-size: 8px; text-align: right; padding-right: 8px;"><a href="/logout" style="color:#d7d7d7;">[LOG OUT]</a></div>
+<div class="row">
+<ul class="nav nav-tabs" style="margin: 5px;">
+<button class="nav-tabs" onclick="selectTab(event, 'DashBoard')">DashBoard</button>
+<button class="nav-tabs" onclick="selectTab(event, 'Radio')" id="btnRadio">Radio</button>
+<button class="nav-tabs" onclick="selectTab(event, 'IGATE')">IGATE</button>
+<button class="nav-tabs" onclick="selectTab(event, 'DIGI')">DIGI</button>
+<button class="nav-tabs" onclick="selectTab(event, 'TRACKER')">TRACKER</button>
+<button class="nav-tabs" onclick="selectTab(event, 'WX')">WX</button>
+<button class="nav-tabs" onclick="selectTab(event, 'TLM')">TLM</button>
+<button class="nav-tabs" onclick="selectTab(event, 'SENSOR')">SENSOR</button>
+<button class="nav-tabs" onclick="selectTab(event, 'VPN')">VPN</button>
+{{MQTT_TAB_BTN}}<button class="nav-tabs" onclick="selectTab(event, 'MSG')">MSG</button>
+<button class="nav-tabs" onclick="selectTab(event, 'OBJ')">OBJ</button>
+<button class="nav-tabs" onclick="selectTab(event, 'WiFi')">WiFi</button>
+<button class="nav-tabs" onclick="selectTab(event, 'MOD')">MOD</button>
+<button class="nav-tabs" onclick="selectTab(event, 'IO')">I/O</button>
+<button class="nav-tabs" onclick="selectTab(event, 'System')">System</button>
+<button class="nav-tabs" onclick="selectTab(event, 'File')">File</button>
+<button class="nav-tabs" onclick="selectTab(event, 'About')">About</button>
+<button class="nav-tabs" onclick="selectTab(event, 'PRIME')">PRIME</button>
+</ul>
+</div>
+</div>
+<div class="contentwide" id="contentmain"  style="font-size: 2pt;">
+</div>
+<br />
+<div class="footer">
+AR-APRS &middot; Argentina APRS System &middot; 2027<br />
+LU6JMF &mdash; Marcelo Ferreira
+<br />
+</div>
+</div>
+<!-- <script type="text/javascript" src="/nice-select.min.js"></script> -->
+<script type="text/javascript">
+var selectize = document.querySelectorAll('select')
+var options = { searchable: true };
+selectize.forEach(function (select) {
+if (select.length > 30 && null === select.onchange && !select.name.includes("ExtendedId")) {
+select.classList.add("small", "selectize");
+tabletd = select.closest('td');
+tabletd.style.cssText = 'overflow-x:unset';
+NiceSelect.bind(select, options);
+}
+});
+</script>
+</body>
+</html>
