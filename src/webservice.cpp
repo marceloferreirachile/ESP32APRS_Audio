@@ -468,16 +468,22 @@ void setMainPage(AsyncWebServerRequest *request)
 	webString->print("$(\"#contentmain\").load(\"/radio\");\n");
 	webString->print("} else if (tabName == 'IGATE') {\n");
 	webString->print("$(\"#contentmain\").load(\"/igate\");\n");
+	webString->print("} else if (tabName == 'IGTLM') {\n");
+	webString->print("$(\"#contentmain\").load(\"/igate2\");\n");
 	webString->print("} else if (tabName == 'DIGI') {\n");
 	webString->print("$(\"#contentmain\").load(\"/digi\");\n");
 	webString->print("} else if (tabName == 'TRACKER') {\n");
 	webString->print("$(\"#contentmain\").load(\"/tracker\");\n");
 	webString->print("} else if (tabName == 'WX') {\n");
 	webString->print("$(\"#contentmain\").load(\"/wx\");\n");
+	webString->print("} else if (tabName == 'WXCH') {\n");
+	webString->print("$(\"#contentmain\").load(\"/wx2\");\n");
 	webString->print("} else if (tabName == 'TLM') {\n");
 	webString->print("$(\"#contentmain\").load(\"/tlm\");\n");
 	webString->print("} else if (tabName == 'SENSOR') {\n");
 	webString->print("$(\"#contentmain\").load(\"/sensor\");\n");
+	webString->print("} else if (tabName == 'SCFG') {\n");
+	webString->print("$(\"#contentmain\").load(\"/sensor2\");\n");
 	webString->print("} else if (tabName == 'VPN') {\n");
 	webString->print("$(\"#contentmain\").load(\"/vpn\");\n");
 #ifdef MQTT
@@ -666,13 +672,18 @@ webString->print("function printLastHeard(data) {\n");
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'WX')\">WX</button>\n");
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'TLM')\">TLM</button>\n");
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'SENSOR')\">SENSOR</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'MSG')\">MSG</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'OBJ')\">OBJ</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'WiFi')\">WiFi</button>\n");
+	webString->print("</ul>\n");
+	webString->print("<ul class=\"nav nav-tabs\" style=\"margin: 5px;\">\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'IGTLM')\">IGTLM</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'WXCH')\">WXCH</button>\n");
+	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'SCFG')\">SCFG</button>\n");
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'VPN')\">VPN</button>\n");
 #ifdef MQTT
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'MQTT')\">MQTT</button>\n");
 #endif
-	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'MSG')\">MSG</button>\n");
-	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'OBJ')\">OBJ</button>\n");
-	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'WiFi')\">WiFi</button>\n");
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'MOD')\">MOD</button>\n");
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'IO')\">I/O</button>\n");
 	webString->print("<button class=\"nav-tabs\" onclick=\"selectTab(event, 'System')\">System</button>\n");
@@ -6586,33 +6597,11 @@ static const char *IGATE_TEMPLATE =
 	"<tr><td align=\"right\"><b>PHG Text</b></td><td align=\"left\"><input name=\"texttouse\" type=\"text\" size=\"6\" style=\"background-color: rgb(97, 239, 170);\" value=\"{{phg}}\"/> <input type=\"button\" value=\"Calculate PHG\" onclick=\"javascript:calculatePHGR()\" /></td></tr>\n"
 	"</table></td>"
 	"</tr>\n"
-	"<tr>\n"
-	"<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n"
-	"<td align=\"center\"><table>\n"
-	"<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"igateTlmInv\" name=\"igateTlmInv\" type=\"number\" value=\"{{tlmInterval}}\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>"
-	"{{#each tlmChannels}}<tr><td align=\"right\"><b>CH A{{num}}:</b></td>\n"
-	"<td align=\"center\">\n"
-	"<table>"
-	"<tr><td style=\"text-align: right;\">Sensor:</td>\n"
-	"<td style=\"text-align: left;\">CH: "
-	"<select name=\"sensorCH{{idx}}\" id=\"sensorCH{{idx}}\">\n"
-	"{{#each sensorOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
-	"{{/each}}"
-	"</select></td>\n"
-	"<td style=\"text-align: left;\">Name: <input maxlength=\"10\" size=\"8\" name=\"param{{idx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
-	"<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{idx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
-	"<td style=\"text-align: left;\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision{{idx}}\" type=\"text\" value=\"{{precision}}\" onchange=\"selPrecision({{idx}})\"/></td></tr>\n"
-	"<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}a\" type=\"number\" value=\"{{eqnsA}}\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}b\" type=\"number\" value=\"{{eqnsB}}\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}c\" type=\"number\" value=\"{{eqnsC}}\" /> (av<sup>2</sup>+bv+c) </td>\n"
-	"<td style=\"text-align: left;\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset{{idx}}\" type=\"text\" value=\"{{offset}}\" onchange=\"selOffset({{idx}})\"/></td></tr>\n"
-	"</table></td>"
-	"</tr>\n"
-	"{{/each}}"
-	"</table></td></tr>\n"
 	"<tr><td colspan=\"2\" align=\"right\">\n"
 	"<div><button class=\"button\" type='submit' id='submitIGATE'  name=\"commitIGATE\"> Apply Change </button></div>\n"
 	"<input type=\"hidden\" name=\"commitIGATE\"/>\n"
 	"</td></tr></table><br />\n"
-	"</form><br /><br />"
+	"</form><br />\n"
 	"<form id='formIgateFilter' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
 	"<table>\n"
 	"<th colspan=\"2\"><span><b>[IGATE] Filter</b></span></th>\n"
@@ -6656,6 +6645,74 @@ static const char *IGATE_TEMPLATE =
 	"<tr><td colspan=\"2\" align=\"right\">\n"
 	"<div><button class=\"button\" type='submit' id='submitIGATEfilter'  name=\"commitIGATEfilter\"> Apply Change </button></div>\n"
 	"<input type=\"hidden\" name=\"commitIGATEfilter\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form><br />\n"
+	"<div style=\"margin:8px 0;padding:6px;background:#fff3cd;border:1px solid #ffe69c;font-size:9pt;\">Telemetry channels moved to their own page - see the <b>IGTLM</b> tab.</div>\n";
+
+// LU6JMF - Marcelo Ferreira (Set/2026): Telemetry split out of the IGATE page
+// into its own page/tab (RF2INET/INET2RF Filter moved back into IGATE_TEMPLATE
+// per user request - only Telemetry, which has the heavier 5-channel loop,
+// stays isolated here). Same commitIGATETlm POST contract as before.
+static const char *IGATE2_TEMPLATE =
+	"<script type=\"text/javascript\">\n"
+	"$('form').submit(function (e) {\n"
+	"e.preventDefault();\n"
+	"var data = new FormData(e.currentTarget);\n"
+	"if(e.currentTarget.id===\"formIgateTlm\") document.getElementById(\"submitIGATETlm\").disabled=true;\n"
+	"$.ajax({\n"
+	"url: '/igate2',\n"
+	"type: 'POST',\n"
+	"data: data,\n"
+	"contentType: false,\n"
+	"processData: false,\n"
+	"success: function (data) {\n"
+	"alert(\"Submited Successfully\");\n"
+	"},\n"
+	"error: function (data) {\n"
+	"alert(\"An error occurred.\");\n"
+	"}\n"
+	"});\n"
+	"});\n"
+	"</script>\n<script type=\"text/javascript\">\n"
+	"function selPrecision(idx) {\n"
+	"var x=0;\n"
+	"x = document.getElementsByName(\"precision\"+idx)[0].value;\n"
+	"document.getElementsByName(\"eqns\"+idx+\"b\")[0].value=1/Math.pow(10,x);\n"
+	"}\n"
+	"function selOffset(idx) {\n"
+	"var x=0;\n"
+	"x = document.getElementsByName(\"offset\"+idx)[0].value;\n"
+	"document.getElementsByName(\"eqns\"+idx+\"c\")[0].value=x*(-1);\n"
+	"}\n"
+	"</script>\n"
+	"<form id='formIgateTlm' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>[IGATE] Telemetry</b></span></th>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n"
+	"<td align=\"center\"><table>\n"
+	"<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"igateTlmInv\" name=\"igateTlmInv\" type=\"number\" value=\"{{tlmInterval}}\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>"
+	"{{#each tlmChannels}}<tr><td align=\"right\"><b>CH A{{num}}:</b></td>\n"
+	"<td align=\"center\">\n"
+	"<table>"
+	"<tr><td style=\"text-align: right;\">Sensor:</td>\n"
+	"<td style=\"text-align: left;\">CH: "
+	"<select name=\"sensorCH{{idx}}\" id=\"sensorCH{{idx}}\">\n"
+	"{{#each sensorOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
+	"{{/each}}"
+	"</select></td>\n"
+	"<td style=\"text-align: left;\">Name: <input maxlength=\"10\" size=\"8\" name=\"param{{idx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
+	"<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{idx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
+	"<td style=\"text-align: left;\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision{{idx}}\" type=\"text\" value=\"{{precision}}\" onchange=\"selPrecision({{idx}})\"/></td></tr>\n"
+	"<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}a\" type=\"number\" value=\"{{eqnsA}}\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}b\" type=\"number\" value=\"{{eqnsB}}\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}c\" type=\"number\" value=\"{{eqnsC}}\" /> (av<sup>2</sup>+bv+c) </td>\n"
+	"<td style=\"text-align: left;\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset{{idx}}\" type=\"text\" value=\"{{offset}}\" onchange=\"selOffset({{idx}})\"/></td></tr>\n"
+	"</table></td>"
+	"</tr>\n"
+	"{{/each}}"
+	"</table></td></tr>\n"
+	"<tr><td colspan=\"2\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitIGATETlm'  name=\"commitIGATETlm\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitIGATETlm\"/>\n"
 	"</td></tr></table><br />\n"
 	"</form><br />";
 
@@ -6895,62 +6952,6 @@ config.igate_phg[sizeof(config.igate_phg) - 1] = 0;
 						timeStamp = true;
 				}
 			}
-			if (request->argName(i) == "igateTlmInv")
-			{
-				if (request->arg(i) != "")
-				{
-					if (isValidNumber(request->arg(i)))
-						config.igate_tlm_interval = request->arg(i).toInt();
-				}
-			}
-
-			String arg;
-			for (int x = 0; x < 5; x++)
-			{
-				arg = "sensorCH" + String(x);
-				if (request->argName(i) == arg)
-				{
-					if (isValidNumber(request->arg(i)))
-						config.igate_tlm_sensor[x] = request->arg(i).toInt();
-				}
-				arg = "param" + String(x);
-				if (request->argName(i) == arg)
-				{
-					if (request->arg(i) != "")
-					{
-						strcpy(config.igate_tlm_PARM[x], request->arg(i).c_str());
-					}
-				}
-				arg = "unit" + String(x);
-				if (request->argName(i) == arg)
-				{
-					if (request->arg(i) != "")
-					{
-						strcpy(config.igate_tlm_UNIT[x], request->arg(i).c_str());
-					}
-				}
-				arg = "precision" + String(x);
-				if (request->argName(i) == arg)
-				{
-					if (isValidNumber(request->arg(i)))
-						config.igate_tlm_precision[x] = request->arg(i).toInt();
-				}
-				arg = "offset" + String(x);
-				if (request->argName(i) == arg)
-				{
-					if (isValidNumber(request->arg(i)))
-						config.igate_tlm_offset[x] = request->arg(i).toFloat();
-				}
-				for (int y = 0; y < 3; y++)
-				{
-					arg = "eqns" + String(x) + String((char)(y + 'a'));
-					if (request->argName(i) == arg)
-					{
-						if (isValidNumber(request->arg(i)))
-							config.igate_tlm_EQNS[x][y] = request->arg(i).toFloat();
-					}
-				}
-			}
 		}
 
 		// waitISRetry = millis() + 10000; // Retry connect 5Sec
@@ -7166,8 +7167,8 @@ config.igate_phg[sizeof(config.igate_phg) - 1] = 0;
 	else
 	{
 		esp_task_wdt_reset(); // feed watchdog: handle_igate runs on the async_tcp task itself,
-		// and this is the largest/most complex RF page (5 TLM channels, 2 filter fieldsets,
-		// 35-45KB fixed HTML alone) - can take long enough under heap pressure to trip the TWDT.
+		// this is still a large RF page even without Telemetry (moved to handle_igate2) -
+		// can take long enough under heap pressure to trip the TWDT.
 		JsonDocument data;
 		data["enabled"] = config.igate_en;
 		data["myCall"] = config.aprs_mycall;
@@ -7233,6 +7234,151 @@ config.igate_phg[sizeof(config.igate_phg) - 1] = 0;
 
 		data["phg"] = config.igate_phg;
 
+		data["rf2inetGrpDisabled"] = !config.rf2inet;
+		data["rf2inetMsg"] = (config.rf2inetFilter & FILTER_MESSAGE) != 0;
+		data["rf2inetStatus"] = (config.rf2inetFilter & FILTER_STATUS) != 0;
+		data["rf2inetTlm"] = (config.rf2inetFilter & FILTER_TELEMETRY) != 0;
+		data["rf2inetWx"] = (config.rf2inetFilter & FILTER_WX) != 0;
+		data["rf2inetObj"] = (config.rf2inetFilter & FILTER_OBJECT) != 0;
+		data["rf2inetItem"] = (config.rf2inetFilter & FILTER_ITEM) != 0;
+		data["rf2inetQuery"] = (config.rf2inetFilter & FILTER_QUERY) != 0;
+		data["rf2inetBuoy"] = (config.rf2inetFilter & FILTER_BUOY) != 0;
+		data["rf2inetPos"] = (config.rf2inetFilter & FILTER_POSITION) != 0;
+		data["rf2inetAll"] = (config.rf2inetFilter & FILTER_ENABLE_ALL) != 0;
+
+		data["inet2rfGrpDisabled"] = !config.inet2rf;
+		data["inet2rfMsg"] = (config.inet2rfFilter & FILTER_MESSAGE) != 0;
+		data["inet2rfStatus"] = (config.inet2rfFilter & FILTER_STATUS) != 0;
+		data["inet2rfTlm"] = (config.inet2rfFilter & FILTER_TELEMETRY) != 0;
+		data["inet2rfWx"] = (config.inet2rfFilter & FILTER_WX) != 0;
+		data["inet2rfObj"] = (config.inet2rfFilter & FILTER_OBJECT) != 0;
+		data["inet2rfItem"] = (config.inet2rfFilter & FILTER_ITEM) != 0;
+		data["inet2rfQuery"] = (config.inet2rfFilter & FILTER_QUERY) != 0;
+		data["inet2rfBuoy"] = (config.inet2rfFilter & FILTER_BUOY) != 0;
+		data["inet2rfPos"] = (config.inet2rfFilter & FILTER_POSITION) != 0;
+
+		// Telemetry (tlmChannels) data moved to handle_igate2() - no longer
+		// needed here, IGATE_TEMPLATE doesn't reference those keys anymore.
+
+		// Page content (IGATE form + Filter form; Telemetry form moved to
+		// handle_igate2/IGATE2_TEMPLATE) is smaller than before the original
+		// split, but still sizeable - keep the generous reserve in line with
+		// the other large pages that work reliably at this scale (MOD=55000,
+		// System=48000).
+		log_e("[IGATE] before alloc: freeHeap=%u largestFreeBlock=%u", ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+		esp_task_wdt_reset();
+		delay(1);
+		String html_str = renderTemplate(IGATE_TEMPLATE, data.as<JsonVariant>());
+		// Streamed response: avoids a single large calloc() for the whole page.
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+		// instead of requiring one big contiguous heap block up front - this was
+		// the reproducible trigger for a heap corruption assert (block_trim_free)
+		// under real traffic, confirmed via heap-integrity diagnostics.
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
+		if (!html)
+		{
+			request->send(500, "text/html", "Memory allocation failed");
+			return;
+		}
+		html->print(html_str);
+		html->addHeader("IGATE", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
+	}
+}
+
+// LU6JMF - Marcelo Ferreira (Set/2026): Telemetry split out of handle_igate()
+// into its own page/handler (see IGATE2_TEMPLATE above). RF2INET/INET2RF
+// Filter handling moved back into handle_igate() per user request - only
+// Telemetry stays here. Same commitIGATETlm POST contract as before.
+void handle_igate2(AsyncWebServerRequest *request)
+{
+	if (!request->authenticate(config.http_username, config.http_password))
+	{
+		return request->requestAuthentication();
+	}
+	StandByTick = millis() + (config.pwr_stanby_delay * 1000);
+
+	if (request->hasArg("commitIGATETlm"))
+	{
+		for (int i = 0; i < request->args(); i++)
+		{
+			if (request->argName(i) == "igateTlmInv")
+			{
+				if (request->arg(i) != "")
+				{
+					if (isValidNumber(request->arg(i)))
+						config.igate_tlm_interval = request->arg(i).toInt();
+				}
+			}
+
+			String arg;
+			for (int x = 0; x < 5; x++)
+			{
+				arg = "sensorCH" + String(x);
+				if (request->argName(i) == arg)
+				{
+					if (isValidNumber(request->arg(i)))
+						config.igate_tlm_sensor[x] = request->arg(i).toInt();
+				}
+				arg = "param" + String(x);
+				if (request->argName(i) == arg)
+				{
+					if (request->arg(i) != "")
+					{
+						strcpy(config.igate_tlm_PARM[x], request->arg(i).c_str());
+					}
+				}
+				arg = "unit" + String(x);
+				if (request->argName(i) == arg)
+				{
+					if (request->arg(i) != "")
+					{
+						strcpy(config.igate_tlm_UNIT[x], request->arg(i).c_str());
+					}
+				}
+				arg = "precision" + String(x);
+				if (request->argName(i) == arg)
+				{
+					if (isValidNumber(request->arg(i)))
+						config.igate_tlm_precision[x] = request->arg(i).toInt();
+				}
+				arg = "offset" + String(x);
+				if (request->argName(i) == arg)
+				{
+					if (isValidNumber(request->arg(i)))
+						config.igate_tlm_offset[x] = request->arg(i).toFloat();
+				}
+				for (int y = 0; y < 3; y++)
+				{
+					arg = "eqns" + String(x) + String((char)(y + 'a'));
+					if (request->argName(i) == arg)
+					{
+						if (isValidNumber(request->arg(i)))
+							config.igate_tlm_EQNS[x][y] = request->arg(i).toFloat();
+					}
+				}
+			}
+		}
+
+		String html;
+		if (saveConfiguration("/default.cfg", config))
+		{
+			html = "Setup completed successfully";
+			request->send(200, "text/html", html); // send to someones browser when asked
+		}
+		else
+		{
+			html = "Save config failed.";
+			request->send(501, "text/html", html); // Not Implemented
+		}
+	}
+	else
+	{
+		esp_task_wdt_reset();
+		JsonDocument data;
+		char buf[32];
+
 		data["tlmInterval"] = config.igate_tlm_interval;
 
 		JsonArray tlmChannels = data["tlmChannels"].to<JsonArray>();
@@ -7264,46 +7410,7 @@ config.igate_phg[sizeof(config.igate_phg) - 1] = 0;
 		}
 
 		esp_task_wdt_reset();
-		data["rf2inetGrpDisabled"] = !config.rf2inet;
-		data["rf2inetMsg"] = (config.rf2inetFilter & FILTER_MESSAGE) != 0;
-		data["rf2inetStatus"] = (config.rf2inetFilter & FILTER_STATUS) != 0;
-		data["rf2inetTlm"] = (config.rf2inetFilter & FILTER_TELEMETRY) != 0;
-		data["rf2inetWx"] = (config.rf2inetFilter & FILTER_WX) != 0;
-		data["rf2inetObj"] = (config.rf2inetFilter & FILTER_OBJECT) != 0;
-		data["rf2inetItem"] = (config.rf2inetFilter & FILTER_ITEM) != 0;
-		data["rf2inetQuery"] = (config.rf2inetFilter & FILTER_QUERY) != 0;
-		data["rf2inetBuoy"] = (config.rf2inetFilter & FILTER_BUOY) != 0;
-		data["rf2inetPos"] = (config.rf2inetFilter & FILTER_POSITION) != 0;
-		data["rf2inetAll"] = (config.rf2inetFilter & FILTER_ENABLE_ALL) != 0;
-
-		data["inet2rfGrpDisabled"] = !config.inet2rf;
-		data["inet2rfMsg"] = (config.inet2rfFilter & FILTER_MESSAGE) != 0;
-		data["inet2rfStatus"] = (config.inet2rfFilter & FILTER_STATUS) != 0;
-		data["inet2rfTlm"] = (config.inet2rfFilter & FILTER_TELEMETRY) != 0;
-		data["inet2rfWx"] = (config.inet2rfFilter & FILTER_WX) != 0;
-		data["inet2rfObj"] = (config.inet2rfFilter & FILTER_OBJECT) != 0;
-		data["inet2rfItem"] = (config.inet2rfFilter & FILTER_ITEM) != 0;
-		data["inet2rfQuery"] = (config.inet2rfFilter & FILTER_QUERY) != 0;
-		data["inet2rfBuoy"] = (config.inet2rfFilter & FILTER_BUOY) != 0;
-		data["inet2rfPos"] = (config.inet2rfFilter & FILTER_POSITION) != 0;
-
-		// Page content (IGATE form + IGATE Filter form, incl. 5x telemetry channel
-		// blocks) measures ~35-45KB of fixed HTML alone before variable values are
-		// substituted in - too close to the old 44000 reserve, forcing late
-		// resizeAdd() growth mid-stream under heap pressure and silently truncating
-		// the response (missing Apply button/filter form). Raised to 60000, in line
-		// with the other large pages that already work reliably at this scale
-		// (MOD=55000, System=48000) - still well under the size that previously
-		// triggered the block_trim_free heap corruption, so the earlier fix holds.
-		log_e("[IGATE] before alloc: freeHeap=%u largestFreeBlock=%u", ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-		esp_task_wdt_reset();
-		delay(1);
-		String html_str = renderTemplate(IGATE_TEMPLATE, data.as<JsonVariant>());
-		// Streamed response: avoids a single large calloc() for the whole page.
-		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		// instead of requiring one big contiguous heap block up front - this was
-		// the reproducible trigger for a heap corruption assert (block_trim_free)
-		// under real traffic, confirmed via heap-integrity diagnostics.
+		String html_str = renderTemplate(IGATE2_TEMPLATE, data.as<JsonVariant>());
 		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
 		if (!html)
 		{
@@ -7311,7 +7418,7 @@ config.igate_phg[sizeof(config.igate_phg) - 1] = 0;
 			return;
 		}
 		html->print(html_str);
-		html->addHeader("IGATE", "content");
+		html->addHeader("IGATETlm", "content");
 		html->addHeader("Cache-Control", "no-cache");
 		request->send(html);
 	}
@@ -8090,6 +8197,42 @@ static const char *WX_TEMPLATE =
 	"<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" name=\"PosAlt\" type=\"number\" value=\"{{alt}}\" /> meter. *The altitude in meters(m) above sea level</td></tr>\n"
 	"</table></td>"
 	"</tr>\n"
+	"<tr><td colspan=\"2\" align=\"right\">\n"
+	"<div><button class=\"button\" type='submit' id='submitWX'  name=\"commitWX\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitWX\"/>\n"
+	"</td></tr></table><br />\n"
+	"</form><br />\n"
+	"<div style=\"margin:8px 0;padding:6px;background:#fff3cd;border:1px solid #ffe69c;font-size:9pt;\">Sensor channel mapping (26 channels) moved to its own page - see the <b>WXCH</b> tab.</div>\n";
+
+// LU6JMF - Marcelo Ferreira (Set/2026): Sensor channel mapping (26 channels)
+// split out of the WX page into its own page/tab. Same senEn{idx}/sensorCH{idx}/
+// avgSel{idx} POST contract as before, just no longer competing with the rest
+// of the WX page for space/heap (this was the worst offender of the three
+// split pages - WX_SENSOR_NUM=26 rows, each with an 11-option nested select).
+static const char *WX2_TEMPLATE =
+	"<script type=\"text/javascript\">\n"
+	"$('form').submit(function (e) {\n"
+	"e.preventDefault();\n"
+	"var data = new FormData(e.currentTarget);\n"
+	"document.getElementById(\"submitWXch\").disabled=true;\n"
+	"$.ajax({\n"
+	"url: '/wx2',\n"
+	"type: 'POST',\n"
+	"data: data,\n"
+	"contentType: false,\n"
+	"processData: false,\n"
+	"success: function (data) {\n"
+	"alert(\"Submited Successfully\");\n"
+	"},\n"
+	"error: function (data) {\n"
+	"alert(\"An error occurred.\");\n"
+	"}\n"
+	"});\n"
+	"});\n"
+	"</script>\n"
+	"<form id='formWXch' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
+	"<table>\n"
+	"<th colspan=\"2\"><span><b>[WX] Sensor Channel Mapping</b></span></th>\n"
 	"<tr><td align=\"right\"><b>SENSOR:<br />Selection</b></td>\n"
 	"<td align=\"center\">\n"
 	"<table>"
@@ -8106,8 +8249,8 @@ static const char *WX_TEMPLATE =
 	"{{/each}}"
 	"</table></td></tr>\n"
 	"<tr><td colspan=\"2\" align=\"right\">\n"
-	"<div><button class=\"button\" type='submit' id='submitWX'  name=\"commitWX\"> Apply Change </button></div>\n"
-	"<input type=\"hidden\" name=\"commitWX\"/>\n"
+	"<div><button class=\"button\" type='submit' id='submitWXch'  name=\"commitWXch\"> Apply Change </button></div>\n"
+	"<input type=\"hidden\" name=\"commitWXch\"/>\n"
 	"</td></tr></table><br />\n"
 	"</form><br />";
 
@@ -8124,13 +8267,9 @@ void handle_wx(AsyncWebServerRequest *request)
 	bool pos2RF = false;
 	bool pos2INET = false;
 	bool timeStamp = false;
-	String arg = "";
 
 	if (request->hasArg("commitWX"))
 	{
-		for (int x = 0; x < WX_SENSOR_NUM; x++)
-			config.wx_sensor_enable[x] = false;
-
 		for (int i = 0; i < request->args(); i++)
 		{
 			if (request->argName(i) == "Enable")
@@ -8267,36 +8406,6 @@ void handle_wx(AsyncWebServerRequest *request)
 						timeStamp = true;
 				}
 			}
-			for (int x = 0; x < WX_SENSOR_NUM; x++)
-			{
-				arg = "senEn" + String(x);
-				if (request->argName(i) == arg)
-				{
-
-					if (request->arg(i) != "")
-					{
-						if (String(request->arg(i)) == "OK")
-							config.wx_sensor_enable[x] = true;
-					}
-				}
-				arg = "sensorCH" + String(x);
-				if (request->argName(i) == arg)
-				{
-					if (isValidNumber(request->arg(i)))
-						config.wx_sensor_ch[x] = request->arg(i).toInt();
-				}
-				arg = "avgSel" + String(x);
-				if (request->argName(i) == arg)
-				{
-					if (request->arg(i) != "")
-					{
-						if (request->arg(i).toInt() == 1)
-							config.wx_sensor_avg[x] = true;
-						else if (request->arg(i).toInt() == 0)
-							config.wx_sensor_avg[x] = false;
-					}
-				}
-			}
 		}
 		config.wx_en = En;
 		config.wx_gps = posGPS;
@@ -8360,6 +8469,90 @@ void handle_wx(AsyncWebServerRequest *request)
 		snprintf(buf, sizeof(buf), "%.2f", config.wx_alt);
 		data["alt"] = buf;
 
+		log_e("[WX] before alloc: freeHeap=%u largestFreeBlock=%u", ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+		esp_task_wdt_reset();
+		String html_str = renderTemplate(WX_TEMPLATE, data.as<JsonVariant>());
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
+		if (!html)
+		{
+			request->send(500, "text/html", "Memory allocation failed");
+			return;
+		}
+		html->print(html_str);
+		html->addHeader("Weather", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
+	}
+}
+
+// LU6JMF - Marcelo Ferreira (Set/2026): Sensor channel mapping (26 channels)
+// split out of handle_wx() into their own page/handler (see WX2_TEMPLATE
+// above). Same senEn{idx}/sensorCH{idx}/avgSel{idx} POST contract as before.
+void handle_wx2(AsyncWebServerRequest *request)
+{
+	if (!request->authenticate(config.http_username, config.http_password))
+	{
+		return request->requestAuthentication();
+	}
+	StandByTick = millis() + (config.pwr_stanby_delay * 1000);
+
+	if (request->hasArg("commitWXch"))
+	{
+		for (int x = 0; x < WX_SENSOR_NUM; x++)
+			config.wx_sensor_enable[x] = false;
+
+		String arg;
+		for (int i = 0; i < request->args(); i++)
+		{
+			for (int x = 0; x < WX_SENSOR_NUM; x++)
+			{
+				arg = "senEn" + String(x);
+				if (request->argName(i) == arg)
+				{
+					if (request->arg(i) != "")
+					{
+						if (String(request->arg(i)) == "OK")
+							config.wx_sensor_enable[x] = true;
+					}
+				}
+				arg = "sensorCH" + String(x);
+				if (request->argName(i) == arg)
+				{
+					if (isValidNumber(request->arg(i)))
+						config.wx_sensor_ch[x] = request->arg(i).toInt();
+				}
+				arg = "avgSel" + String(x);
+				if (request->argName(i) == arg)
+				{
+					if (request->arg(i) != "")
+					{
+						if (request->arg(i).toInt() == 1)
+							config.wx_sensor_avg[x] = true;
+						else if (request->arg(i).toInt() == 0)
+							config.wx_sensor_avg[x] = false;
+					}
+				}
+			}
+		}
+
+		String html_msg;
+		if (saveConfiguration("/default.cfg", config))
+		{
+			html_msg = "Setup completed successfully";
+			request->send(200, "text/html", html_msg); // send to someones browser when asked
+		}
+		else
+		{
+			html_msg = "Save config failed.";
+			request->send(501, "text/html", html_msg); // Not Implemented
+		}
+	}
+	else
+	{
+		esp_task_wdt_reset(); // feed watchdog: handle_wx2 runs on the async_tcp task itself,
+		// same class of page as MSG/IGATE/DIGI (per-sensor channel selects, WX_SENSOR_NUM rows).
+		JsonDocument data;
+
 		JsonArray sensors = data["sensors"].to<JsonArray>();
 		for (int ax = 0; ax < WX_SENSOR_NUM; ax++)
 		{
@@ -8379,9 +8572,9 @@ void handle_wx(AsyncWebServerRequest *request)
 			}
 		}
 
-		log_e("[WX] before alloc: freeHeap=%u largestFreeBlock=%u", ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+		log_e("[WX2] before alloc: freeHeap=%u largestFreeBlock=%u", ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 		esp_task_wdt_reset();
-		String html_str = renderTemplate(WX_TEMPLATE, data.as<JsonVariant>());
+		String html_str = renderTemplate(WX2_TEMPLATE, data.as<JsonVariant>());
 		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
 		if (!html)
 		{
@@ -8389,7 +8582,7 @@ void handle_wx(AsyncWebServerRequest *request)
 			return;
 		}
 		html->print(html_str);
-		html->addHeader("Weather", "content");
+		html->addHeader("WeatherCh", "content");
 		html->addHeader("Cache-Control", "no-cache");
 		request->send(html);
 	}
@@ -8757,13 +8950,34 @@ void handle_tlm(AsyncWebServerRequest *request)
 extern TaskHandle_t taskSensorHandle;
 
 static const char *SENSOR_TEMPLATE =
+	"<table>\n"
+	"<th colspan=\"5\"><span><b>Sensor Monitor</b></span></th>\n"
+	"{{#each monitorRows}}<tr>\n"
+	"{{#each this}}<td align=\"center\">\n"
+	"<fieldset id=\"SenGrp{{idx}}\" {{#if enabled}}{{else}}disabled{{/if}}>\n"
+	"<legend>{{legend}}</legend>\n"
+	"<input id=\"sVal{{idx}}\" style=\"text-align:right;\" size=\"5\" type=\"text\" value=\"{{value}}\" readonly/> {{unit}}\n"
+	"</fieldset>\n"
+	"</td>\n"
+	"{{/each}}"
+	"</tr>\n"
+	"{{/each}}"
+	"</table><br />\n"
+	"<div style=\"margin:8px 0;padding:6px;background:#fff3cd;border:1px solid #ffe69c;font-size:9pt;\">Sensor configuration (10 channels) moved to its own page - see the <b>SCFG</b> tab.</div>\n";
+
+// LU6JMF - Marcelo Ferreira (Set/2026): Sensor configuration (10 channels)
+// split out of the SENSOR page into its own page/tab. Same En{idx}/sensorCH{idx}/
+// sensorP{idx}/address{idx}/sample{idx}/avg{idx}/param{idx}/unit{idx}/eqns{idx}{a,b,c}
+// POST contract as before, just no longer competing with the live Sensor
+// Monitor table for space/heap.
+static const char *SENSOR2_TEMPLATE =
 	"<script type=\"text/javascript\">\n"
 	"$('form').submit(function (e) {\n"
 	"e.preventDefault();\n"
 	"var data = new FormData(e.currentTarget);\n"
 	"document.getElementById(\"submitSENSOR\").disabled=true;\n"
 	"$.ajax({\n"
-	"url: '/sensor',\n"
+	"url: '/sensor2',\n"
 	"type: 'POST',\n"
 	"data: data,\n"
 	"contentType: false,\n"
@@ -8856,18 +9070,6 @@ static const char *SENSOR_TEMPLATE =
 	"document.getElementById(\"address\"+idx).value=0;\n"
 	"}\n}\n"
 	"</script>\n"
-	"<table>\n"
-	"<th colspan=\"5\"><span><b>Sensor Monitor</b></span></th>\n"
-	"{{#each monitorRows}}<tr>\n"
-	"{{#each this}}<td align=\"center\">\n"
-	"<fieldset id=\"SenGrp{{idx}}\" {{#if enabled}}{{else}}disabled{{/if}}>\n"
-	"<legend>{{legend}}</legend>\n"
-	"<input id=\"sVal{{idx}}\" style=\"text-align:right;\" size=\"5\" type=\"text\" value=\"{{value}}\" readonly/> {{unit}}\n"
-	"</td>\n"
-	"{{/each}}"
-	"</tr>\n"
-	"{{/each}}"
-	"</table>< /br>\n"
 	"<form id='formSENSOR' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
 	"<table>\n"
 	"<th colspan=\"2\"><span><b>Sensor Config</b></span></th>\n"
@@ -8922,6 +9124,63 @@ static const char *SENSOR_TEMPLATE =
 	"</script>\n";
 
 void handle_sensor(AsyncWebServerRequest *request)
+{
+	if (!request->authenticate(config.http_username, config.http_password))
+	{
+		return request->requestAuthentication();
+	}
+	StandByTick = millis() + (config.pwr_stanby_delay * 1000);
+
+	{
+		JsonDocument data;
+
+		JsonArray monitorRows = data["monitorRows"].to<JsonArray>();
+		{
+			int ax = 0;
+			for (int r = 0; r < 3; r++)
+			{
+				JsonArray row = monitorRows.add<JsonArray>();
+				for (int c = 0; c < 5; c++)
+				{
+					JsonObject cell = row.add<JsonObject>();
+					cell["idx"] = ax;
+					cell["enabled"] = config.sensor[ax].enable;
+					cell["legend"] = "SEN#" + String(ax + 1) + "-" + String(config.sensor[ax].parm);
+					char buf[24];
+					snprintf(buf, sizeof(buf), "%.2f", sen[ax].sample);
+					cell["value"] = buf;
+					cell["unit"] = config.sensor[ax].unit;
+					ax++;
+					if (ax >= SENSOR_NUMBER)
+						break;
+				}
+				if (ax >= SENSOR_NUMBER)
+					break;
+			}
+		}
+
+		log_e("[SENSOR] before alloc: freeHeap=%u largestFreeBlock=%u", ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+		esp_task_wdt_reset();
+		String html_str = renderTemplate(SENSOR_TEMPLATE, data.as<JsonVariant>());
+		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
+		if (!html)
+		{
+			request->send(500, "text/html", "Memory allocation failed");
+			return;
+		}
+		html->print(html_str);
+		html->addHeader("Sensor", "content");
+		html->addHeader("Cache-Control", "no-cache");
+		request->send(html);
+	}
+}
+
+// LU6JMF - Marcelo Ferreira (Set/2026): Sensor configuration (10 channels)
+// split out of handle_sensor() into their own page/handler (see SENSOR2_TEMPLATE
+// above). Same En{idx}/sensorCH{idx}/sensorP{idx}/address{idx}/sample{idx}/
+// avg{idx}/param{idx}/unit{idx}/eqns{idx}{a,b,c} POST contract as before.
+void handle_sensor2(AsyncWebServerRequest *request)
 {
 	if (!request->authenticate(config.http_username, config.http_password))
 	{
@@ -9035,31 +9294,6 @@ void handle_sensor(AsyncWebServerRequest *request)
 		data["beamS3"] = false;
 #endif
 
-		JsonArray monitorRows = data["monitorRows"].to<JsonArray>();
-		{
-			int ax = 0;
-			for (int r = 0; r < 3; r++)
-			{
-				JsonArray row = monitorRows.add<JsonArray>();
-				for (int c = 0; c < 5; c++)
-				{
-					JsonObject cell = row.add<JsonObject>();
-					cell["idx"] = ax;
-					cell["enabled"] = config.sensor[ax].enable;
-					cell["legend"] = "SEN#" + String(ax + 1) + "-" + String(config.sensor[ax].parm);
-					char buf[24];
-					snprintf(buf, sizeof(buf), "%.2f", sen[ax].sample);
-					cell["value"] = buf;
-					cell["unit"] = config.sensor[ax].unit;
-					ax++;
-					if (ax >= SENSOR_NUMBER)
-						break;
-				}
-				if (ax >= SENSOR_NUMBER)
-					break;
-			}
-		}
-
 		JsonArray sensorConfigs = data["sensorConfigs"].to<JsonArray>();
 		for (int ax = 0; ax < SENSOR_NUMBER; ax++)
 		{
@@ -9098,10 +9332,9 @@ void handle_sensor(AsyncWebServerRequest *request)
 			s["port"] = config.sensor[i].port;
 		}
 
-		log_e("[SENSOR] before alloc: freeHeap=%u largestFreeBlock=%u", ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-		esp_task_wdt_reset();
-		String html_str = renderTemplate(SENSOR_TEMPLATE, data.as<JsonVariant>());
-		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
+		log_e("[SENSOR2] before alloc: freeHeap=%u largestFreeBlock=%u", ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+		esp_task_wdt_reset(); // feed watchdog: handle_sensor2 runs on the async_tcp task itself
+		String html_str = renderTemplate(SENSOR2_TEMPLATE, data.as<JsonVariant>());
 		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
 		if (!html)
 		{
@@ -9109,7 +9342,7 @@ void handle_sensor(AsyncWebServerRequest *request)
 			return;
 		}
 		html->print(html_str);
-		html->addHeader("Sensor", "content");
+		html->addHeader("SensorCfg", "content");
 		html->addHeader("Cache-Control", "no-cache");
 		request->send(html);
 	}
@@ -12183,16 +12416,22 @@ void webService()
 					{ handle_default(); });
 	async_server.on("/igate", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_igate(request); });
+	async_server.on("/igate2", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
+					{ handle_igate2(request); });
 	async_server.on("/digi", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_digi(request); });
 	async_server.on("/tracker", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_tracker(request); });
 	async_server.on("/wx", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_wx(request); });
+	async_server.on("/wx2", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
+					{ handle_wx2(request); });
 	async_server.on("/tlm", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_tlm(request); });
 	async_server.on("/sensor", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_sensor(request); });
+	async_server.on("/sensor2", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
+					{ handle_sensor2(request); });
 	async_server.on("/system", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_system(request); });
 	async_server.on("/wireless", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
