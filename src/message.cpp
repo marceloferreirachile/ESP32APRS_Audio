@@ -17,6 +17,159 @@ extern Configuration config;
 extern SemaphoreHandle_t psramMutex;
 extern bool psramLock(TickType_t timeout = portMAX_DELAY);
 extern void psramUnlock();
+extern ParseAPRS aprsParse;
+extern statusType status;
+
+// ===== LU6JMF - Marcelo Ferreira (Oct/2026) =====
+// APRS Query feature: ?APRSV/?VER/?ABOUT, ?IGATE, ?DX
+// Reference: "APRS Queries, Information Exchange & Groups" (SA7SKY, APRS-Queries.pdf)
+// Only the queries that make sense for a digipeater (no own weather/voice/email
+// features) were implemented: version/uptime, igate activity, and a DX record
+// (farthest station heard with position in the last hour).
+
+typedef struct
+{
+    char callsign[12];
+    double distance; // km
+    double bearing;  // degrees
+    time_t heardAt;
+} dxRecordType;
+
+static dxRecordType dxRecord = {"", 0, 0, 0};
+static bool dxRecordValid = false;
+static time_t dxWindowStart = 0;
+
+// Called once per received RF packet (any type) so ?DX can report the
+// farthest station heard with a valid position in the last hour, without
+// needing a full persistent heard-station table.
+void dxRecordTrackPacket(const char *callsign, const String &tnc2)
+{
+    if (tnc2.length() < 10 || tnc2.length() >= 300)
+        return;
+
+    struct pbuf_t pb;
+    memset(&pb, 0, sizeof(pbuf_t));
+    pb.buf_len = 300;
+    pb.packet_len = tnc2.length();
+    memcpy(pb.data, tnc2.c_str(), tnc2.length());
+
+    int start_val = tnc2.indexOf('>', 0);
+    int start_dst = tnc2.indexOf('>', 2);
+    if (start_val <= 3 || start_val >= 12 || start_dst < 0)
+        return;
+    int start_info = tnc2.indexOf(':', 0);
+    int end_ssid = tnc2.indexOf(',', start_val);
+    int start_dstssid = tnc2.indexOf('-', start_dst);
+    if (start_info < 0)
+        return;
+    if ((end_ssid < 0) || (end_ssid > start_info))
+        end_ssid = start_info;
+
+    if ((start_dstssid > start_dst) && (start_dstssid < start_dst + 10))
+        pb.dstcall_end_or_ssid = &pb.data[start_dstssid];
+    else
+        pb.dstcall_end_or_ssid = &pb.data[end_ssid];
+    pb.info_start = &pb.data[start_info + 1];
+    pb.dstname = &pb.data[start_dst + 1];
+    pb.dstname_len = end_ssid - start_dst;
+    pb.dstcall_end = &pb.data[end_ssid];
+    pb.srccall_end = &pb.data[start_dst];
+
+    if (!aprsParse.parse_aprs(&pb))
+        return;
+    if (!(pb.flags & F_HASPOS))
+        return;
+
+    double lat, lon;
+    if (gps.location.isValid())
+    {
+        lat = gps.location.lat();
+        lon = gps.location.lng();
+    }
+    else
+    {
+        lat = config.igate_lat;
+        lon = config.igate_lon;
+    }
+    double dist = aprsParse.distance(lon, lat, pb.lng, pb.lat);
+    double brg = aprsParse.direction(lon, lat, pb.lng, pb.lat);
+
+    time_t now = time(NULL);
+    if (now < 1700000000) // clock not set yet (no valid time source)
+        return;
+
+    if (dxWindowStart == 0 || (now - dxWindowStart) > 3600)
+    {
+        // New rolling hour window
+        dxWindowStart = now;
+        dxRecordValid = false;
+    }
+
+    if (!dxRecordValid || dist > dxRecord.distance)
+    {
+        strncpy(dxRecord.callsign, callsign, sizeof(dxRecord.callsign) - 1);
+        dxRecord.callsign[sizeof(dxRecord.callsign) - 1] = 0;
+        dxRecord.distance = dist;
+        dxRecord.bearing = brg;
+        dxRecord.heardAt = now;
+        dxRecordValid = true;
+    }
+}
+
+static String formatUptime(unsigned long secs)
+{
+    unsigned long d = secs / 86400;
+    unsigned long h = (secs % 86400) / 3600;
+    unsigned long m = (secs % 3600) / 60;
+    char buf[40];
+    snprintf(buf, sizeof(buf), "%lud%luh%lum", d, h, m);
+    return String(buf);
+}
+
+// Returns "" when queryTextIn is not a recognized query (caller falls
+// through to normal AT-command handling, unchanged).
+String handleAPRSQuery(const String &queryTextIn)
+{
+    String q = queryTextIn;
+    q.trim();
+    String qUpper = q;
+    qUpper.toUpperCase();
+
+    if (qUpper == "?APRSV" || qUpper == "?VER" || qUpper == "?ABOUT")
+    {
+        time_t now = time(NULL);
+        unsigned long upSecs = (systemUptime > 0 && now > systemUptime) ? (unsigned long)(now - systemUptime) : 0;
+        char buf[100];
+        snprintf(buf, sizeof(buf), "ESP32APRS_CDU v%s-%s up %s heap %luK",
+                 VERSION, VERSION_BUILD, formatUptime(upSecs).c_str(),
+                 (unsigned long)(ESP.getFreeHeap() / 1024));
+        return String(buf);
+    }
+
+    if (qUpper == "?IGATE")
+    {
+        char buf[150];
+        snprintf(buf, sizeof(buf), "IGate RF>I=%u I>RF=%u RX=%u TX=%u DUP=%u ERR=%u",
+                 (unsigned)status.rf2inet, (unsigned)status.inet2rf,
+                 (unsigned)status.rxCount, (unsigned)status.txCount,
+                 (unsigned)status.dupCount, (unsigned)status.errorCount);
+        return String(buf);
+    }
+
+    if (qUpper == "?DX")
+    {
+        if (!dxRecordValid)
+            return String("DX: no position packet heard in the last hour");
+        time_t now = time(NULL);
+        unsigned long agoMin = (now > dxRecord.heardAt) ? (unsigned long)((now - dxRecord.heardAt) / 60) : 0;
+        char buf[120];
+        snprintf(buf, sizeof(buf), "DX: %s %.1fkm %.0fdeg (%lum ago)",
+                 dxRecord.callsign, dxRecord.distance, dxRecord.bearing, agoMin);
+        return String(buf);
+    }
+
+    return "";
+}
 
 // แปลง bytes → HEX string
 String bytesToHexString(const uint8_t *data, size_t len)
@@ -610,7 +763,14 @@ void handleIncomingAPRS(const String &line)
                         return;
                     pkgMsgUpdate(fromCall.c_str(), decrypted.c_str(), msgNo.toInt(), -1, true); // RX Message
                     sendAPRSAck(fromCall, msgNo);
-                    if (config.at_cmd_msg)
+                    // LU6JMF - Marcelo Ferreira: APRS Query feature (?APRSV/?IGATE/?DX),
+                    // checked before AT-commands since queries always start with '?'.
+                    String queryResponse = handleAPRSQuery(decrypted);
+                    if (queryResponse != "")
+                    {
+                        sendAPRSMessage(fromCall, queryResponse, config.msg_encrypt, true);
+                    }
+                    else if (config.at_cmd_msg)
                     {
                         String response = handleATCommand(decrypted);
                         if (response != "")

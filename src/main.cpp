@@ -2897,6 +2897,21 @@ static uint32_t lu6jmfRfLastCycleMs = 0;
 static uint32_t lu6jmfRfCompleted = 0;
 static uint32_t lu6jmfRfRejected = 0;
 
+// LU6JMF - Marcelo Ferreira (Oct/2026)
+// TX Scheduler watchdog: how many times the scheduler was force-recovered
+// after staying "busy" far longer than any real RF transmission should take
+// (modem/PTT state machine got stuck without completing). Visible on
+// /txdebug so a remote-site hang like this leaves evidence even when nobody
+// is watching when it happens.
+static uint32_t lu6jmfRfWatchdogRecoveries = 0;
+static const uint32_t LU6JMF_RF_STUCK_TIMEOUT_MS = 60000; // 1 minute
+
+// LU6JMF - Marcelo Ferreira (Oct/2026)
+// Watchdog full-recovery hooks into the AX.25 layer (defined in AX25.cpp).
+void Ax25GetTxDiag(uint8_t *head, uint8_t *tail, bool *bufferFull, uint8_t *initStage);
+void Ax25TxAbort(bool keyed);
+void AFSK_RequestRxSoftReset(void); // RX half: executed later by AFSK_Poll (taskAFSK) - Marcelo's requested margin
+
 // LU6JMF - Marcelo Ferreira
 // Identity of the single RF job currently owned by the TX lifecycle.
 static uint8_t lu6jmfRfActiveJobType = LU6JMF_TXJOB_GENERIC;
@@ -3064,7 +3079,16 @@ enum Lu6jmfTxEventCode : uint8_t
 
     // LU6JMF - Marcelo Ferreira
     // Phase 2I: CRITICAL admission replaced a pending LOW RF job.
-    LU6JMF_TXEV_QUEUE_PREEMPT
+    LU6JMF_TXEV_QUEUE_PREEMPT,
+
+    // LU6JMF - Marcelo Ferreira (Oct/2026)
+    // TX Scheduler watchdog forced a stuck RF lifecycle to release.
+    LU6JMF_TXEV_WATCHDOG_RECOVER,
+
+    // LU6JMF - Marcelo Ferreira (Oct/2026)
+    // Modem/AX.25 state captured at the moment the watchdog fired (packed bits,
+    // decoded by /txdebug). Root-cause evidence for task #47.
+    LU6JMF_TXEV_WATCHDOG_STATE
 };
 
 struct Lu6jmfTxEvent
@@ -3078,10 +3102,34 @@ struct Lu6jmfTxEvent
     uint8_t jobType;
 };
 
-static const uint8_t LU6JMF_TX_EVENT_COUNT = 24;
+static const uint8_t LU6JMF_TX_EVENT_COUNT = 40; // was 24: keep more history before a watchdog stall
 static Lu6jmfTxEvent lu6jmfTxEvents[LU6JMF_TX_EVENT_COUNT];
 static uint8_t lu6jmfTxEventHead = 0;
 static uint8_t lu6jmfTxEventUsed = 0;
+
+// -----------------------------------------------------------------------------
+// LU6JMF - Marcelo Ferreira (Oct/2026)
+// Crash "black box": the last TX events are mirrored into RTC_NOINIT memory,
+// which survives a PANIC / watchdog / software reset (but not a power cycle).
+// After an abnormal reboot the previous run's last events are copied to normal
+// RAM and shown on /txdebug, so a crash at a remote site can be investigated
+// without a USB cable. Cost: 16 events x 12 bytes (~200 bytes of RTC memory).
+// -----------------------------------------------------------------------------
+#define LU6JMF_CRUMB_MAGIC 0x4C364A4DUL // 'L6JM'
+#define LU6JMF_CRUMB_COUNT 16
+
+struct Lu6jmfCrumb
+{
+    uint32_t magic;
+    uint8_t head; // next write index
+    uint8_t used;
+    Lu6jmfTxEvent ev[LU6JMF_CRUMB_COUNT];
+};
+
+RTC_NOINIT_ATTR static Lu6jmfCrumb lu6jmfCrumb;
+static Lu6jmfCrumb lu6jmfCrumbPrev;       // previous run, copied to normal RAM at boot
+static bool lu6jmfCrumbPrevValid = false;
+static char lu6jmfCrumbPrevReason[24] = "";
 
 static void lu6jmfTxEventAdd(uint8_t code,
                              uint32_t value = 0,
@@ -3094,12 +3142,78 @@ static void lu6jmfTxEventAdd(uint8_t code,
     event.code = code;
     event.jobType = jobType;
 
+    // Mirror into the RTC black box (only after lu6jmfCrumbBoot() armed it).
+    if (lu6jmfCrumb.magic == LU6JMF_CRUMB_MAGIC && lu6jmfCrumb.head < LU6JMF_CRUMB_COUNT)
+    {
+        lu6jmfCrumb.ev[lu6jmfCrumb.head] = event;
+        lu6jmfCrumb.head = (lu6jmfCrumb.head + 1) % LU6JMF_CRUMB_COUNT;
+        if (lu6jmfCrumb.used < LU6JMF_CRUMB_COUNT)
+            lu6jmfCrumb.used++;
+    }
+
     lu6jmfTxEventHead++;
     if (lu6jmfTxEventHead >= LU6JMF_TX_EVENT_COUNT)
         lu6jmfTxEventHead = 0;
 
     if (lu6jmfTxEventUsed < LU6JMF_TX_EVENT_COUNT)
         lu6jmfTxEventUsed++;
+}
+
+// Called once from setup() right after lastResetReasonStr is known.
+void lu6jmfCrumbBoot(void)
+{
+    esp_reset_reason_t r = esp_reset_reason();
+    bool abnormal = (r == ESP_RST_PANIC || r == ESP_RST_INT_WDT ||
+                     r == ESP_RST_TASK_WDT || r == ESP_RST_WDT ||
+                     r == ESP_RST_BROWNOUT || r == ESP_RST_SW);
+
+    if (abnormal &&
+        lu6jmfCrumb.magic == LU6JMF_CRUMB_MAGIC &&
+        lu6jmfCrumb.head < LU6JMF_CRUMB_COUNT &&
+        lu6jmfCrumb.used <= LU6JMF_CRUMB_COUNT &&
+        lu6jmfCrumb.used > 0)
+    {
+        memcpy(&lu6jmfCrumbPrev, &lu6jmfCrumb, sizeof(lu6jmfCrumbPrev));
+        lu6jmfCrumbPrevValid = true;
+        strlcpy(lu6jmfCrumbPrevReason, lastResetReasonStr, sizeof(lu6jmfCrumbPrevReason));
+    }
+
+    // Arm a fresh black box for this run (also initializes after a power-on,
+    // when RTC_NOINIT memory holds random data).
+    memset(&lu6jmfCrumb, 0, sizeof(lu6jmfCrumb));
+    lu6jmfCrumb.magic = LU6JMF_CRUMB_MAGIC;
+}
+
+// Copy the previous run's last events newest-first (for /txdebug). Returns 0
+// when the previous boot was clean / a power cycle (nothing to show).
+uint8_t lu6jmfCrumbPrevEvents(Lu6jmfTxDebugEvent *events,
+                              uint8_t maxEvents,
+                              char *reason,
+                              size_t reasonLen)
+{
+    if (reason && reasonLen)
+        strlcpy(reason, lu6jmfCrumbPrevReason, reasonLen);
+
+    if (!lu6jmfCrumbPrevValid || !events || maxEvents == 0)
+        return 0;
+
+    uint8_t count = lu6jmfCrumbPrev.used;
+    if (count > maxEvents)
+        count = maxEvents;
+
+    for (uint8_t n = 0; n < count; n++)
+    {
+        int index = (int)lu6jmfCrumbPrev.head - 1 - n;
+        while (index < 0)
+            index += LU6JMF_CRUMB_COUNT;
+
+        events[n].timestamp = lu6jmfCrumbPrev.ev[index].timestamp;
+        events[n].value = lu6jmfCrumbPrev.ev[index].value;
+        events[n].code = lu6jmfCrumbPrev.ev[index].code;
+        events[n].jobType = lu6jmfCrumbPrev.ev[index].jobType;
+    }
+
+    return count;
 }
 
 // -----------------------------------------------------------------------------
@@ -3116,7 +3230,8 @@ void lu6jmfTxDebugSnapshot(bool *busy,
                            uint32_t *rejected,
                            uint32_t *lastCycle,
                            uint32_t *lastWait,
-                           uint32_t *currentCycle)
+                           uint32_t *currentCycle,
+                           uint32_t *watchdogRecoveries)
 {
     uint32_t now = millis();
 
@@ -3154,6 +3269,9 @@ void lu6jmfTxDebugSnapshot(bool *busy,
         else
             *currentCycle = 0;
     }
+
+    if (watchdogRecoveries)
+        *watchdogRecoveries = lu6jmfRfWatchdogRecoveries;
 }
 
 // -----------------------------------------------------------------------------
@@ -4348,6 +4466,10 @@ void setup()
         default:                strlcpy(lastResetReasonStr, "Unknown", sizeof(lastResetReasonStr)); break;
     }
     log_d("Last reset reason: %s", lastResetReasonStr);
+
+    // LU6JMF (Oct/2026): crash black box - keep the previous run's last TX
+    // events (if it ended abnormally) and arm a fresh one for this run.
+    lu6jmfCrumbBoot();
 
     if (!LITTLEFS.begin(FORMAT_LITTLEFS_IF_FAILED))
     {
@@ -7646,6 +7768,78 @@ void taskAPRS(void *pvParameters)
             DAC_TimerEnable(false);
             dacEn = 0;
         }
+        // ---------------------------------------------------------------------
+        // LU6JMF - Marcelo Ferreira (Oct/2026)
+        // TX Scheduler watchdog: self-heal a stuck RF lifecycle WITHOUT a
+        // full device reboot. Found in the field (remote digipeater sites
+        // where nobody can power-cycle the unit): the scheduler can get
+        // stuck "busy" indefinitely if the modem's TX state machine never
+        // reaches the point where it sets pttOff=true (e.g. a missed/garbled
+        // ModemTransmitStop() signal). Symptom seen on /txdebug: "RF
+        // Scheduler: BUSY" / "TX state now: YES" for minutes, while the
+        // physical PTT/TX LED is already off (hw_afsk_dac_isr stuck true
+        // without the GPIO actually being keyed) - new RF transmissions
+        // (beacons, messages, digipeat) stay queued forever.
+        //
+        // Recovery forces the SAME pttOff=true path the real ISR uses on a
+        // legitimate completion, so the existing, already-proven cleanup
+        // below (setPtt(false) -> clears both the PTT GPIO and the
+        // hw_afsk_dac_isr flag, plus the scheduler release) runs exactly as
+        // it would for a normal transmission - no new teardown logic, no
+        // extra risk, in this already timing-sensitive area.
+        // ---------------------------------------------------------------------
+        if (lu6jmfRfTxBusy && !pttOff)
+        {
+            uint32_t stuckMs = millis() - lu6jmfRfDispatchMs;
+            if (stuckMs > LU6JMF_RF_STUCK_TIMEOUT_MS)
+            {
+                lu6jmfRfWatchdogRecoveries++;
+                lu6jmfTxEventAdd(LU6JMF_TXEV_WATCHDOG_RECOVER,
+                                 stuckMs,
+                                 lu6jmfRfActiveJobType);
+
+                // Snapshot the modem/AX.25 state BEFORE touching anything, so
+                // /txdebug shows whether the stall was before PTT ON (AX.25
+                // never keyed) or after (end-of-TX never signalled).
+                //   bits 0-1 initStage (0 OFF, 1 WAITING, 2 TRANSMITTING)
+                //   bit 2 ring full | bit 3 PTT ON was seen this cycle
+                //   bit 4 modem keyed now (PTT GPIO or DAC flag)
+                //   bit 5 RX/DCD busy | bits 8-15 ring head | bits 16-23 ring tail
+                uint8_t dgHead = 0, dgTail = 0, dgStage = 0;
+                bool dgFull = false;
+                Ax25GetTxDiag(&dgHead, &dgTail, &dgFull, &dgStage);
+                bool keyedNow = getTransmit();
+                uint32_t packed = (uint32_t)(dgStage & 0x03) |
+                                  (dgFull ? (1u << 2) : 0u) |
+                                  (lu6jmfRfPttSeen ? (1u << 3) : 0u) |
+                                  (keyedNow ? (1u << 4) : 0u) |
+                                  (getReceive() ? (1u << 5) : 0u) |
+                                  ((uint32_t)dgHead << 8) |
+                                  ((uint32_t)dgTail << 16);
+                lu6jmfTxEventAdd(LU6JMF_TXEV_WATCHDOG_STATE,
+                                 packed,
+                                 lu6jmfRfActiveJobType);
+
+                log_e("[LU6JMF-TX] WATCHDOG: RF scheduler busy %lu ms, forcing recovery (count=%lu, state=0x%06lx)",
+                      (unsigned long)stuckMs,
+                      (unsigned long)lu6jmfRfWatchdogRecoveries,
+                      (unsigned long)packed);
+
+                // Full recovery: reset the AX.25 TX state machine + ring (and,
+                // if the modem really was keyed, the whole ModemTransmitStop()
+                // sequence), then raise pttOff so the existing, proven deferred
+                // cleanup below releases the PTT and the scheduler.
+                Ax25TxAbort(keyedNow);
+
+                // Soft RX restart too (demodulator + HDLC RX state + FIFO), so
+                // the modem comes back completely clean. The reset itself runs
+                // inside AFSK_Poll(), the task that owns that state. No timers
+                // or drivers are recreated and the system is NOT rebooted.
+                AFSK_RequestRxSoftReset();
+                pttOff = true;
+            }
+        }
+
         // Deferred PTT off from ModemTransmitStop() ISR.
         // setPtt() calls LED_Status2() → strip->show() (NeoPixel RMT write)
         // which is NOT safe from ISR context — overflows the ISR stack.
@@ -8350,6 +8544,10 @@ void taskAPRS(void *pvParameters)
                             handle_ws(rawP, tnc2.length(), incomingPacket.mVrms);
                             free(rawP);
                         }
+                        // LU6JMF - Marcelo Ferreira: APRS Query feature - track DX record
+                        // (farthest RF station heard with position, resets every hour)
+                        // for every RF packet, not just messages.
+                        dxRecordTrackPacket(call, tnc2);
                     }
 
                     if (config.msg_enable && (type & FILTER_MESSAGE))
@@ -9485,6 +9683,8 @@ void taskAPRSPoll(void *pvParameters)
 {
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     afskSetModem(config.modem_type, config.audio_lpf, config.tx_timeslot, config.preamble * 100, config.fx25_mode);
+    afskSetTxGain(config.tx_audio_gain);
+    afskSetTxPreemphasis(config.tx_preemphasis, config.tx_preemphasis_tilt);
     afskSetSQL(config.rf_sql_gpio, config.rf_sql_active);
     afskSetPTT(config.rf_ptt_gpio, config.rf_ptt_active);
     afskSetPWR(config.rf_pwr_gpio, config.rf_pwr_active);

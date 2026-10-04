@@ -284,6 +284,11 @@ uint8_t ModemDcdState(void)
 	return dcd;
 }
 
+bool ModemIsCurrentSymbolSpace(void)
+{
+	return currentSymbol != 0;
+}
+
 uint8_t ModemIsTxTestOngoing(void)
 {
 	if (txTestState != TEST_DISABLED)
@@ -382,7 +387,34 @@ uint8_t MODEM_BAUDRATE_TIMER_HANDLER(void)
 {
 	uint8_t sinwave = 0;
 	// MODEM_LL_BAUDRATE_TIMER_CLEAR_INTERRUPT_FLAG();
-	if (sampleIndex == 0)
+
+	if (txTestState != TEST_DISABLED)
+	{
+		// TX calibration tone test (v2.1.3.1-audiotest): bypass the AX.25/HDLC bit source and
+		// NRZI encoding entirely, and just force a fixed (or alternating) symbol. Everything
+		// below this block (DDS phase accumulator, sine table lookup) runs exactly as it does
+		// for real TX, so the audio path (incl. gain/preemphasis applied later in AFSK.cpp) is
+		// tested faithfully, just without real AX.25 data behind it.
+		static uint32_t altToneSampleCounter = 0;
+		if (txTestState == TEST_MARK)
+		{
+			currentSymbol = 0; // mark tone: 1200Hz (Bell202) / 1300Hz (V23)
+		}
+		else if (txTestState == TEST_SPACE)
+		{
+			currentSymbol = 1; // space tone: 2200Hz (Bell202) / 2100Hz (V23)
+		}
+		else // TEST_ALTERNATING
+		{
+			// Toggle once per second's worth of samples so both tones are clearly audible
+			if (++altToneSampleCounter >= (uint32_t)CONFIG_AFSK_DAC_SAMPLERATE)
+			{
+				altToneSampleCounter = 0;
+				currentSymbol ^= 1;
+			}
+		}
+	}
+	else if (sampleIndex == 0)
 	{
 		if (Ax25GetTxBit() == 0) // get next bit and check if it's 0
 		{
@@ -584,19 +616,27 @@ static void decode(uint8_t symbol, uint8_t demod, uint16_t mV)
 	}
 }
 
+extern volatile int8_t adcEn;
+extern volatile int8_t dacEn;
+extern volatile bool hw_afsk_dac_isr;
+extern volatile bool pttOff;
+extern void AFSK_FlushFifo(void);
+
 void ModemTxTestStart(enum ModemTxTestMode type)
 {
 	if (txTestState != TEST_DISABLED) // TX test is already running
 		ModemTxTestStop();			  // stop this test
 
 	setPtt(true); // PTT on
+	delay(50);	  // let PTT/radio key up before audio starts, same as ModemTransmitStart()
 	txTestState = type;
+	// v2.1.3.1-audiotest: this port previously only set txTestState here, without ever starting
+	// the DAC ISR - so TX test mode never actually generated any audio. Mirror what
+	// ModemTransmitStart() does to actually drive sample_dac_isr()/MODEM_BAUDRATE_TIMER_HANDLER().
+	hw_afsk_dac_isr = true;
+	AFSK_TimerEnable(false);
+	DAC_TimerEnable(true);
 }
-extern volatile int8_t adcEn;
-extern volatile int8_t dacEn;
-extern volatile bool hw_afsk_dac_isr;
-extern volatile bool pttOff;
-extern void AFSK_FlushFifo(void);
 void ModemTxTestStop(void)
 {
 	txTestState = TEST_DISABLED;

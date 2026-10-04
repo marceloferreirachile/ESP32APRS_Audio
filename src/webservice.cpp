@@ -604,7 +604,7 @@ webString->print("function printLastHeard(data) {\n");
 	webString->print("const tr = document.createElement(\"tr\");\n");
 	webString->print("tr.innerHTML = `\n");
 	webString->print("<td>${row.time}</td>\n");
-	webString->print("<td><img src=\"http://aprs.nakhonthai.net/symbols/icons/${row.icon}\" style=\"width:20px;height:20px;\" onerror=\"iconError(this, '${row.icon}', '${(row.callsign||'?').charAt(0)}');\"><span style=\"display:none;width:20px;height:20px;\"></span></td>\n");
+	webString->print("<td><img src=\"/symbols/icons/${row.icon}\" style=\"width:20px;height:20px;\" onerror=\"iconError(this, '${row.icon}', '${(row.callsign||'?').charAt(0)}');\"><span style=\"display:none;width:20px;height:20px;\"></span></td>\n");
 	// Clickable callsign -> aprs.fi - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
 	webString->print("<td><a style=\"text-decoration:underline;\" href=\"https://www.qrz.com/db/${encodeURIComponent(row.callsign.split('-')[0])}\" target=\"_blank\" rel=\"noopener\">${row.callsign}</a> <a href=\"https://aprs.fi/#!z=12&call=a%2F${encodeURIComponent(row.callsign)}&timerange=3600&tail=3600\" target=\"_blank\" rel=\"noopener\" title=\"Ver en aprs.fi\">🗺</a></td>\n");
 	webString->print("<td align=\"left\">${row.path}</td>\n");
@@ -1030,7 +1030,7 @@ static const char *SYMBOL_TEMPLATE =
 	"<tr><th colspan=\"16\">{{title}}</th></tr>\n"
 	"{{#each rows}}"
 	"<tr>\n"
-	"{{#each this}}<td><img onclick=\"{{onclick}}\" src=\"http://aprs.nakhonthai.net/symbols/icons/{{icon}}\"></td>{{/each}}"
+	"{{#each this}}<td><img onclick=\"{{onclick}}\" src=\"/symbols/icons/{{icon}}\"></td>{{/each}}"
 	"</tr>\n"
 	"{{/each}}"
 	"</table>\n<br />"
@@ -1340,14 +1340,14 @@ void event_lastHeard(bool gethtml)
 							{
 								strcpy(fileImg, "dot.png");
 							}
-							//snprintf(temp_html, sizeof(temp_html), "<td><img src=\"http://aprs.nakhonthai.net/symbols/icons/%s\"></td>", fileImg);
+							//snprintf(temp_html, sizeof(temp_html), "<td><img src=\"/symbols/icons/%s\"></td>", fileImg);
 							snprintf(temp_html, sizeof(temp_html), "\"icon\":\"%s\",", fileImg);
 							strcat(html, temp_html);
 						}
 					}
 					else
 					{
-						//strcat(html, "<td><img src=\"http://aprs.nakhonthai.net/symbols/icons/dot.png\"></td>");
+						//strcat(html, "<td><img src=\"/symbols/icons/dot.png\"></td>");
 						strcat(html, "\"icon\":\"dot.png\",");
 					}
 					
@@ -2091,8 +2091,14 @@ static const char *RADIO_TEMPLATE =
 	"var outputVol = document.getElementById(\"volShow\");\n"
 	"var sliderSql = document.getElementById(\"sliderSql\");\n"
 	"var outputSql = document.getElementById(\"sqlShow\");\n"
+	"var sliderTxGain = document.getElementById(\"sliderTxGain\");\n"
+	"var outputTxGain = document.getElementById(\"txGainShow\");\n"
+	"var sliderTxTilt = document.getElementById(\"sliderTxTilt\");\n"
+	"var outputTxTilt = document.getElementById(\"txTiltShow\");\n"
 	"outputVol.innerHTML = sliderVol.value;\n"
 	"outputSql.innerHTML = sliderSql.value;\n"
+	"outputTxGain.innerHTML = sliderTxGain.value;\n"
+	"outputTxTilt.innerHTML = sliderTxTilt.value;\n"
 	"\n"
 	"sliderVol.oninput = function () {\n"
 	"outputVol.innerHTML = this.value;\n"
@@ -2100,12 +2106,46 @@ static const char *RADIO_TEMPLATE =
 	"sliderSql.oninput = function () {\n"
 	"outputSql.innerHTML = this.value;\n"
 	"}\n"
+	"sliderTxGain.oninput = function () {\n"
+	"outputTxGain.innerHTML = this.value;\n"
+	"}\n"
+	"sliderTxTilt.oninput = function () {\n"
+	"outputTxTilt.innerHTML = this.value;\n"
+	"}\n"
+	"\n"
+	"function calibrateTone(type){\n"
+	"document.getElementById('calBtnLow').disabled=true;\n"
+	"document.getElementById('calBtnHigh').disabled=true;\n"
+	"document.getElementById('calBtnAlt').disabled=true;\n"
+	"document.getElementById('calStatus').innerHTML='Sending...';\n"
+	"fetch('/calibrate_tone?type='+type).then(function(r){return r.text();}).then(function(t){\n"
+	"document.getElementById('calStatus').innerHTML=t;\n"
+	"}).catch(function(e){\n"
+	"document.getElementById('calStatus').innerHTML='Error calling /calibrate_tone';\n"
+	"}).finally(function(){\n"
+	"setTimeout(function(){\n"
+	"document.getElementById('calBtnLow').disabled=false;\n"
+	"document.getElementById('calBtnHigh').disabled=false;\n"
+	"document.getElementById('calBtnAlt').disabled=false;\n"
+	"},11000);\n"
+	"});\n"
+	"}\n"
+	"\n"
+	"function calibrateRestart(){\n"
+	"if(!confirm('Restart the device now? Any in-progress tone test will stop and the web panel will briefly disconnect.')) return;\n"
+	"document.getElementById('calBtnRestart').disabled=true;\n"
+	"document.getElementById('calStatus').innerHTML='Restarting - the device will be back online in a few seconds...';\n"
+	"var data = new FormData();\n"
+	"data.append('REBOOT','1');\n"
+	"fetch('/system',{method:'POST',body:data});\n"
+	"}\n"
 	"\n"
 	"$('form').submit(function (e) {\n"
 	"e.preventDefault();\n"
 	"var data = new FormData(e.currentTarget);\n"
 	"if(e.currentTarget.id===\"formRadio\") document.getElementById(\"submitRadio\").disabled=true;\n"
 	"if(e.currentTarget.id===\"formTNC\") document.getElementById(\"submitTNC\").disabled=true;\n"
+	"var formIdForReenable = e.currentTarget.id;\n"
 	"$.ajax({\n"
 	"url: '/radio',\n"
 	"type: 'POST',\n"
@@ -2117,6 +2157,14 @@ static const char *RADIO_TEMPLATE =
 	"},\n"
 	"error: function (data) {\n"
 	"alert(\"An error occurred.\");\n"
+	"},\n"
+	// v2.1.3.1-audiotest: the submit button was disabled above to prevent a double-click, but was
+	// never re-enabled after the request finished (success or error) - so a second Apply Change on
+	// the same page load (e.g. while iterating on TX Audio Calibration) silently did nothing. Always
+	// re-enable it once the request settles.
+	"complete: function (data) {\n"
+	"if(formIdForReenable===\"formRadio\") document.getElementById(\"submitRadio\").disabled=false;\n"
+	"if(formIdForReenable===\"formTNC\") document.getElementById(\"submitTNC\").disabled=false;\n"
 	"}\n"
 	"});\n"
 	"});\n"
@@ -2212,7 +2260,7 @@ static const char *RADIO_TEMPLATE =
 	"</td></tr></table><br />\n"
 	"</form>"
 	"<form id='formTNC' method=\"POST\" action='#' enctype='multipart/form-data'>\n"
-	"<table>\n"
+	"<table style=\"table-layout:fixed;width:100%;\">\n"
 	"<th colspan=\"2\"><span><b>AFSK/TNC Configuration</b></span></th>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Modem Type:</b></td>\n"
@@ -2236,6 +2284,26 @@ static const char *RADIO_TEMPLATE =
 	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"LPF\" value=\"OK\" {{#if lpfEnabled}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Audio low pass filter 1hz-2.5KHz</i></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
+	"<td align=\"right\"><b>TX Audio Level:</b></td>\n"
+	"<td style=\"text-align: left;\"><input id=\"sliderTxGain\" name=\"txAudioGain\" type=\"range\"\nmin=\"0\" max=\"100\" value=\"{{txAudioGain}}\" /><b><span style=\"font-size: 14pt;\" id=\"txGainShow\">{{txAudioGain}}</span></b> %</td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td></td>\n"
+	"<td style=\"text-align: left;word-wrap:break-word;white-space:normal;\"><label style=\"font-size: 8pt;\"><i>TX audio level (0-100%). Adjust while listening on another radio - 100% is factory default (no change if never touched).</i></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>TX Pre-emphasis:</b></td>\n"
+	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"txPreemphasis\" value=\"OK\" {{#if txPreemphasisEnabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td></td>\n"
+	"<td style=\"text-align: left;word-wrap:break-word;white-space:normal;\"><label style=\"font-size: 8pt;\"><i>Enable only if the radio input is microphone (not 'flat'/discriminator). Attenuates the 1200Hz tone to compensate for the radio's own pre-emphasis.</i></label></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>Pre-emphasis Tilt:</b></td>\n"
+	"<td style=\"text-align: left;\"><input id=\"sliderTxTilt\" name=\"txPreemphasisTilt\" type=\"range\"\nmin=\"0\" max=\"100\" value=\"{{txPreemphasisTilt}}\" /><b><span style=\"font-size: 14pt;\" id=\"txTiltShow\">{{txPreemphasisTilt}}</span></b> %</td>\n"
+	"</tr>\n"
+	"<tr>\n"
 	"<td align=\"right\"><b>TX Time Slot:</b></td>\n"
 	"<td style=\"text-align: left;\"><input type=\"number\" name=\"timeSlot\" min=\"0\" max=\"99999\"\nstep=\"100\" value=\"{{timeSlot}}\" /> mSec.</td>\n"
 	"</tr>\n"
@@ -2252,7 +2320,30 @@ static const char *RADIO_TEMPLATE =
 	"<div><button class=\"button\" type='submit' id='submitTNC'  name=\"commitTNC\"> Apply Change </button></div>\n"
 	"<input type=\"hidden\" name=\"commitTNC\"/>\n"
 	"</td></tr></table><br />\n"
-	"</form>";
+	"</form>"
+	"<table style=\"table-layout:fixed;width:100%;\">\n"
+	"<th colspan=\"2\"><span><b>TX Audio Calibration</b></span></th>\n"
+	"<tr>\n"
+	"<td colspan=\"2\" style=\"text-align:left;font-size:8pt;word-wrap:break-word;white-space:normal;\"><i>Transmits a continuous tone for 10 seconds (turns off by itself) to calibrate TX audio while listening on another radio. This keys the PTT and transmits real RF.</i></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td colspan=\"2\" style=\"text-align:left;\">\n"
+	"<button class=\"button\" type='button' id='calBtnLow' onclick=\"calibrateTone('low')\"> Low Tone (1200Hz) </button>\n"
+	"<button class=\"button\" type='button' id='calBtnHigh' onclick=\"calibrateTone('high')\"> High Tone (2200Hz) </button>\n"
+	"<button class=\"button\" type='button' id='calBtnAlt' onclick=\"calibrateTone('alt')\"> Alternating </button>\n"
+	"</td>\n"
+	"</tr>\n"
+	"<tr><td colspan=\"2\" id=\"calStatus\" style=\"text-align:left;word-wrap:break-word;white-space:normal;\"></td></tr>\n"
+	// v2.1.3.1-audiotest: the calibration tone bypasses the normal AX.25 TX scheduler (it drives
+	// hw_afsk_dac_isr/the DAC timer directly instead of going through a scheduled TX job), so the
+	// scheduler can be left thinking a slot is busy after a calibration run. Warn and offer a direct
+	// restart so real beacons/objects resume reliably without the operator having to go find the
+	// System tab.
+	"<tr><td colspan=\"2\" style=\"text-align:left;font-size:8pt;color:#b35900;word-wrap:break-word;white-space:normal;\"><i>After using these tone buttons, restart the device before leaving it unattended - the calibration tone bypasses the normal TX scheduler and can leave it busy until rebooted.</i></td></tr>\n"
+	"<tr><td colspan=\"2\" style=\"text-align:left;\">\n"
+	"<button class=\"button\" type='button' id='calBtnRestart' style=\"background-color:#b35900;\" onclick=\"calibrateRestart()\"> Restart Device Now </button>\n"
+	"</td></tr>\n"
+	"</table><br />";
 
 void handle_radio(AsyncWebServerRequest *request)
 {
@@ -2407,6 +2498,7 @@ void handle_radio(AsyncWebServerRequest *request)
 	{
 		bool hpf = 0;
 		bool lpf = 0;
+		bool txPreemph = false;
 		for (uint8_t i = 0; i < request->args(); i++)
 		{
 			if (request->argName(i) == "HPF")
@@ -2427,6 +2519,40 @@ void handle_radio(AsyncWebServerRequest *request)
 					{
 						lpf = true;
 					}
+				}
+			}
+			if (request->argName(i) == "txPreemphasis")
+			{
+				if (request->arg(i) != "")
+				{
+					if (strcmp(request->arg(i).c_str(), "OK") == 0)
+					{
+						txPreemph = true;
+					}
+				}
+			}
+			if (request->argName(i) == "txAudioGain")
+			{
+				if (request->arg(i) != "" && isValidNumber(request->arg(i)))
+				{
+					long v = request->arg(i).toInt();
+					if (v < 0)
+						v = 0;
+					if (v > 100)
+						v = 100;
+					config.tx_audio_gain = (uint8_t)v;
+				}
+			}
+			if (request->argName(i) == "txPreemphasisTilt")
+			{
+				if (request->arg(i) != "" && isValidNumber(request->arg(i)))
+				{
+					long v = request->arg(i).toInt();
+					if (v < 0)
+						v = 0;
+					if (v > 100)
+						v = 100;
+					config.tx_preemphasis_tilt = (uint8_t)v;
 				}
 			}
 			if (request->argName(i) == "timeSlot")
@@ -2468,6 +2594,7 @@ void handle_radio(AsyncWebServerRequest *request)
 		}
 		config.audio_hpf = hpf;
 		config.audio_lpf = lpf;
+		config.tx_preemphasis = txPreemph;
 		// Using dynamic memory allocation instead of String
 		char *html = allocateStringMemory(64); // Small buffer for "OK"
 		if (html)
@@ -2478,6 +2605,8 @@ void handle_radio(AsyncWebServerRequest *request)
 		}
 		saveConfiguration("/default.cfg", config);
 		afskSetModem(config.modem_type, config.audio_lpf, config.tx_timeslot, config.preamble * 100, config.fx25_mode);
+		afskSetTxGain(config.tx_audio_gain);
+		afskSetTxPreemphasis(config.tx_preemphasis, config.tx_preemphasis_tilt);
 	}
 	else
 	{
@@ -2582,6 +2711,9 @@ void handle_radio(AsyncWebServerRequest *request)
 		}
 
 		data["lpfEnabled"] = config.audio_lpf;
+		data["txAudioGain"] = config.tx_audio_gain;
+		data["txPreemphasisEnabled"] = config.tx_preemphasis;
+		data["txPreemphasisTilt"] = config.tx_preemphasis_tilt;
 		data["timeSlot"] = config.tx_timeslot;
 
 		JsonArray preambleOptions = data["preambleOptions"].to<JsonArray>();
@@ -2608,6 +2740,58 @@ void handle_radio(AsyncWebServerRequest *request)
 	}
 }
 
+// v2.1.3.1-audiotest: TX audio calibration tone (see "TX Audio Calibration" section of the
+// RADIO page). Real RF/PTT - AFSK_StartTxCalibration() enforces its own hard 10s safety timeout
+// independently of this HTTP request, so this handler just needs to kick it off and reply; it
+// does not need to (and must not) block for the duration of the tone.
+void handle_calibrate_tone(AsyncWebServerRequest *request)
+{
+	if (!request->authenticate(config.http_username, config.http_password))
+	{
+		return request->requestAuthentication();
+	}
+
+	String type = "low";
+	if (request->hasArg("type"))
+		type = request->arg("type");
+
+	uint8_t toneType = 0; // default: low/mark tone
+	const char *toneName = "1200Hz (low tone)";
+	if (type == "high")
+	{
+		toneType = 1;
+		toneName = "2200Hz (high tone)";
+	}
+	else if (type == "alt")
+	{
+		toneType = 2;
+		toneName = "alternating 1200/2200Hz";
+	}
+
+	if (!config.rf_en)
+	{
+		request->send(409, "text/plain", "RF disabled (RADIO tab > Enable) - enable the RF module before calibrating.");
+		return;
+	}
+
+	char msg[220];
+	if (AFSK_StartTxCalibration(toneType))
+	{
+		// v2.1.3.1-audiotest (debug): echo back the gain/preemphasis values actually in effect for
+		// this tone, so we can confirm from the browser whether Apply Change really propagated them,
+		// without needing a serial console.
+		snprintf(msg, sizeof(msg),
+				 "Tone %s started - transmitting for 10s, PTT turns off automatically. "
+				 "[debug: gain=%u%% preemph=%s tilt=%u%%]",
+				 toneName, config.tx_audio_gain, config.tx_preemphasis ? "ON" : "OFF", config.tx_preemphasis_tilt);
+		request->send(200, "text/plain", msg);
+	}
+	else
+	{
+		request->send(409, "text/plain", "A tone calibration is already in progress - wait for it to finish.");
+	}
+}
+
 // LU6JMF - Marcelo Ferreira: fase 6 - template embutido no firmware (ver about).
 static const char *VPN_TEMPLATE =
 	"<script type=\"text/javascript\">\n"
@@ -2629,16 +2813,23 @@ static const char *VPN_TEMPLATE =
 	"}\n"
 	"});\n"
 	"});\n"
+	"function vpnMsg(t) { var e = document.getElementById('vpnreg'); if (e) e.textContent = t; }\n"
 	"function loadVPNConfig() {\n"
 	"const url = \"http://hs1.hs5tqa.ampr.org:81/wg/create\";\n"
 	"const espID = {'name': '{{espId}}'};\n"
+	"vpnMsg('Registering... the server can take up to a minute, please wait.');\n"
+	"const ctl = new AbortController();\n"
+	"const tm = setTimeout(() => ctl.abort(), 90000);\n"
 	"fetch(url,{\n"
 	"method: 'POST',\n"
 	"body: JSON.stringify(espID),\n"
-	"headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Origin': '*','Access-Control-Allow-Methods': 'POST,GET,OPTIONS'}\n"
+	"signal: ctl.signal,\n"
+	"headers: { 'Content-Type': 'application/json' }\n"
 	"})\n"
-	".then(response => response.json())\n"
+	".then(response => { if (!response.ok) throw new Error('server answered ' + response.status); return response.json(); })\n"
 	".then(data => {\n"
+	"clearTimeout(tm);\n"
+	"vpnMsg('Done. Check the fields below, then click Apply Change and reboot the device.');\n"
 	"console.log(\"VPN Data:\", data);\n"
 	"document.getElementById(\"wg_enable\").checked = true;\n"
 	"document.getElementById(\"wg_peer_address\").value = data.Enpoint.split(\":\")[0];\n"
@@ -2649,11 +2840,12 @@ static const char *VPN_TEMPLATE =
 	"document.getElementById(\"wg_public_key\").value = data.PublicKey;\n"
 	"document.getElementById(\"wg_private_key\").value = data.PrivateKey;\n"
 	"})\n"
-	".catch(err => console.error(\"VPN API Error:\", err));\n}\n"
+	".catch(err => { clearTimeout(tm); vpnMsg('Could not register: ' + err + '. Wait a minute and try again.'); console.error(\"VPN API Error:\", err); });\n}\n"
 	"</script>\n"
 	"<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromVPN\" method=\"post\">\n"
 	"<table>\n"
 	"<th colspan=\"2\"><span><b>Wireguard Configuration</b></span></th>\n"
+	"<tr><td align=\"right\"><b>Status</b></td><td style=\"text-align: left;\">{{vpnStatus}}</td></tr>\n"
 	"<tr>"
 	"<td align=\"right\"><b>Enable</b></td>\n"
 	"{{#if vpnEnabled}}"
@@ -2686,8 +2878,11 @@ static const char *VPN_TEMPLATE =
 	"<tr><td>Fast Direct URL: <a href=\"{{directUrl}}\" target=\"_blank\">{{directUrl}}</a></td></tr>\n"
 	"{{/if}}"
 	"<tr><td><button type=\"button\" onclick=\"loadVPNConfig()\">New Register</button></td></tr>\n"
+	"<tr><td id=\"vpnreg\" align=\"left\"></td></tr>\n"
 	"</table><br />\n"
 	"</form>";
+
+extern "C" const char *wireguard_last_error; // wireguard_vpn.cpp - why the tunnel was not started
 
 void handle_vpn(AsyncWebServerRequest *request)
 {
@@ -2737,8 +2932,10 @@ void handle_vpn(AsyncWebServerRequest *request)
 			{
 				if (request->arg(i) != "")
 				{
-					strcpy(config.wg_public_key, request->arg(i).c_str());
-					config.wg_public_key[44] = 0;
+					// LU6JMF: trim pasted whitespace/newline (it shifts the key and breaks it) + bounded copy
+					String k = request->arg(i);
+					k.trim();
+					strlcpy(config.wg_public_key, k.c_str(), sizeof(config.wg_public_key));
 				}
 			}
 
@@ -2746,8 +2943,9 @@ void handle_vpn(AsyncWebServerRequest *request)
 			{
 				if (request->arg(i) != "")
 				{
-					strcpy(config.wg_private_key, request->arg(i).c_str());
-					config.wg_private_key[44] = 0;
+					String k = request->arg(i);
+					k.trim();
+					strlcpy(config.wg_private_key, k.c_str(), sizeof(config.wg_private_key));
 				}
 			}
 
@@ -2755,7 +2953,9 @@ void handle_vpn(AsyncWebServerRequest *request)
 			{
 				if (request->arg(i) != "")
 				{
-					strcpy(config.wg_peer_address, request->arg(i).c_str());
+					String pa = request->arg(i);
+					pa.trim();
+					strlcpy(config.wg_peer_address, pa.c_str(), sizeof(config.wg_peer_address));
 				}
 			}
 
@@ -2784,6 +2984,13 @@ void handle_vpn(AsyncWebServerRequest *request)
 			}
 		}
 
+		// LU6JMF: never leave VPN enabled with unusable keys (a WireGuard key is exactly
+		// 44 base64 chars ending in '='); it used to crash the unit at every boot.
+		if (vpnEn && !(strlen(config.wg_private_key) == 44 && config.wg_private_key[43] == '=' &&
+					   strlen(config.wg_public_key) == 44 && config.wg_public_key[43] == '='))
+		{
+			vpnEn = false;
+		}
 		config.vpn = vpnEn;
 		saveConfig(request);
 	}
@@ -2801,6 +3008,20 @@ void handle_vpn(AsyncWebServerRequest *request)
 		data["gateway"] = config.wg_gw_address;
 		data["publicKey"] = config.wg_public_key;
 		data["privateKey"] = config.wg_private_key;
+
+		// LU6JMF: tell the user WHY the tunnel is not up (it used to fail silently / crash).
+		{
+			String st;
+			if (!config.vpn)
+				st = "Disabled";
+			else if (wireguard_last_error != NULL && wireguard_last_error[0] != '\0')
+				st = String("NOT RUNNING - ") + wireguard_last_error + ". Fix it, Apply Change and reboot.";
+			else if (wireguard_active())
+				st = "Started (waiting for the server handshake, or connected)";
+			else
+				st = "Enabled, waiting for WiFi and clock sync";
+			data["vpnStatus"] = st;
+		}
 
 		// Check if local address starts with "10.44."
 		String wg_local_addr = String(config.wg_local_address);
@@ -3278,7 +3499,7 @@ document.getElementById("submitObj").disabled=false;
 <tr><td align="right"><b>Enable:</b></td><td align="left"><label class="switch"><input type="checkbox" name="objEn{{num}}" value="OK"{{#if enabled}} checked{{/if}}><span class="slider round"></span></label></td></tr>
 <tr><td align="right"><b>Item/Obj Name:</b></td><td align="left"><input maxlength="9" name="objName{{num}}" type="text" value="{{name}}" />{{#if firstRow}} <i>3-9 character</i>{{/if}}</td></tr>
 <tr><td align="right"><b>Latitude / Longitude:</b></td><td align="left"><input style="width:120px;" step="any" name="objLat{{num}}" type="number" value="{{lat}}" /> <input style="width:120px;" step="any" name="objLon{{num}}" type="number" value="{{lon}}" />{{#if firstRow}} <i>independent of the digi's own position</i>{{/if}}</td></tr>
-<tr><td align="right"><b>Symbol:</b></td><td align="left">Table:<input maxlength="1" size="1" id="obj{{num}}Table" name="obj{{num}}Table" type="text" value="{{symTable}}" style="background-color: rgb(97, 239, 170);" oninput="objSymRefresh({{idx}});" /> Symbol:<input maxlength="1" size="1" id="obj{{num}}Symbol" name="obj{{num}}Symbol" type="text" value="{{symSymbol}}" style="background-color: rgb(97, 239, 170);" oninput="objSymRefresh({{idx}});" /> <img border="1" style="vertical-align: middle;" id="obj{{num}}ImgSymbol" onclick="openWindowSymbolObj({{idx}});" src="http://aprs.nakhonthai.net/symbols/icons/{{symImgNum}}-{{symImgTable}}.png">{{#if firstRow}} <i>*Click icon or type Table/Symbol directly</i>{{/if}}</td></tr>
+<tr><td align="right"><b>Symbol:</b></td><td align="left">Table:<input maxlength="1" size="1" id="obj{{num}}Table" name="obj{{num}}Table" type="text" value="{{symTable}}" style="background-color: rgb(97, 239, 170);" oninput="objSymRefresh({{idx}});" /> Symbol:<input maxlength="1" size="1" id="obj{{num}}Symbol" name="obj{{num}}Symbol" type="text" value="{{symSymbol}}" style="background-color: rgb(97, 239, 170);" oninput="objSymRefresh({{idx}});" /> <img border="1" style="vertical-align: middle;" id="obj{{num}}ImgSymbol" onclick="openWindowSymbolObj({{idx}});" src="/symbols/icons/{{symImgNum}}-{{symImgTable}}.png">{{#if firstRow}} <i>*Click icon or type Table/Symbol directly</i>{{/if}}</td></tr>
 <tr><td align="right"><b>Text/Comment:</b></td><td align="left"><input style="width:96%;box-sizing:border-box;" maxlength="{{maxLen}}" name="objText{{num}}" type="text" value="{{text}}" oninput="var n=this.maxLength-this.value.length;var c=document.getElementById('objCnt{{num}}');c.textContent=n+' left';c.style.color=(n<0)?'red':'#2e7d32';" /><br /><span id="objCnt{{num}}" style="font-size:8pt;color:{{charsLeftColor}};">{{charsLeft}} left</span>{{#if firstRow}} <i style="font-size:8pt;">(own buffer, not shared)</i>{{/if}}</td></tr>
 <tr><td align="right"><b>Interval:</b></td><td align="left"><input type="radio" name="objMode{{num}}" value="0"{{#if fixedMode}} checked{{/if}}> Fixed: <select name="objInv{{num}}">{{#each intervalOptions}}<option value="{{value}}"{{#if selected}} selected{{/if}}>{{label}}</option>{{/each}}</select> + max sends <input style="width:60px;" min="0" max="65535" name="objLim{{num}}" type="number" value="{{limit}}" /><br /><input type="radio" name="objMode{{num}}" value="1"{{#if fixedMode}}{{else}} checked{{/if}}> Active for: <select name="objActFor{{num}}">{{#each afOptions}}<option value="{{value}}"{{#if selected}} selected{{/if}}>{{label}}</option>{{/each}}{{#if firstRow}}</select><br /><i>either mode (Permanent off): never exceeds 72h total send time</i></td></tr>
 {{else}}</select></td></tr>
@@ -3307,7 +3528,7 @@ if(table==1){
 }else if(table==2){
  txttable.value='\\';
 }
-imgicon.src = "http://aprs.nakhonthai.net/symbols/icons/"+symbol.toString()+'-'+table.toString()+'.png';
+imgicon.src = "/symbols/icons/"+symbol.toString()+'-'+table.toString()+'.png';
 }
 function objSymRefresh(sel) {
 var txtsymbol=document.getElementById('obj'+(sel+1)+'Symbol');
@@ -3316,7 +3537,7 @@ var imgicon=document.getElementById('obj'+(sel+1)+'ImgSymbol');
 var sym=txtsymbol.value.charCodeAt(0);
 var tbl=(txttable.value=='\\')?2:1;
 if(!isNaN(sym)&&sym>0){
- imgicon.src = "http://aprs.nakhonthai.net/symbols/icons/"+sym.toString()+'-'+tbl.toString()+'.png';
+ imgicon.src = "/symbols/icons/"+sym.toString()+'-'+tbl.toString()+'.png';
 }
 }
 </script>
@@ -6439,7 +6660,7 @@ static const char *IGATE_TEMPLATE =
 	"document.getElementById('igateSymbol').value = String.fromCharCode(symbol);\n"
 	"if(table==1){\n document.getElementById('igateTable').value='/';\n"
 	"}else if(table==2){\n document.getElementById('igateTable').value='\\\\';\n}\n"
-	"document.getElementById('igateImgSymbol').src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n"
+	"document.getElementById('igateImgSymbol').src = \"/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n"
 	"\n}\n"
 	"function calculatePHGR(){document.forms.formIgate.texttouse.value=\"PHG\"+calcPower(document.forms.formIgate.power.value)+calcHeight(document.forms.formIgate.haat.value)+calcGain(document.forms.formIgate.gain.value)+calcDirection(document.forms.formIgate.direction.selectedIndex)}function Log2(e){return Math.log(e)/Math.log(2)}function calcPerHour(e){return e<10?e:String.fromCharCode(65+(e-10))}function calcHeight(e){return String.fromCharCode(48+Math.round(Log2(e/10),0))}function calcPower(e){if(e<1)return 0;if(e>=1&&e<4)return 1;if(e>=4&&e<9)return 2;if(e>=9&&e<16)return 3;if(e>=16&&e<25)return 4;if(e>=25&&e<36)return 5;if(e>=36&&e<49)return 6;if(e>=49&&e<64)return 7;if(e>=64&&e<81)return 8;if(e>=81)return 9}function calcDirection(e){if(e==\"0\")return\"0\";if(e==\"1\")return\"1\";if(e==\"2\")return\"2\";if(e==\"3\")return\"3\";if(e==\"4\")return\"4\";if(e==\"5\")return\"5\";if(e==\"6\")return\"6\";if(e==\"7\")return\"7\";if(e==\"8\")return\"8\"}function calcGain(e){return e>9?\"9\":e<0?\"0\":Math.round(e,0)}\n"
 	"function onRF2INETCheck() {\n"
@@ -6486,7 +6707,7 @@ static const char *IGATE_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Station Symbol:</b></td>\n"
-	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"igateTable\" name=\"igateTable\" type=\"text\" value=\"{{symTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"igateSymbol\" name=\"igateSymbol\" type=\"text\" value=\"{{symSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"igateImgSymbol\" onclick=\"openWindowSymbol();\" src=\"http://aprs.nakhonthai.net/symbols/icons/{{symImgNum}}-{{symImgTable}}.png\"> <i>*Click icon for select symbol</i></td>\n"
+	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"igateTable\" name=\"igateTable\" type=\"text\" value=\"{{symTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"igateSymbol\" name=\"igateSymbol\" type=\"text\" value=\"{{symSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"igateImgSymbol\" onclick=\"openWindowSymbol();\" src=\"/symbols/icons/{{symImgNum}}-{{symImgTable}}.png\"> <i>*Click icon for select symbol</i></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Item/Obj Name:</b></td>\n"
@@ -7352,7 +7573,7 @@ static const char *DIGI_TEMPLATE =
 	"document.getElementById('digiSymbol').value = String.fromCharCode(symbol);\n"
 	"if(table==1){\n document.getElementById('digiTable').value='/';\n"
 	"}else if(table==2){\n document.getElementById('digiTable').value='\\\\';\n}\n"
-	"document.getElementById('digiImgSymbol').src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n"
+	"document.getElementById('digiImgSymbol').src = \"/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n"
 	"\n}\n"
 	"function calculatePHGR(){document.forms.formDIGI.texttouse.value=\"PHG\"+calcPower(document.forms.formDIGI.power.value)+calcHeight(document.forms.formDIGI.haat.value)+calcGain(document.forms.formDIGI.gain.value)+calcDirection(document.forms.formDIGI.direction.selectedIndex)}function Log2(e){return Math.log(e)/Math.log(2)}function calcPerHour(e){return e<10?e:String.fromCharCode(65+(e-10))}function calcHeight(e){return String.fromCharCode(48+Math.round(Log2(e/10),0))}function calcPower(e){if(e<1)return 0;if(e>=1&&e<4)return 1;if(e>=4&&e<9)return 2;if(e>=9&&e<16)return 3;if(e>=16&&e<25)return 4;if(e>=25&&e<36)return 5;if(e>=36&&e<49)return 6;if(e>=49&&e<64)return 7;if(e>=64&&e<81)return 8;if(e>=81)return 9}function calcDirection(e){if(e==\"0\")return\"0\";if(e==\"1\")return\"1\";if(e==\"2\")return\"2\";if(e==\"3\")return\"3\";if(e==\"4\")return\"4\";if(e==\"5\")return\"5\";if(e==\"6\")return\"6\";if(e==\"7\")return\"7\";if(e==\"8\")return\"8\"}function calcGain(e){return e>9?\"9\":e<0?\"0\":Math.round(e,0)}\n"
 	"function selPrecision(idx) {\n"
@@ -7391,7 +7612,7 @@ static const char *DIGI_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Station Symbol:</b></td>\n"
-	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"digiTable\" name=\"digiTable\" type=\"text\" value=\"{{symTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"digiSymbol\" name=\"digiSymbol\" type=\"text\" value=\"{{symSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"digiImgSymbol\" onclick=\"openWindowSymbol();\" src=\"http://aprs.nakhonthai.net/symbols/icons/{{symImgNum}}-{{symImgTable}}.png\"> <i>*Click icon for select symbol</i></td>\n"
+	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"digiTable\" name=\"digiTable\" type=\"text\" value=\"{{symTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"digiSymbol\" name=\"digiSymbol\" type=\"text\" value=\"{{symSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"digiImgSymbol\" onclick=\"openWindowSymbol();\" src=\"/symbols/icons/{{symImgNum}}-{{symImgTable}}.png\"> <i>*Click icon for select symbol</i></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>PATH:</b></td>\n"
@@ -9162,7 +9383,7 @@ static const char *TRACKER_TEMPLATE =
 	"txtsymbol.value = String.fromCharCode(symbol);\n"
 	"if(table==1){\n txttable.value='/';\n"
 	"}else if(table==2){\n txttable.value='\\\\';\n}\n"
-	"imgicon.src = \"http://aprs.nakhonthai.net/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n"
+	"imgicon.src = \"/symbols/icons/\"+symbol.toString()+'-'+table.toString()+'.png';\n"
 	"\n}\n"
 	"function onSmartCheck() {\n"
 	"if (document.querySelector('#smartBcnEnable').checked) {\n"
@@ -9250,7 +9471,7 @@ static const char *TRACKER_TEMPLATE =
 	"<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"trackerPosSel\" value=\"0\" {{#if posFix}}checked=\"checked\"{{/if}}/>Fix <input type=\"radio\" name=\"trackerPosSel\" value=\"1\" {{#if posGPS}}checked=\"checked\"{{/if}}/>GPS </td></tr>\n"
 	"<tr>\n"
 	"<td align=\"right\">Symbol Icon:</td>\n"
-	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"trackerTable\" name=\"trackerTable\" type=\"text\" value=\"{{symTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"trackerSymbol\" name=\"trackerSymbol\" type=\"text\" value=\"{{symSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"trackerImgSymbol\" onclick=\"openWindowSymbol(0);\" src=\"http://aprs.nakhonthai.net/symbols/icons/{{symImgNum}}-{{symImgTable}}.png\"> <i>*Click icon for select symbol</i></td>\n"
+	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"trackerTable\" name=\"trackerTable\" type=\"text\" value=\"{{symTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"trackerSymbol\" name=\"trackerSymbol\" type=\"text\" value=\"{{symSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"trackerImgSymbol\" onclick=\"openWindowSymbol(0);\" src=\"/symbols/icons/{{symImgNum}}-{{symImgTable}}.png\"> <i>*Click icon for select symbol</i></td>\n"
 	"</tr>\n"
 	"<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" id=\"trackerPosLat\" name=\"trackerPosLat\" type=\"number\" value=\"{{lat}}\" />degrees (positive for North, negative for South)</td></tr>\n"
 	"<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" id=\"trackerPosLon\" name=\"trackerPosLon\" type=\"number\" value=\"{{lon}}\" />degrees (positive for East, negative for West)</td></tr>\n"
@@ -9264,11 +9485,11 @@ static const char *TRACKER_TEMPLATE =
 	"<legend>Smart beacon configuration</legend>\n<table>"
 	"<tr>\n"
 	"<td align=\"right\">Move Symbol:</td>\n"
-	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"moveTable\" name=\"moveTable\" type=\"text\" value=\"{{moveTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"moveSymbol\" name=\"moveSymbol\" type=\"text\" value=\"{{moveSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"moveImgSymbol\" onclick=\"openWindowSymbol(1);\" src=\"http://aprs.nakhonthai.net/symbols/icons/{{moveImgNum}}-{{moveImgTable}}.png\"> <i>*Click icon for select MOVE symbol</i></td>\n"
+	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"moveTable\" name=\"moveTable\" type=\"text\" value=\"{{moveTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"moveSymbol\" name=\"moveSymbol\" type=\"text\" value=\"{{moveSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"moveImgSymbol\" onclick=\"openWindowSymbol(1);\" src=\"/symbols/icons/{{moveImgNum}}-{{moveImgTable}}.png\"> <i>*Click icon for select MOVE symbol</i></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\">Stop Symbol:</td>\n"
-	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"stopTable\" name=\"stopTable\" type=\"text\" value=\"{{stopTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"stopSymbol\" name=\"stopSymbol\" type=\"text\" value=\"{{stopSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"stopImgSymbol\" onclick=\"openWindowSymbol(2);\" src=\"http://aprs.nakhonthai.net/symbols/icons/{{stopImgNum}}-{{stopImgTable}}.png\"> <i>*Click icon for select STOP symbol</i></td>\n"
+	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"stopTable\" name=\"stopTable\" type=\"text\" value=\"{{stopTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"stopSymbol\" name=\"stopSymbol\" type=\"text\" value=\"{{stopSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"stopImgSymbol\" onclick=\"openWindowSymbol(2);\" src=\"/symbols/icons/{{stopImgNum}}-{{stopImgTable}}.png\"> <i>*Click icon for select STOP symbol</i></td>\n"
 	"</tr>\n"
 	"<tr><td style=\"text-align: right;\">High Speed:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"10\" max=\"1000\" step=\"1\" id=\"hspeed\" name=\"hspeed\" type=\"number\" value=\"{{hspeed}}\" /> km/h</td></tr>\n"
 	"<tr><td style=\"text-align: right;\">Low Speed:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"1\" max=\"250\" step=\"1\" id=\"lspeed\" name=\"lspeed\" type=\"number\" value=\"{{lspeed}}\" /> km/h</td></tr>\n"
@@ -11289,6 +11510,7 @@ void handle_txdebug(AsyncWebServerRequest *request)
     uint32_t lastCycle = 0;
     uint32_t lastWait = 0;
     uint32_t currentCycle = 0;
+    uint32_t watchdogRecoveries = 0;
 
     lu6jmfTxDebugSnapshot(
         &schedulerBusy,
@@ -11300,13 +11522,33 @@ void handle_txdebug(AsyncWebServerRequest *request)
         &rejected,
         &lastCycle,
         &lastWait,
-        &currentCycle
+        &currentCycle,
+        &watchdogRecoveries
     );
 
     // LU6JMF - Marcelo Ferreira
     // Copy the circular RAM log to a local snapshot before rendering.
-    Lu6jmfTxDebugEvent events[24];
-    uint8_t eventCount = lu6jmfTxDebugEvents(events, 24);
+    Lu6jmfTxDebugEvent curEvents[40]; // must match LU6JMF_TX_EVENT_COUNT in main.cpp
+    uint8_t eventCount = lu6jmfTxDebugEvents(curEvents, 40);
+
+    // LU6JMF (Oct/2026): crash black box - last TX events of the previous run,
+    // only present when it ended in PANIC/WDT/BROWNOUT/SW reset.
+    //
+    // Restricted to the owner: this runs only after the PRIME "txdebug" gate
+    // above, and additionally requires the PRIME-validated account callsign to
+    // be the owner's. primeUserCallsign() is the value returned by the PRIME
+    // server and is already in RAM (no extra network call per refresh).
+    //
+    // To open it to EVERYONE who already has the txdebug feature, set
+    // LU6JMF_BLACKBOX_OWNER to "" (empty string): the callsign check is skipped.
+    static const char *LU6JMF_BLACKBOX_OWNER = "LU6JMF";
+    Lu6jmfTxDebugEvent prevEvents[16];
+    char prevReason[24];
+    prevReason[0] = '\0';
+    uint8_t prevCount = 0;
+    if (LU6JMF_BLACKBOX_OWNER[0] == '\0' ||
+        primeUserCallsign().equalsIgnoreCase(LU6JMF_BLACKBOX_OWNER))
+        prevCount = lu6jmfCrumbPrevEvents(prevEvents, 16, prevReason, sizeof(prevReason));
 
     // LU6JMF - Marcelo Ferreira
     // Phase 2J: local read-only snapshot of learned RF airtime.
@@ -11400,6 +11642,7 @@ void handle_txdebug(AsyncWebServerRequest *request)
         "<tr><td>Last full cycle</td><td>%lu ms</td></tr>"
         "<tr><td>Last wait to PTT</td><td>%lu ms</td></tr>"
         "<tr><td>Current cycle</td><td>%lu ms</td></tr>"
+        "<tr><td>Watchdog recoveries</td><td class='%s'>%lu</td></tr>"
         "</table>",
 
         schedulerBusy ? "on" : "ok",
@@ -11421,7 +11664,10 @@ void handle_txdebug(AsyncWebServerRequest *request)
         (unsigned long)rejected,
         (unsigned long)lastCycle,
         (unsigned long)lastWait,
-        (unsigned long)currentCycle
+        (unsigned long)currentCycle,
+
+        watchdogRecoveries ? "on" : "ok",
+        (unsigned long)watchdogRecoveries
     );
 
     // -------------------------------------------------------------------------
@@ -11655,11 +11901,38 @@ void handle_txdebug(AsyncWebServerRequest *request)
         "<tr><th>Uptime</th><th>Event</th><th>Job</th><th style='text-align:right'>Value</th></tr>"
     );
 
-    for (uint8_t i = 0; i < eventCount; i++)
+    // Pass 0 = current run, pass 1 = black box of the previous (abnormal) run.
+    for (uint8_t pass = 0; pass < 2; pass++)
+    {
+    const Lu6jmfTxDebugEvent *events = (pass == 0) ? curEvents : prevEvents;
+    uint8_t srcCount = (pass == 0) ? eventCount : prevCount;
+
+    if (pass == 1)
+    {
+        if (prevCount == 0)
+            break;
+
+        response->printf(
+            "</table>"
+            "</div>"
+            // Hidden by default; revealed for 5 min by clicking the footer text
+            // (see script at the end of the page). Only emitted for the owner.
+            "<div class='card full' id='lu6bb' style='display:none'>"
+            "<h3>BEFORE LAST RESET (%s)</h3>"
+            "<small>last TX events of the previous run | newest first | "
+            "uptime is from that previous boot</small>"
+            "<table class='log'>"
+            "<tr><th>Uptime</th><th>Event</th><th>Job</th>"
+            "<th style='text-align:right'>Value</th></tr>",
+            prevReason
+        );
+    }
+
+    for (uint8_t i = 0; i < srcCount; i++)
     {
         const char *eventName = "UNKNOWN";
         const char *jobName = "GENERIC";
-        char value[32];
+        char value[64]; // LU6JMF: 64 for the WATCHDOG STATE decode below
         value[0] = '\0';
 
         // LU6JMF - Marcelo Ferreira
@@ -11828,6 +12101,38 @@ void handle_txdebug(AsyncWebServerRequest *request)
                          displacedPriorityName);
                 break;
             }
+
+            // LU6JMF - Marcelo Ferreira (Oct/2026)
+            // TX Scheduler watchdog recovery: value = ms the RF lifecycle was stuck.
+            case 12:
+                eventName = "WATCHDOG RECOVER";
+                snprintf(value, sizeof(value), "%lu ms",
+                         (unsigned long)events[i].value);
+                break;
+
+            // LU6JMF - Marcelo Ferreira (Oct/2026)
+            // Modem/AX.25 state snapshot taken when the watchdog fired.
+            // seen=0 -> stalled BEFORE PTT ON (AX.25 never keyed);
+            // seen=1 -> keyed, but the end-of-TX signal never arrived.
+            case 13:
+            {
+                eventName = "WATCHDOG STATE";
+                uint32_t v = events[i].value;
+                uint8_t st = v & 0x03;
+                const char *stName = (st == 0) ? "OFF"
+                                     : (st == 1) ? "WAITING"
+                                                 : "TRANSMITTING";
+                snprintf(value, sizeof(value),
+                         "init=%s full=%u seen=%u keyed=%u rx=%u h%u t%u",
+                         stName,
+                         (unsigned)((v >> 2) & 1),
+                         (unsigned)((v >> 3) & 1),
+                         (unsigned)((v >> 4) & 1),
+                         (unsigned)((v >> 5) & 1),
+                         (unsigned)((v >> 8) & 0xFF),
+                         (unsigned)((v >> 16) & 0xFF));
+                break;
+            }
         }
 
         uint32_t seconds = events[i].timestamp / 1000;
@@ -11843,12 +12148,13 @@ void handle_txdebug(AsyncWebServerRequest *request)
         );
     }
 
-    if (eventCount == 0)
+    if (pass == 0 && eventCount == 0)
     {
         response->print(
             "<tr><td>-</td><td>No TX events yet</td><td></td><td></td></tr>"
         );
     }
+    } // end pass loop
 
     response->print(
         "</table>"
@@ -11857,8 +12163,34 @@ void handle_txdebug(AsyncWebServerRequest *request)
         "<p><small>"
         "Scheduler completion is released only after real PTT OFF."
         "</small></p>"
-        "</body></html>"
     );
+
+    // LU6JMF: technician-only reveal of the black box card. Click the last word
+    // ("OFF.") of the footer to show it for 5 minutes, then it hides again.
+    // The card exists in the HTML only for the owner (server-side gate above).
+    if (prevCount > 0)
+    {
+        response->print(
+            "<script>(function(){"
+            "var c=document.getElementById('lu6bb');if(!c)return;"
+            "var K='lu6bbUntil',T=300000,tm=null;"
+            "function hide(){c.style.display='none';"
+            "try{sessionStorage.removeItem(K);}catch(e){}}"
+            "function show(u){c.style.display='block';clearTimeout(tm);"
+            "tm=setTimeout(hide,Math.max(0,u-Date.now()));}"
+            "try{var u=parseInt(sessionStorage.getItem(K)||'0');"
+            "if(u>Date.now())show(u);}catch(e){}"
+            "var f=document.querySelector('p small');"
+            "if(f){f.innerHTML=f.innerHTML.replace('OFF.',"
+            "'<span id=\"lu6bbk\">OFF.</span>');"
+            "document.getElementById('lu6bbk').onclick=function(){"
+            "var u=Date.now()+T;"
+            "try{sessionStorage.setItem(K,u);}catch(e){}show(u);};}"
+            "})();</script>"
+        );
+    }
+
+    response->print("</body></html>");
 
     request->send(response);
 }
@@ -12165,6 +12497,9 @@ void webService()
 					{ handle_netdebug(request); });
 	async_server.on("/radio", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_radio(request); });
+	// v2.1.3.1-audiotest: TX audio calibration tone, see handle_calibrate_tone() above.
+	async_server.on("/calibrate_tone", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
+					{ handle_calibrate_tone(request); });
 	async_server.on("/vpn", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_vpn(request); });
 #ifdef MQTT

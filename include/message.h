@@ -34,6 +34,12 @@ void sendAPRSMessage(const String &toCall, const String &message, bool encrypt, 
 void handleIncomingAPRS(const String& line);
 void sendAPRSMessageRetry();
 void pkgMsgSort(msgType a[]);
+// LU6JMF - Marcelo Ferreira (Oct/2026)
+// APRS Query feature (?APRSV/?VER/?ABOUT, ?IGATE, ?DX) - "APRS Queries" standard
+// (ref. SA7SKY APRS-Queries.pdf). handleAPRSQuery() returns "" when the text is
+// not a recognized query, so the caller can fall through to AT-command handling.
+String handleAPRSQuery(const String &queryText);
+void dxRecordTrackPacket(const char *callsign, const String &tnc2);
 // void processMessage(const char* message);
 // void sendMessage(const char* message);
 

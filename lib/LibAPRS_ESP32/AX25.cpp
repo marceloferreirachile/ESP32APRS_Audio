@@ -1209,6 +1209,62 @@ void Ax25GetTxDiag(uint8_t *head, uint8_t *tail, bool *bufferFull, uint8_t *init
 	*initStage = (uint8_t)txInitStage;
 }
 
+// LU6JMF - Marcelo Ferreira (Oct/2026)
+// Used ONLY by the TX-scheduler watchdog (main.cpp) when an RF lifecycle has
+// been stuck for 60 s. Evidence from /txdebug on the live digipeater: after a
+// watchdog release the AX.25 TX state machine was never reset, so the NEXT
+// frame could be accepted into the ring buffer but never keyed
+// (Ax25TransmitBuffer/Ax25TransmitCheck both return early while txInitStage is
+// WAITING/TRANSMITTING). Also the original recovery only forced the PTT off:
+// it never ran the first half of ModemTransmitStop() (DAC timer off, FIFO
+// flush, ADC timer back on), which could leave RX deaf.
+//
+// keyed = true  -> the modem really was transmitting (PTT/DAC flag active):
+//                  run the full ModemTransmitStop() sequence (it also raises
+//                  pttOff so the existing deferred PTT-off cleanup runs).
+// keyed = false -> stuck BEFORE the modem keyed up: do NOT touch the DAC/ADC
+//                  timers or FIFO (RX is live and the flush could race with
+//                  the ADC callback); only the AX.25 state is reset and the
+//                  caller raises pttOff for the scheduler cleanup.
+void Ax25TxAbort(bool keyed)
+{
+	if (keyed)
+		ModemTransmitStop(); // stops DAC ISR first, so the state below is not raced
+
+	txInitStage = TX_INIT_OFF;
+	txStage = TX_STAGE_IDLE;
+	txCrc = 0xFFFF;
+	txBitstuff = 0;
+	txByte = 0;
+	txByteIdx = 0;
+	txBitIdx = 0;
+	txCrcByteIdx = 0;
+	txFlagsElapsed = 0;
+	txDelayElapsed = 0;
+	txTailElapsed = 0;
+	txRetries = 0;
+
+	// Drop any frame still sitting in the 3-slot ring (the scheduler already
+	// considers this lifecycle finished, and it only ever admits one frame).
+	txFrameTail = txFrameHead;
+	txFrameBufferFull = false;
+	txBufferTail = txBufferHead;
+}
+
+// LU6JMF - Marcelo Ferreira (Oct/2026)
+// RX half of the watchdog's soft modem restart. Must be called from the task
+// that owns RX decoding (AFSK_Poll / taskAFSK), never from another task.
+// Resets only the per-demodulator HDLC receive state; frames already decoded
+// and waiting to be read (rxFrameHead/Tail) are kept.
+void Ax25RxReset(void)
+{
+	memset((void*)rxState, 0, sizeof(rxState));
+	for(uint8_t i = 0; i < (sizeof(rxState) / sizeof(rxState[0])); i++)
+		rxState[i].crc = 0xFFFF; // same as Ax25Init()
+	lastCrc = 0;
+	rxMultiplexDelay = 0;
+}
+
 void Ax25Init(uint8_t fx25Mode)
 {
 	txCrc = 0xFFFF;
