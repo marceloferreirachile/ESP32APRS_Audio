@@ -544,7 +544,6 @@ endParseFx25Frame:
 // v2.1.3.1-lu6jmf: forward-declared instead of #include "netlog.h" here, to
 // avoid pulling a LittleFS dependency into this vendored library file for
 // just one diagnostic helper - implemented in src/netlog.cpp.
-void NetLogWrite(const char *line);
 
 void *Ax25WriteTxFrame(uint8_t *data, uint16_t size)
 {
@@ -609,7 +608,6 @@ void *Ax25WriteTxFrame(uint8_t *data, uint16_t size)
 		// first TX. Serial.print() of a plain buffer has no such cost.
 		snprintf(netlogLine, sizeof(netlogLine), "[RFTX DROP-FULL] %s", rfDiagLine);
 		Serial.println(netlogLine);
-		NetLogWrite(netlogLine);
 		return NULL;
 	}
 
@@ -622,7 +620,6 @@ void *Ax25WriteTxFrame(uint8_t *data, uint16_t size)
 			// v2.1.3.1-lu6jmf: see stack-overflow comment above - Serial.print(), not printf("%s").
 			snprintf(netlogLine, sizeof(netlogLine), "[RFTX OK-FX25] %s", rfDiagLine);
 			Serial.println(netlogLine);
-			NetLogWrite(netlogLine);
 			return ret;
 		}
 	}
@@ -633,7 +630,6 @@ void *Ax25WriteTxFrame(uint8_t *data, uint16_t size)
 		// v2.1.3.1-lu6jmf: see stack-overflow comment above - Serial.print(), not printf("%s").
 		snprintf(netlogLine, sizeof(netlogLine), "[RFTX DROP-NOSPACE] %s", rfDiagLine);
 		Serial.println(netlogLine);
-		NetLogWrite(netlogLine);
 		return NULL;
 	}
 
@@ -667,7 +663,6 @@ void *Ax25WriteTxFrame(uint8_t *data, uint16_t size)
 	// newlib's heavy formatter from taskAPRS's already-tight stack budget.
 	snprintf(netlogLine, sizeof(netlogLine), "[RFTX OK] %s", rfDiagLine);
 	Serial.println(netlogLine);
-	NetLogWrite(netlogLine);
 	return ret;
 }
 
