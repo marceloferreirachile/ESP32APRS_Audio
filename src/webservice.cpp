@@ -283,72 +283,6 @@ void notFound(AsyncWebServerRequest *request)
 	request->send(404, "text/plain", "Not found");
 }
 
-// v2.1.3.1-lu6jmf: serves the netlog files (see netlog.cpp) as a simple
-// auto-refreshing HTML page at /netdebug, so they can be watched live in a
-// browser tab without curl/USB - same-origin, so no CORS issues like an
-// external HTML file would hit. Content is read fresh from LittleFS on every
-// request (meta-refresh every 5s), not cached/streamed, since these files
-// are small (12KB total budget) by design.
-static void netdebugPrintFile(AsyncResponseStream *web, const char *path, const char *label)
-{
-	web->print("<div class=\"lbl\">");
-	web->print(label);
-	web->print("</div><pre>");
-	if (LITTLEFS.exists(path))
-	{
-		File f = LITTLEFS.open(path, "r");
-		if (f)
-		{
-			while (f.available())
-			{
-				char buf[128];
-				size_t n = f.readBytes(buf, sizeof(buf) - 1);
-				buf[n] = 0;
-				// Minimal HTML-escaping so packet content with < or & can't break the page.
-				for (size_t i = 0; i < n; i++)
-				{
-					char c = buf[i];
-					if (c == '<') web->print("&lt;");
-					else if (c == '&') web->print("&amp;");
-					else web->write((uint8_t)c);
-				}
-			}
-			f.close();
-		}
-	}
-	else
-	{
-		web->print("(arquivo nao existe ainda)");
-	}
-	web->print("</pre>\n");
-}
-
-void handle_netdebug(AsyncWebServerRequest *request)
-{
-	if (!request->authenticate(config.http_username, config.http_password))
-	{
-		return request->requestAuthentication();
-	}
-
-	AsyncResponseStream *web = request->beginResponseStream("text/html", 4000);
-	if (!web)
-		return;
-
-	web->print("<!DOCTYPE html><html><head><meta charset=\"UTF-8\">");
-	web->print("<meta http-equiv=\"refresh\" content=\"5\">");
-	web->print("<title>NetDebug</title><style>");
-	web->print("body{background:#111;color:#0f0;font-family:monospace;padding:12px;}");
-	web->print("h1{color:#9f9;font-size:15px;}");
-	web->print(".lbl{color:#6cf;font-size:13px;margin-top:10px;}");
-	web->print("pre{background:#000;border:1px solid #333;padding:8px;white-space:pre-wrap;word-break:break-all;font-size:12px;}");
-	web->print("</style></head><body>");
-	web->print("<h1>NetDebug - atualiza a cada 5s</h1>");
-	netdebugPrintFile(web, "/netlog0.txt", "netlog0.txt");
-	netdebugPrintFile(web, "/netlog1.txt", "netlog1.txt");
-	web->print("</body></html>");
-	request->send(web);
-}
-
 void handle_logout(AsyncWebServerRequest *request)
 {
 	char *webString = allocateStringMemory(64); // Small buffer for "Log out"
@@ -12725,9 +12659,6 @@ void webService()
 	// 				{ handle_symbol2(request); });
 	async_server.on("/logout", HTTP_GET, [](AsyncWebServerRequest *request)
 					{ handle_logout(request); });
-	// v2.1.3.1-lu6jmf: live view of the netlog diagnostic files - see handle_netdebug() above.
-	async_server.on("/netdebug", HTTP_GET, [](AsyncWebServerRequest *request)
-					{ handle_netdebug(request); });
 	async_server.on("/radio", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request)
 					{ handle_radio(request); });
 	// v2.1.3.1-audiotest: TX audio calibration tone, see handle_calibrate_tone() above.

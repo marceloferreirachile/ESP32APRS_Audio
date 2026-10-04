@@ -60,7 +60,6 @@
 #include <rom/spi_flash.h>
 #include "FS.h"
 #include <LITTLEFS.h>
-#include "netlog.h"
 
 #include <time.h>
 
