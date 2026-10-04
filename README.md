@@ -12,7 +12,9 @@ This is a custom fork by LU6JMF (Marcelo, Concepcion del Uruguay, Entre Rios, Ar
 1. About tab -> Manual Firmware Update -> upload `firmware.bin`. The device reboots.
 2. File tab -> upload, one at a time: `icons.dat`, `main_shell.html`, `style.css`.
 
-Always do both steps, even if a given release only changed the firmware - it costs nothing and keeps the device's filesystem in sync with the firmware in case a future release does need it. Your WiFi/APRS configuration is preserved throughout; only devices still on very old v1.8/v1.9 firmware need a full USB reflash first (see the note in the release notes) before this web-panel flow applies.
+Always do both steps, even if a given release only changed the firmware - it costs nothing and keeps the device's filesystem in sync with the firmware in case a future release does need it. Your WiFi/APRS configuration is preserved throughout.
+
+**Coming from a very old v1.8/v1.9 firmware?** The partition table changed in later versions, so a direct OTA/web update from v1.8/v1.9 is not possible - those devices need a full USB reflash first, using the one-click browser installer above (or the ESP32 Flash Download Tool). After that one-time USB reflash, all future updates can go through the web panel as described above.
 
 The sections below (Feature, Hardware, PlatformIO Quick Start, raw ESP32 Flash Download Tool) are the original upstream documentation and mostly still apply, with the installer above now recommended over manual flashing for this fork.
 
