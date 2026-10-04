@@ -523,9 +523,19 @@ void lu6jmfTxDebugSnapshot(bool *busy,
                            uint32_t *rejected,
                            uint32_t *lastCycle,
                            uint32_t *lastWait,
-                           uint32_t *currentCycle);
+                           uint32_t *currentCycle,
+                           uint32_t *watchdogRecoveries);
 
 uint8_t lu6jmfTxDebugEvents(Lu6jmfTxDebugEvent *events, uint8_t maxEvents);
+
+// LU6JMF - Marcelo Ferreira (Oct/2026): crash black box (RTC memory).
+// Last TX events of the PREVIOUS run when it ended in PANIC/WDT/BROWNOUT/SW
+// reset, newest-first. Returns 0 if the previous boot was clean or a power-on.
+void lu6jmfCrumbBoot(void);
+uint8_t lu6jmfCrumbPrevEvents(Lu6jmfTxDebugEvent *events,
+                              uint8_t maxEvents,
+                              char *reason,
+                              size_t reasonLen);
 
 struct Lu6jmfTxTimingDebug
 {

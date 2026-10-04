@@ -144,8 +144,48 @@ void wireguard_remove()
 }
 
 
+// LU6JMF (Oct/2026): a WireGuard key is 32 bytes in base64 = exactly 44 chars ending in '='.
+// An empty, truncated or mistyped key makes wireguardif_init() fail, netif_add() then
+// returns NULL and the original code dereferenced it (netif_set_up(NULL)) -> PANIC at
+// every boot as soon as NTP synced = boot loop. Validate first, never touch a NULL netif.
+static bool wg_key_valid(const char *k)
+{
+    if (k == NULL || strlen(k) != 44 || k[43] != '=')
+        return false;
+    for (int i = 0; i < 43; i++)
+    {
+        char c = k[i];
+        bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/';
+        if (!ok)
+            return false;
+    }
+    return true;
+}
+
+// Short text for the VPN status line / logs: why the tunnel was not started ("" = ok).
+const char *wireguard_last_error = "";
+
 void wireguard_setup()
 {
+    wireguard_last_error = "";
+    if (!wg_key_valid(config.wg_private_key))
+    {
+        wireguard_last_error = "Invalid private key (must be 44 chars, base64, ends with =)";
+        log_d("WireGuard NOT started: %s", wireguard_last_error);
+        return;
+    }
+    if (!wg_key_valid(config.wg_public_key))
+    {
+        wireguard_last_error = "Invalid public key (must be 44 chars, base64, ends with =)";
+        log_d("WireGuard NOT started: %s", wireguard_last_error);
+        return;
+    }
+    if (config.wg_peer_address[0] == '\0')
+    {
+        wireguard_last_error = "Server address is empty";
+        log_d("WireGuard NOT started: %s", wireguard_last_error);
+        return;
+    }
     struct wireguardif_init_data wg;
     struct wireguardif_peer peer;
     ip_addr_t ipaddr;
@@ -178,9 +218,20 @@ void wireguard_setup()
         // Register the new WireGuard network interface with lwIP
         LOCK_TCPIP_CORE();        
         wg_netif = netif_add(&wg_netif_struct, ip_2_ip4(&ipaddr), ip_2_ip4(&netmask), ip_2_ip4(&gateway), &wg, &wireguardif_init, &ip_input);
-        // Mark the interface as administratively up, link up flag is set automatically when peer connects
-        netif_set_up(wg_netif);
+        if (wg_netif != NULL)
+        {
+            // Mark the interface as administratively up, link up flag is set automatically when peer connects
+            netif_set_up(wg_netif);
+        }
         UNLOCK_TCPIP_CORE();
+    }
+
+    // LU6JMF: netif_add can fail (bad key, UDP port in use, no memory). Never continue with NULL.
+    if (wg_netif == NULL)
+    {
+        wireguard_last_error = "WireGuard interface could not be created (key, port or memory)";
+        log_d("WireGuard NOT started: %s", wireguard_last_error);
+        return;
     }
 
     // Initialise the first WireGuard peer structure
@@ -199,6 +250,9 @@ void wireguard_setup()
     peer.endport_port = config.wg_port;
 
     // Register the new WireGuard peer with the netwok interface
+    // LU6JMF: these lwIP calls (UDP pcb, pbuf, timers) must run with the TCPIP core locked,
+    // like the netif_add above; from this task unlocked they can corrupt lwIP state.
+    LOCK_TCPIP_CORE();
     wireguardif_add_peer(wg_netif, &peer, &wireguard_peer_index_local);
 
     if ((wireguard_peer_index_local != WIREGUARDIF_INVALID_INDEX) && !ip_addr_isany(&peer.endpoint_ip))
@@ -206,6 +260,11 @@ void wireguard_setup()
         // Start outbound connection to peer
         wireguardif_connect(wg_netif, wireguard_peer_index_local);
     }
+    else
+    {
+        wireguard_last_error = "Peer not added (check public key and that the server address resolves)";
+    }
+    UNLOCK_TCPIP_CORE();
 }
 
 #ifdef __cplusplus

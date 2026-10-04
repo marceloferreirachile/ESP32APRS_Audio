@@ -291,6 +291,11 @@ typedef struct Config_Struct
 	uint8_t modem_type;
 	uint8_t fx25_mode;
 	uint16_t tx_timeslot;
+
+	// TX audio calibration (v2.1.3.1-audiotest)
+	uint8_t tx_audio_gain = 100;		// TX audio level, 0-100%. 100 = legacy fixed gain (exact same output as before this feature existed)
+	bool tx_preemphasis = false;		// TX pre-emphasis tilt, for radios whose mic input applies de-emphasis (not needed on "flat"/discriminator inputs)
+	uint8_t tx_preemphasis_tilt = 20;	// How much to attenuate the mark(1200Hz)/low tone relative to space(2200Hz)/high tone, in %, when tx_preemphasis is enabled
 	char ntp_host[20];
 
 	// VPN wiregurad

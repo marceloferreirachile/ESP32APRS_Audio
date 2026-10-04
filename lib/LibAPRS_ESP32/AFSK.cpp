@@ -37,6 +37,7 @@
 #endif
 
 #include "modem.h"
+#include "AX25.h" // LU6JMF: Ax25RxReset() for the watchdog's soft RX restart
 
 #include "fx25.h"
 
@@ -1541,19 +1542,155 @@ bool adcq_lock = false;
 
 uint16_t phaseAcc = 0;
 
+// --- TX audio gain / pre-emphasis (v2.1.3.1-audiotest) --------------------------------------
+// Before this feature, sample_dac_isr() always applied a hardcoded *12>>4 (0.75x) scale. That
+// exact scaling is preserved as the gain=100 case below, so default behaviour is unchanged.
+static volatile uint8_t txAudioGainPercent = 100;		 // 0-100, see afskSetTxGain()
+static volatile bool txPreemphasisEnable = false;		 // see afskSetTxPreemphasis()
+static volatile uint8_t txPreemphasisTiltPercent = 20;	 // see afskSetTxPreemphasis()
+
+void afskSetTxGain(uint8_t gainPercent)
+{
+  if (gainPercent > 100)
+    gainPercent = 100;
+  txAudioGainPercent = gainPercent;
+}
+
+void afskSetTxPreemphasis(bool enable, uint8_t tiltPercent)
+{
+  if (tiltPercent > 100)
+    tiltPercent = 100;
+  txPreemphasisEnable = enable;
+  txPreemphasisTiltPercent = tiltPercent;
+}
+
 void IRAM_ATTR sample_dac_isr()
 {
   if (hw_afsk_dac_isr)
   {
     portENTER_CRITICAL_ISR(&timerMux); // ISR start
     sinwave = MODEM_BAUDRATE_TIMER_HANDLER();
-    // Sigma-delta duty of one channel, the value ranges from -128 to 127, recommended range is -90 ~ 90.The waveform is more like a random one in this range.
-    int8_t sine = (int8_t)(((sinwave - 127) * 12) >> 4); // Redue sine = -85 ~ 85
+
+    // Centered sample, nominal range -127..128
+    int32_t centered = (int32_t)sinwave - 127;
+
+    // Optional TX pre-emphasis (approximation - see afskSetTxPreemphasis() doc comment in AFSK.h).
+    // A proper pre-emphasis would be a 1-pole IIR shelf filter (+6dB/octave, like the RX
+    // PREFILTER_PREEMPHASIS path in modem.cpp), but reusing that filter/state safely here would
+    // require decoupling it from the RX demodulator state, which isn't safe to do blindly on a
+    // live RF TX path. Instead, since this ISR already knows which tone (mark/space) is playing
+    // via ModemIsCurrentSymbolSpace(), we just attenuate the mark(1200Hz)/low tone's amplitude a
+    // bit relative to the space(2200Hz)/high tone - close enough in practice to compensate for a
+    // radio mic input's built-in de-emphasis, without any filter state/transients (so it cannot
+    // introduce clicks/glitches - it's a static per-sample multiply).
+    if (txPreemphasisEnable && ModemConfig.modem != MODEM_9600 && !ModemIsCurrentSymbolSpace())
+    {
+      int32_t tiltScale = 100 - (int32_t)txPreemphasisTiltPercent;
+      if (tiltScale < 0)
+        tiltScale = 0;
+      centered = (centered * tiltScale) / 100;
+    }
+
+    // TX audio gain, 0-100%. gain=100 reproduces the exact legacy fixed scaling (*12>>4 == *0.75),
+    // 0 is silence, linear in between. Sigma-delta duty of one channel ranges from -128 to 127,
+    // recommended range is -90~90 (kept identical to the original comment/behaviour at gain=100).
+    int32_t scaled = (centered * 12 * (int32_t)txAudioGainPercent) / 100;
+    scaled >>= 4;
+    if (scaled > 127)
+      scaled = 127;
+    else if (scaled < -127)
+      scaled = -127;
+    int8_t sine = (int8_t)scaled;
     sigmadelta_set_duty(SIGMADELTA_CHANNEL_0, sine);
     portEXIT_CRITICAL_ISR(&timerMux); // ISR end
     // Give a semaphore that we can check in the loop
     // xSemaphoreGiveFromISR(timerSemaphore, NULL);
   }
+}
+
+// --- TX calibration tone test (v2.1.3.1-audiotest) -------------------------------------------
+// Lets the operator key up the radio and transmit a continuous, un-framed 1200Hz/2200Hz tone (or
+// alternate between them), to adjust TX audio gain/preemphasis by ear on another radio, without
+// needing a real AX.25 packet. Built on top of the existing (previously dormant/incomplete)
+// ModemTxTestStart()/ModemTxTestStop() in modem.cpp.
+//
+// SAFETY - this is real RF/PTT. Two independent mechanisms guarantee the radio cannot be left
+// keyed up indefinitely, even if the HTTP request/connection that started it is lost:
+//   1) an esp_timer one-shot software timer, running in its own dedicated task (independent of
+//      the web server and of the AFSK polling task), that force-stops the test after
+//      TX_CALIBRATION_MAX_MS;
+//   2) a redundant check at the top of AFSK_Poll() (already called every few ms from taskAFSK)
+//      that does the same thing as a backstop in case the timer callback is ever delayed/missed.
+// AFSK_StartTxCalibration() also refuses to start a second test while one is already running
+// (simple mutex via txCalibrationActive / ModemIsTxTestOngoing()), so two tones can never be
+// keyed up on top of each other.
+#include "esp_timer.h"
+
+static volatile bool txCalibrationActive = false;
+static volatile unsigned long txCalibrationStartMillis = 0;
+static const unsigned long TX_CALIBRATION_MAX_MS = 10000; // hard safety timeout: 10s
+static esp_timer_handle_t txCalibrationTimer = NULL;
+
+static void txCalibrationTimeoutCallback(void *arg)
+{
+  // Runs in the esp_timer service task context (not an ISR), so it's safe to call
+  // ModemTxTestStop() -> setPtt() here (setPtt() touches LEDs/RMT, which isn't ISR-safe).
+  if (txCalibrationActive)
+  {
+    ModemTxTestStop();
+    txCalibrationActive = false;
+  }
+}
+
+bool AFSK_IsTxCalibrationActive(void)
+{
+  return txCalibrationActive;
+}
+
+void AFSK_StopTxCalibration(void)
+{
+  if (txCalibrationTimer != NULL)
+    esp_timer_stop(txCalibrationTimer); // no-op/harmless if not running
+  if (txCalibrationActive)
+  {
+    ModemTxTestStop();
+    txCalibrationActive = false;
+  }
+}
+
+bool AFSK_StartTxCalibration(uint8_t toneType)
+{
+  if (txCalibrationActive || ModemIsTxTestOngoing())
+    return false; // mutex: a calibration (or other TX test) is already running - reject
+
+  enum ModemTxTestMode mode;
+  switch (toneType)
+  {
+  case 1:
+    mode = TEST_SPACE; // high tone, e.g. 2200Hz
+    break;
+  case 2:
+    mode = TEST_ALTERNATING;
+    break;
+  default:
+    mode = TEST_MARK; // low tone, e.g. 1200Hz
+    break;
+  }
+
+  if (txCalibrationTimer == NULL)
+  {
+    esp_timer_create_args_t timerArgs = {};
+    timerArgs.callback = &txCalibrationTimeoutCallback;
+    timerArgs.name = "txcal_timeout";
+    esp_timer_create(&timerArgs, &txCalibrationTimer);
+  }
+
+  txCalibrationStartMillis = millis();
+  txCalibrationActive = true;
+  ModemTxTestStart(mode);
+  esp_timer_start_once(txCalibrationTimer, (uint64_t)TX_CALIBRATION_MAX_MS * 1000ULL);
+
+  return true;
 }
 
 extern int mVrms;
@@ -1567,8 +1704,45 @@ bool sqlActiveOld = false;
 // uint32_t ret_num = 0;
 // uint8_t resultADC[READ_LEN] = {0};
 
+// LU6JMF - Marcelo Ferreira (Oct/2026)
+// RX half of the TX-scheduler watchdog's soft modem restart. The demodulator
+// and AX.25 RX state are owned by this task (AFSK_Poll / taskAFSK), so the
+// watchdog (another task) only raises a request flag and the reset itself runs
+// here, race-free. Timers/drivers are NOT recreated (AFSK_hw_init() must never
+// run twice: timerBegin() would allocate new gptimers - see task #29).
+static volatile bool rxSoftResetRequested = false;
+
+void AFSK_RequestRxSoftReset(void)
+{
+  rxSoftResetRequested = true;
+}
+
 void AFSK_Poll(bool SA818, bool RFPower)
 {
+  if (rxSoftResetRequested)
+  {
+    if (!hw_afsk_dac_isr) // never while the DAC is sending; retry on the next poll
+    {
+      rxSoftResetRequested = false;
+      portENTER_CRITICAL(&fifoMux);
+      RingBuffer_Init(&fifo); // drop stale ADC samples (ISR producer is excluded)
+      portEXIT_CRITICAL(&fifoMux);
+      ModemInit();    // demodulator filters/PLL/DCD back to power-on state
+      Ax25RxReset();  // HDLC receive state back to idle
+      dcd_cnt = 0;
+      mVsum = 0;
+      mVsumCount = 0;
+    }
+  }
+
+  // Redundant TX calibration failsafe (v2.1.3.1-audiotest): backstop in case the esp_timer
+  // callback in AFSK_StartTxCalibration() is ever delayed/missed. AFSK_Poll() runs every 1-3ms
+  // from taskAFSK, so this check is effectively as fast as the primary timer.
+  if (txCalibrationActive && ((millis() - txCalibrationStartMillis) >= TX_CALIBRATION_MAX_MS))
+  {
+    AFSK_StopTxCalibration();
+  }
+
   fifoSampleCount = fifo.count;  // Diagnostic snapshot
   int mV;
   int x = 0;

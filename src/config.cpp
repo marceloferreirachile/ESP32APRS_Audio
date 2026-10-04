@@ -85,6 +85,9 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     doc["rfBand"] = config.band;
     doc["rfPwr"] = config.rf_power;
     doc["audioLPF"] = config.audio_lpf;
+    doc["txAudioGain"] = config.tx_audio_gain;
+    doc["txPreemphasis"] = config.tx_preemphasis;
+    doc["txPreemphasisTilt"] = config.tx_preemphasis_tilt;
     // doc["rfFreq"] = config.rf_freq;
     // doc["rfOffset"] = config.rf_freq_offset;
     // doc["rfBW"] = config.rf_bw;
@@ -691,6 +694,9 @@ bool loadConfiguration(const char *filename, Configuration &config)
         config.volume = doc["rfVolume"];
         config.band = doc["rfBand"];
         config.audio_lpf = doc["audioLPF"];
+        config.tx_audio_gain = doc["txAudioGain"] | 100;
+        config.tx_preemphasis = doc["txPreemphasis"] | false;
+        config.tx_preemphasis_tilt = doc["txPreemphasisTilt"] | 20;
         // config.rf_freq = doc["rfFreq"];
         // config.rf_freq_offset = doc["rfOffset"];
         // config.rf_bw = doc["rfBW"];

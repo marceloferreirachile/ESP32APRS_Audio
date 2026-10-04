@@ -194,6 +194,15 @@ void Ax25Init(uint8_t fx25Mode);
  */
 void Ax25GetTxDiag(uint8_t *head, uint8_t *tail, bool *bufferFull, uint8_t *initStage);
 
+// LU6JMF - Marcelo Ferreira (Oct/2026): TX-scheduler watchdog full recovery.
+// Resets the AX.25 TX state machine + ring buffer. keyed=true also runs the
+// full ModemTransmitStop() sequence. See AX25.cpp for the rationale.
+void Ax25TxAbort(bool keyed);
+
+// LU6JMF - Marcelo Ferreira (Oct/2026): RX half of the soft modem restart.
+// Call only from the RX-owning task (AFSK_Poll).
+void Ax25RxReset(void);
+
 void ax25_decode(uint8_t *buf,size_t len,uint16_t mVrms, AX25Msg *msg);
 
 char ax25_encode(ax25frame &frame, char *txt,int size);

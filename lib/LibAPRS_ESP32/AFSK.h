@@ -442,5 +442,45 @@ void afskSetModem(uint8_t val, bool bpf,uint16_t timeSlot,uint16_t preamble,uint
 void setPtt(bool state);
 void IRAM_ATTR LED_Status2(uint8_t red, uint8_t green, uint8_t blue);
 
+// --- TX audio calibration (v2.1.3.1-audiotest) ---------------------------------------------
+
+/**
+ * @brief Set TX audio output gain, applied on every DAC/sigma-delta sample in sample_dac_isr().
+ * @param gainPercent 0-100. 100 reproduces the exact legacy fixed gain (*12>>4) this firmware
+ * always used before this setting existed; 0 is silence. Linear in between, applied per-sample
+ * (no jumps/clicks - changing it only rescales the already-generated waveform).
+ */
+void afskSetTxGain(uint8_t gainPercent);
+
+/**
+ * @brief Enable/disable the TX pre-emphasis tilt approximation and set its strength.
+ * @param enable true to attenuate the mark(1200Hz)/low tone relative to the space(2200Hz)/high
+ * tone, to roughly compensate for radios whose mic input applies de-emphasis on receive.
+ * @param tiltPercent How much to attenuate the mark tone, in % (0 = no difference, higher = more).
+ * @note This is a simplified amplitude-tilt approximation, not a true 1-pole IIR shelf filter -
+ * see the comment above sample_dac_isr() for why.
+ */
+void afskSetTxPreemphasis(bool enable, uint8_t tiltPercent);
+
+/**
+ * @brief Start a continuous TX calibration tone (bypasses AX.25/HDLC framing) so the operator
+ * can key up the radio and adjust TX audio level/preemphasis by ear on another radio.
+ * @warning Real RF: PTT keys up for a short, fixed safety timeout and then auto-releases, even
+ * if the caller never calls AFSK_StopTxCalibration() (e.g. the web request that started it was
+ * dropped). See AFSK.cpp for the two independent timeout mechanisms.
+ * @param toneType 0 = mark/low tone (1200Hz), 1 = space/high tone (2200Hz), 2 = alternating
+ * @return true if started, false if a calibration (or other TX test) is already running
+ */
+bool AFSK_StartTxCalibration(uint8_t toneType);
+
+/**
+ * @brief Immediately stop an ongoing TX calibration tone and release PTT.
+ */
+void AFSK_StopTxCalibration(void);
+
+/**
+ * @brief Check whether a TX calibration tone is currently being transmitted.
+ */
+bool AFSK_IsTxCalibrationActive(void);
 
 #endif
