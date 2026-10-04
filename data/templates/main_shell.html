@@ -29,16 +29,22 @@ $("#contentmain").load("/dashboard");
 $("#contentmain").load("/radio");
 } else if (tabName == 'IGATE') {
 $("#contentmain").load("/igate");
+} else if (tabName == 'IGTLM') {
+$("#contentmain").load("/igate2");
 } else if (tabName == 'DIGI') {
 $("#contentmain").load("/digi");
 } else if (tabName == 'TRACKER') {
 $("#contentmain").load("/tracker");
 } else if (tabName == 'WX') {
 $("#contentmain").load("/wx");
+} else if (tabName == 'WXCH') {
+$("#contentmain").load("/wx2");
 } else if (tabName == 'TLM') {
 $("#contentmain").load("/tlm");
 } else if (tabName == 'SENSOR') {
 $("#contentmain").load("/sensor");
+} else if (tabName == 'SCFG') {
+$("#contentmain").load("/sensor2");
 } else if (tabName == 'VPN') {
 $("#contentmain").load("/vpn");
 {{MQTT_TAB_JS}}} else if (tabName == 'MSG') {
@@ -175,11 +181,16 @@ return 0;
 <button class="nav-tabs" onclick="selectTab(event, 'WX')">WX</button>
 <button class="nav-tabs" onclick="selectTab(event, 'TLM')">TLM</button>
 <button class="nav-tabs" onclick="selectTab(event, 'SENSOR')">SENSOR</button>
-<button class="nav-tabs" onclick="selectTab(event, 'VPN')">VPN</button>
-{{MQTT_TAB_BTN}}<button class="nav-tabs" onclick="selectTab(event, 'MSG')">MSG</button>
+<button class="nav-tabs" onclick="selectTab(event, 'MSG')">MSG</button>
 <button class="nav-tabs" onclick="selectTab(event, 'OBJ')">OBJ</button>
 <button class="nav-tabs" onclick="selectTab(event, 'WiFi')">WiFi</button>
-<button class="nav-tabs" onclick="selectTab(event, 'MOD')">MOD</button>
+</ul>
+<ul class="nav nav-tabs" style="margin: 5px;">
+<button class="nav-tabs" onclick="selectTab(event, 'IGTLM')">IGTLM</button>
+<button class="nav-tabs" onclick="selectTab(event, 'WXCH')">WXCH</button>
+<button class="nav-tabs" onclick="selectTab(event, 'SCFG')">SCFG</button>
+<button class="nav-tabs" onclick="selectTab(event, 'VPN')">VPN</button>
+{{MQTT_TAB_BTN}}<button class="nav-tabs" onclick="selectTab(event, 'MOD')">MOD</button>
 <button class="nav-tabs" onclick="selectTab(event, 'IO')">I/O</button>
 <button class="nav-tabs" onclick="selectTab(event, 'System')">System</button>
 <button class="nav-tabs" onclick="selectTab(event, 'File')">File</button>
