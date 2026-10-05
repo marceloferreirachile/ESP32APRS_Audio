@@ -840,15 +840,7 @@ void handle_dashboard(AsyncWebServerRequest *request)
 	data["tzStr"] = temp_buffer;
 
 	String html = renderTemplate(DASHBOARD_TEMPLATE, data.as<JsonVariant>());
-	AsyncResponseStream *webString = request->beginResponseStream("text/html", html.length() + 200);
-	if (!webString)
-	{
-		return; // Memory allocation failed
-	}
-	webString->print(html);
-	webString->addHeader("dashboard", "content");
-	webString->addHeader("Cache-Control", "no-cache");
-	request->send(webString);
+	sendHtmlChunked(request, html, "dashboard");
 	lastHeardTimeout = millis() + 500;
 	lastHeard_Flag = true;
 }
@@ -956,15 +948,7 @@ void handle_sidebar(AsyncWebServerRequest *request)
 	}
 
 	String html_str = renderTemplate(SIDEBAR_TEMPLATE, data.as<JsonVariant>());
-	AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-	if (!html)
-	{
-		return; // Memory allocation failed
-	}
-	html->print(html_str);
-	html->addHeader("Sidebar", "content");
-	html->addHeader("Cache-Control", "no-cache");
-	request->send(html);
+	sendHtmlChunked(request, html_str, "Sidebar");
 }
 
 // LU6JMF - Marcelo Ferreira: fase 6 - template embutido no firmware (ver about).
@@ -1866,15 +1850,7 @@ void handle_storage(AsyncWebServerRequest *request)
 	data["notDir"] = notDir;
 
 	String html_str = renderTemplate(STORAGE_TEMPLATE, data.as<JsonVariant>());
-	AsyncResponseStream *webString = request->beginResponseStream("text/html", html_str.length() + 200);
-	if (!webString)
-	{
-		return; // Memory allocation failed
-	}
-	webString->print(html_str);
-	webString->addHeader("Sensor", "content");
-	webString->addHeader("Cache-Control", "no-cache");
-	request->send(webString);
+	sendHtmlChunked(request, html_str, "Sensor");
 	adcEn = 1;
 	dacEn = 0;
 }
@@ -3030,15 +3006,7 @@ void handle_vpn(AsyncWebServerRequest *request)
 		}
 
 		String html_str = renderTemplate(VPN_TEMPLATE, data.as<JsonVariant>());
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (!html)
-		{
-			return; // Memory allocation failed
-		}
-		html->print(html_str);
-		html->addHeader("VPN", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "VPN");
 	}
 }
 
@@ -3282,15 +3250,7 @@ void handle_mqtt(AsyncWebServerRequest *request)
 		data["subMsg"] = (bool)(config.mqtt_subscribe_flag & MQTT_SUBSCRIBE_MESSAGE);
 
 		String html_str = renderTemplate(MQTT_TEMPLATE, data.as<JsonVariant>());
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (!html)
-		{
-			return; // Memory allocation failed
-		}
-		html->print(html_str);
-		html->addHeader("MQTT", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "MQTT");
 	}
 }
 #endif
@@ -3731,16 +3691,7 @@ void handle_object(AsyncWebServerRequest *request)
 		}
 
 		String html_str = renderTemplate(OBJECT_TEMPLATE, data.as<JsonVariant>());
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (!html)
-		{
-			request->send(500, "text/html", "Memory allocation failed");
-			return;
-		}
-		html->print(html_str);
-		html->addHeader("Object", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "Object");
 	}
 }
 
@@ -7578,16 +7529,7 @@ void handle_igate2(AsyncWebServerRequest *request)
 
 		esp_task_wdt_reset();
 		String html_str = renderTemplate(IGATE2_TEMPLATE, data.as<JsonVariant>());
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (!html)
-		{
-			request->send(500, "text/html", "Memory allocation failed");
-			return;
-		}
-		html->print(html_str);
-		html->addHeader("IGATETlm", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "IGATETlm");
 	}
 }
 
@@ -8630,16 +8572,7 @@ void handle_wx(AsyncWebServerRequest *request)
 		log_e("[WX] before alloc: freeHeap=%u largestFreeBlock=%u", ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 		esp_task_wdt_reset();
 		String html_str = renderTemplate(WX_TEMPLATE, data.as<JsonVariant>());
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (!html)
-		{
-			request->send(500, "text/html", "Memory allocation failed");
-			return;
-		}
-		html->print(html_str);
-		html->addHeader("Weather", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "Weather");
 	}
 }
 
@@ -8733,16 +8666,7 @@ void handle_wx2(AsyncWebServerRequest *request)
 		log_e("[WX2] before alloc: freeHeap=%u largestFreeBlock=%u", ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 		esp_task_wdt_reset();
 		String html_str = renderTemplate(WX2_TEMPLATE, data.as<JsonVariant>());
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (!html)
-		{
-			request->send(500, "text/html", "Memory allocation failed");
-			return;
-		}
-		html->print(html_str);
-		html->addHeader("WeatherCh", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "WeatherCh");
 	}
 }
 
@@ -9092,16 +9016,7 @@ void handle_tlm(AsyncWebServerRequest *request)
 		esp_task_wdt_reset();
 		String html_str = renderTemplate(TLM_TEMPLATE, data.as<JsonVariant>());
 		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (!html)
-		{
-			request->send(500, "text/html", "Memory allocation failed");
-			return;
-		}
-		html->print(html_str);
-		html->addHeader("Telemetry", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "Telemetry");
 	}
 }
 
@@ -9321,16 +9236,7 @@ void handle_sensor(AsyncWebServerRequest *request)
 		esp_task_wdt_reset();
 		String html_str = renderTemplate(SENSOR_TEMPLATE, data.as<JsonVariant>());
 		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (!html)
-		{
-			request->send(500, "text/html", "Memory allocation failed");
-			return;
-		}
-		html->print(html_str);
-		html->addHeader("Sensor", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "Sensor");
 	}
 }
 
@@ -9493,16 +9399,7 @@ void handle_sensor2(AsyncWebServerRequest *request)
 		log_e("[SENSOR2] before alloc: freeHeap=%u largestFreeBlock=%u", ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 		esp_task_wdt_reset(); // feed watchdog: handle_sensor2 runs on the async_tcp task itself
 		String html_str = renderTemplate(SENSOR2_TEMPLATE, data.as<JsonVariant>());
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (!html)
-		{
-			request->send(500, "text/html", "Memory allocation failed");
-			return;
-		}
-		html->print(html_str);
-		html->addHeader("SensorCfg", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "SensorCfg");
 	}
 }
 
@@ -10224,16 +10121,7 @@ void handle_tracker(AsyncWebServerRequest *request)
 	esp_task_wdt_reset();
 	String html_str = renderTemplate(TRACKER_TEMPLATE, data.as<JsonVariant>());
 	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-	AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-	if (!html)
-	{
-		request->send(500, "text/html", "Memory allocation failed");
-		return;
-	}
-	html->print(html_str);
-	html->addHeader("Tracker", "content");
-	html->addHeader("Cache-Control", "no-cache");
-	request->send(html);
+	sendHtmlChunked(request, html_str, "Tracker");
 }
 
 static const char *WIRELESS_TEMPLATE =
@@ -10609,16 +10497,7 @@ void handle_wireless(AsyncWebServerRequest *request)
 		esp_task_wdt_reset();
 		String html_str = renderTemplate(WIRELESS_TEMPLATE, data.as<JsonVariant>());
 		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (!html)
-		{
-			request->send(500, "text/html", "Memory allocation failed");
-			return;
-		}
-		html->print(html_str);
-		html->addHeader("wifi", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "wifi");
 	}
 }
 
@@ -11217,16 +11096,7 @@ void handle_about(AsyncWebServerRequest *request)
 #endif
 
 	String html = renderTemplate(ABOUT_TEMPLATE, data.as<JsonVariant>());
-	AsyncResponseStream *webString = request->beginResponseStream("text/html", html.length() + 200);
-	if (!webString)
-	{
-		request->send(500, "text/html", "Memory allocation failed");
-		return;
-	}
-	webString->print(html);
-	webString->addHeader("About", "content");
-	webString->addHeader("Cache-Control", "no-cache");
-	request->send(webString);
+	sendHtmlChunked(request, html, "About");
 }
 
 // -----------------------------------------------------------------------------
