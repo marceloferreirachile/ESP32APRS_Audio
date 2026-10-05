@@ -2882,6 +2882,7 @@ int pkgTxCount()
 // TX Scheduler: one RF frame at a time.
 // Busy begins when AX.25 accepts a frame and ends only after real PTT release.
 // -----------------------------------------------------------------------------
+bool AFSK_IsTxCalibrationActive(void); // AFSK.cpp (TX calibration tone running)
 static volatile bool lu6jmfRfTxBusy = false;
 static volatile bool lu6jmfRfPttSeen = false;
 
@@ -3720,6 +3721,16 @@ bool pkgTxSend()
 
     // One RF frame is already waiting/transmitting/completing.
     if (lu6jmfRfTxBusy)
+    {
+        psramUnlock();
+        return true;
+    }
+
+    // 2.1.5: a TX calibration tone (RADIO page) owns the transmitter for up to
+    // 10 s. Hold RF dispatch meanwhile (frames stay queued) so a packet can never
+    // start in the middle of the tone and leave the scheduler/modem inconsistent.
+    // This is what used to require a reboot after using the tone buttons.
+    if (AFSK_IsTxCalibrationActive())
     {
         psramUnlock();
         return true;

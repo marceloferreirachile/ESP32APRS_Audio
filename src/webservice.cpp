@@ -2284,7 +2284,7 @@ static const char *RADIO_TEMPLATE =
 	// scheduler can be left thinking a slot is busy after a calibration run. Warn and offer a direct
 	// restart so real beacons/objects resume reliably without the operator having to go find the
 	// System tab.
-	"<tr><td colspan=\"2\" style=\"text-align:left;font-size:8pt;color:#b35900;word-wrap:break-word;white-space:normal;\"><i>After using these tone buttons, restart the device before leaving it unattended - the calibration tone bypasses the normal TX scheduler and can leave it busy until rebooted.</i></td></tr>\n"
+	"<tr><td colspan=\"2\" style=\"text-align:left;font-size:8pt;color:#b35900;word-wrap:break-word;white-space:normal;\"><i>While a tone plays (10 s) the TX scheduler waits; queued packets go out right after it ends. No restart needed. If the digipeater is transmitting when you press a tone button, wait a few seconds and press it again.</i></td></tr>\n"
 	"<tr><td colspan=\"2\" style=\"text-align:left;\">\n"
 	"<button class=\"button\" type='button' id='calBtnRestart' style=\"background-color:#b35900;\" onclick=\"calibrateRestart()\"> Restart Device Now </button>\n"
 	"</td></tr>\n"
@@ -2717,6 +2717,19 @@ void handle_calibrate_tone(AsyncWebServerRequest *request)
 	{
 		request->send(409, "text/plain", "RF disabled (RADIO tab > Enable) - enable the RF module before calibrating.");
 		return;
+	}
+
+	// 2.1.5: never start the tone while the RF scheduler is transmitting (or a PTT OFF
+	// is pending): it would collide with the packet. The user just retries in a moment.
+	{
+		bool schedBusy = false, txNow = false, pttOffPend = false;
+		lu6jmfTxDebugSnapshot(&schedBusy, NULL, &txNow, &pttOffPend,
+							  NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+		if (schedBusy || txNow || pttOffPend)
+		{
+			request->send(409, "text/plain", "The digipeater is transmitting right now - wait a few seconds and press the tone button again.");
+			return;
+		}
 	}
 
 	char msg[220];
