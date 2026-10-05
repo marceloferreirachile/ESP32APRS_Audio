@@ -11708,7 +11708,9 @@ void handle_txdebug(AsyncWebServerRequest *request)
     //
     // To open it to EVERYONE who already has the txdebug feature, set
     // LU6JMF_BLACKBOX_OWNER to "" (empty string): the callsign check is skipped.
-    static const char *LU6JMF_BLACKBOX_OWNER = "LU6JMF";
+    // 2.1.5: empty = visible to everyone who already has the /txdebug (PRIME) access,
+    // not only to the owner. Set to "LU6JMF" to restrict it to the owner again.
+    static const char *LU6JMF_BLACKBOX_OWNER = "";
     Lu6jmfTxDebugEvent prevEvents[16];
     char prevReason[24];
     prevReason[0] = '\0';
