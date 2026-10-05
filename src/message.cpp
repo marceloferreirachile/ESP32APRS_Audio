@@ -768,7 +768,10 @@ void handleIncomingAPRS(const String &line)
                     String queryResponse = handleAPRSQuery(decrypted);
                     if (queryResponse != "")
                     {
-                        sendAPRSMessage(fromCall, queryResponse, config.msg_encrypt, true);
+                        // 2.1.5: query replies now use the normal retry policy (msg_retry /
+                        // msg_interval) so a reply lost after the ACK is re-sent until the
+                        // asker ACKs it. Before 2.1.4 it was noRetry=true (sent once only).
+                        sendAPRSMessage(fromCall, queryResponse, config.msg_encrypt, false);
                     }
                     else if (config.at_cmd_msg)
                     {
