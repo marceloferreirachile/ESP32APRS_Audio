@@ -34,6 +34,16 @@ int digiProcess(AX25Msg &Packet)
         return 0;
     }
 
+    // 2.1.5: never digipeat a packet whose source is this digipeater itself
+    // (our own beacons/telemetry/objects/messages heard back via another station).
+    // Before this, such packets were re-digipeated, producing duplicates on aprs.fi.
+    if (!strcasecmp(&Packet.src.call[0], &config.digi_mycall[0]) &&
+        Packet.src.ssid == config.digi_ssid)
+    {
+        digiLog.DropRx++;
+        return 0;
+    }
+
     // Destination SSID Trace
     if (Packet.dst.ssid > 0)
     {
