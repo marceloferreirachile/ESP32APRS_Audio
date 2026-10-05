@@ -296,6 +296,9 @@ void handle_logout(AsyncWebServerRequest *request)
 	free(webString); // Free the allocated memory
 }
 
+// 2.1.5: defined further below (before handle_radio); declared here because earlier handlers use it.
+static void sendHtmlChunked(AsyncWebServerRequest *request, String &page, const char *hdrName);
+
 void setMainPage(AsyncWebServerRequest *request)
 {
 	if (!request->authenticate(config.http_username, config.http_password))
