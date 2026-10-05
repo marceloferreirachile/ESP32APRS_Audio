@@ -12015,7 +12015,7 @@ void handle_txdebug(AsyncWebServerRequest *request)
     {
         const char *eventName = "UNKNOWN";
         const char *jobName = "GENERIC";
-        char value[64]; // LU6JMF: 64 for the WATCHDOG STATE decode below
+        char value[96]; // LU6JMF: 96 for the WATCHDOG STATE decode below (2.1.5: +isr/dac)
         value[0] = '\0';
 
         // LU6JMF - Marcelo Ferreira
@@ -12206,12 +12206,14 @@ void handle_txdebug(AsyncWebServerRequest *request)
                                      : (st == 1) ? "WAITING"
                                                  : "TRANSMITTING";
                 snprintf(value, sizeof(value),
-                         "init=%s full=%u seen=%u keyed=%u rx=%u h%u t%u",
+                         "init=%s full=%u seen=%u keyed=%u rx=%u isr=%u dac=%u h%u t%u",
                          stName,
                          (unsigned)((v >> 2) & 1),
                          (unsigned)((v >> 3) & 1),
                          (unsigned)((v >> 4) & 1),
                          (unsigned)((v >> 5) & 1),
+                         (unsigned)((v >> 6) & 1),
+                         (unsigned)((v >> 7) & 1),
                          (unsigned)((v >> 8) & 0xFF),
                          (unsigned)((v >> 16) & 0xFF));
                 break;

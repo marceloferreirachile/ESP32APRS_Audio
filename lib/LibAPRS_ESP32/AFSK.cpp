@@ -844,6 +844,12 @@ void DAC_TimerEnable(bool sts)
   dacEn = 0;
 }
 
+// 2.1.5: diagnostic read-only accessor (see LU6JMF watchdog state in main.cpp).
+bool AFSK_DacTimerRunning(void)
+{
+  return dacTimerRunning;
+}
+
 bool getTransmit()
 {
   bool ret = false;

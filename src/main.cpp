@@ -2905,6 +2905,13 @@ static uint32_t lu6jmfRfRejected = 0;
 // is watching when it happens.
 static uint32_t lu6jmfRfWatchdogRecoveries = 0;
 static const uint32_t LU6JMF_RF_STUCK_TIMEOUT_MS = 60000; // 1 minute
+// 2.1.5: once PTT has been seen ON, a legitimate frame never keeps the transmitter keyed for
+// more than ~4 s (preamble + <=330 bytes at 1200 baud + tail). If PTT stays on longer than this
+// the modem is stuck: recover after 10 s instead of waiting the full 60 s (a stuck PTT is an
+// unmodulated carrier on the air for the whole time).
+static const uint32_t LU6JMF_RF_PTT_MAX_MS = 10000;
+extern volatile bool hw_afsk_dac_isr;  // AFSK.cpp: DAC ISR gate flag (diagnostic read only)
+bool AFSK_DacTimerRunning(void);       // AFSK.cpp: DAC timer run-state (diagnostic read only)
 
 // LU6JMF - Marcelo Ferreira (Oct/2026)
 // Watchdog full-recovery hooks into the AX.25 layer (defined in AX25.cpp).
@@ -7813,7 +7820,8 @@ void taskAPRS(void *pvParameters)
         if (lu6jmfRfTxBusy && !pttOff)
         {
             uint32_t stuckMs = millis() - lu6jmfRfDispatchMs;
-            if (stuckMs > LU6JMF_RF_STUCK_TIMEOUT_MS)
+            uint32_t pttHeldMs = (lu6jmfRfPttSeen && lu6jmfRfPttOnMs != 0) ? (millis() - lu6jmfRfPttOnMs) : 0;
+            if (stuckMs > LU6JMF_RF_STUCK_TIMEOUT_MS || pttHeldMs > LU6JMF_RF_PTT_MAX_MS)
             {
                 lu6jmfRfWatchdogRecoveries++;
                 lu6jmfTxEventAdd(LU6JMF_TXEV_WATCHDOG_RECOVER,
@@ -7827,6 +7835,10 @@ void taskAPRS(void *pvParameters)
                 //   bit 2 ring full | bit 3 PTT ON was seen this cycle
                 //   bit 4 modem keyed now (PTT GPIO or DAC flag)
                 //   bit 5 RX/DCD busy | bits 8-15 ring head | bits 16-23 ring tail
+                //   2.1.5: bit 6 DAC ISR gate flag (hw_afsk_dac_isr) | bit 7 DAC timer
+                //   running. Together with "keyed" they tell whether a stall is "PTT on but
+                //   the DAC timer never ran" (audio never started) or "ISR running but the end
+                //   of frame never came" - the open question of the boot-time stall.
                 uint8_t dgHead = 0, dgTail = 0, dgStage = 0;
                 bool dgFull = false;
                 Ax25GetTxDiag(&dgHead, &dgTail, &dgFull, &dgStage);
@@ -7836,6 +7848,8 @@ void taskAPRS(void *pvParameters)
                                   (lu6jmfRfPttSeen ? (1u << 3) : 0u) |
                                   (keyedNow ? (1u << 4) : 0u) |
                                   (getReceive() ? (1u << 5) : 0u) |
+                                  (hw_afsk_dac_isr ? (1u << 6) : 0u) |
+                                  (AFSK_DacTimerRunning() ? (1u << 7) : 0u) |
                                   ((uint32_t)dgHead << 8) |
                                   ((uint32_t)dgTail << 16);
                 lu6jmfTxEventAdd(LU6JMF_TXEV_WATCHDOG_STATE,
