@@ -5032,6 +5032,13 @@ bool sendAPRSObject(uint8_t idx, const char *name, double lat, double lon, const
     DD_DDDDDtoDDMMSS(lat, &lat_dd, &lat_mm, &lat_ss);
     DD_DDDDDtoDDMMSS(lon, &lon_dd, &lon_mm, &lon_ss);
 
+    // 2.1.5: an object needs a real UTC timestamp. While the clock is not synced yet
+    // (NTP/GPS), time() is near 1970 and the object went out as "010000z". Hold it
+    // (the caller retries in 2 s) for up to 5 min after boot; after that send anyway so
+    // an offline digipeater (no NTP, no GPS) still announces its objects.
+    if (time(NULL) < 1700000000 && millis() < 300000UL)
+        return false;
+
     String timeStamp = getTimeStamp();
 
     char loc[160];
@@ -6775,7 +6782,12 @@ void sendTelemetry_0(char *raw, bool header)
         SendMode |= INET_CHANNEL;
     pkgTxPushJob(str, strlen(str), 0, SendMode, LU6JMF_TXJOB_TLM, LU6JMF_TXPRIO_VERY_LOW);
 
-#if 1
+    // 2.1.5: the block below pushed the SAME packet a second time to RF and also wrote it
+    // straight to APRS-IS, but the pkgTxPushJob() above already carries both channels
+    // (RF + INET) through the central queue. That sent every telemetry packet twice on RF
+    // (doubling TLM airtime/queue pressure) and twice to APRS-IS (duplicates on aprs.fi).
+    // sendTelemetry_trk/_digi/_igate already had this block disabled; now _0 matches them.
+#if 0
     if (config.tlm0_2rf)
     { // TLM SEND TO RF
         SendMode |= RF_CHANNEL;
@@ -9595,7 +9607,12 @@ void taskAPRS(void *pvParameters)
         {
             if (systemTLM.ParmTimeout < millis())
             {
-                systemTLM.ParmTimeout = millis() + (config.tlm0_info_interval * 1000);
+                // 2.1.5: PARM/UNIT/EQNS/BITS used to be queued all at once (4 packets in one
+                // pass), flooding the 5-slot TX queue at boot (all the TLM "queue full"
+                // rejections). Now one per pass, 15 s apart; the full interval is armed
+                // after the last one.
+                static uint8_t tlmHdrStep = 0;
+                systemTLM.ParmTimeout = millis() + ((tlmHdrStep < 3) ? 15000UL : (unsigned long)(config.tlm0_info_interval * 1000));
                 char rawInfo[100];
                 char name[10];
                 sprintf(rawInfo, "PARM.");
@@ -9606,7 +9623,8 @@ void taskAPRS(void *pvParameters)
                     sprintf(name, "%s", config.tlm0_PARM[i]);
                     strcat(rawInfo, name);
                 }
-                sendTelemetry_0(rawInfo, true);
+                if (tlmHdrStep == 0)
+                    sendTelemetry_0(rawInfo, true);
                 memset(rawInfo, 0, sizeof(rawInfo));
                 sprintf(rawInfo, "UNIT.");
                 for (int i = 0; i < 13; i++)
@@ -9616,7 +9634,8 @@ void taskAPRS(void *pvParameters)
                     sprintf(name, "%s", config.tlm0_UNIT[i]);
                     strcat(rawInfo, name);
                 }
-                sendTelemetry_0(rawInfo, true);
+                if (tlmHdrStep == 1)
+                    sendTelemetry_0(rawInfo, true);
                 memset(rawInfo, 0, sizeof(rawInfo));
                 sprintf(rawInfo, "EQNS.");
                 for (int i = 0; i < 5; i++)
@@ -9639,7 +9658,8 @@ void taskAPRS(void *pvParameters)
                         sprintf(name, ",%.3f", config.tlm0_EQNS[i][2]);
                     strcat(rawInfo, name);
                 }
-                sendTelemetry_0(rawInfo, true);
+                if (tlmHdrStep == 2)
+                    sendTelemetry_0(rawInfo, true);
                 memset(rawInfo, 0, sizeof(rawInfo));
                 sprintf(rawInfo, "BITS.");
                 uint8_t b = 1;
@@ -9657,7 +9677,9 @@ void taskAPRS(void *pvParameters)
                 }
                 strcat(rawInfo, ",");
                 strcat(rawInfo, config.tlm0_comment);
-                sendTelemetry_0(rawInfo, true);
+                if (tlmHdrStep == 3)
+                    sendTelemetry_0(rawInfo, true);
+                tlmHdrStep = (tlmHdrStep + 1) & 3; // 0..3, then back to 0 for the next interval
             }
 
             if (systemTLM.TeleTimeout < millis())
