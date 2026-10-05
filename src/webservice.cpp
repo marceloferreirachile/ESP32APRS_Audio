@@ -8,6 +8,7 @@
  Support IS monitor: http://aprs.nakhonthai.net:14501 or http://aprs.hs5tqa.ampr.org:14501
 */
 #include <Arduino.h>
+#include <memory>
 #include "webservice.h"
 // LU6JMF - Marcelo Ferreira: PRIME account system, ported from TX-SCHEDULER-TEST.
 #include "prime.h"
@@ -2294,6 +2295,45 @@ static const char *RADIO_TEMPLATE =
 	"</td></tr>\n"
 	"</table><br />";
 
+// 2.1.5: send an already-rendered HTML page as a CHUNKED response.
+// The old pattern (AsyncResponseStream + print(html_str)) kept TWO full copies of the page in
+// heap at once (the String plus the stream buffer, a big contiguous block): on the largest
+// pages (MOD, SYSTEM, IGATE...) that is what failed under heap fragmentation ("IGATE page
+// stopped opening"). Here the String is MOVED (no copy) into a shared_ptr and handed to the
+// client in small slices as the TCP window allows; the memory is released automatically when
+// the response ends or the client disconnects.
+static void sendHtmlChunked(AsyncWebServerRequest *request, String &page, const char *hdrName)
+{
+	std::shared_ptr<String> body(new (std::nothrow) String());
+	if (!body)
+	{
+		request->send(500, "text/html", "Memory allocation failed");
+		return;
+	}
+	*body = std::move(page);
+	AsyncWebServerResponse *resp = request->beginChunkedResponse("text/html",
+		[body](uint8_t *buffer, size_t maxLen, size_t index) -> size_t
+		{
+			size_t total = body->length();
+			if (index >= total)
+				return 0;
+			size_t n = total - index;
+			if (n > maxLen)
+				n = maxLen;
+			memcpy(buffer, body->c_str() + index, n);
+			return n;
+		});
+	if (!resp)
+	{
+		request->send(500, "text/html", "Memory allocation failed");
+		return;
+	}
+	if (hdrName)
+		resp->addHeader(hdrName, "content");
+	resp->addHeader("Cache-Control", "no-cache");
+	request->send(resp);
+}
+
 void handle_radio(AsyncWebServerRequest *request)
 {
 	if (!request->authenticate(config.http_username, config.http_password))
@@ -2677,15 +2717,7 @@ void handle_radio(AsyncWebServerRequest *request)
 		esp_task_wdt_reset();
 		String html_str = renderTemplate(RADIO_TEMPLATE, data.as<JsonVariant>());
 		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (!html)
-		{
-			return; // Memory allocation failed
-		}
-		html->print(html_str);
-		html->addHeader("Sysinfo", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "Sysinfo");
 	}
 }
 
@@ -4126,15 +4158,7 @@ void handle_msg(AsyncWebServerRequest *request)
 		// Objects section pushed real content past 28000, forcing a mid-stream realloc that
 		// could fail under heap fragmentation and truncate the page (seen live: cut off
 		// partway through Object4, Apply button + <script> with setValue() never sent).
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (!html)
-		{
-			return; // Memory allocation failed
-		}
-		html->print(html_str);
-		html->addHeader("MSG", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "MSG");
 	}
 }
 
@@ -5152,16 +5176,7 @@ void handle_mod(AsyncWebServerRequest *request)
 		// confirmed via live heap-integrity diagnostics that the single big
 		// contiguous allocation was the reproducible trigger for a heap
 		// corruption assert under real traffic).
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (!html)
-		{
-			request->send(500, "text/html", "Memory allocation failed");
-			return;
-		}
-		html->print(html_str);
-		html->addHeader("MOD", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "MOD");
 	}
 }
 
@@ -5744,16 +5759,7 @@ void handle_mod2(AsyncWebServerRequest *request)
 
 		String html_str = renderTemplate(MOD2_TEMPLATE, data.as<JsonVariant>());
 		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (html == NULL)
-		{
-			request->send(500, "text/html", "Memory allocation failed");
-			return;
-		}
-		html->print(html_str);
-		html->addHeader("MOD2", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "MOD2");
 	}
 }
 
@@ -6580,15 +6586,7 @@ void handle_system(AsyncWebServerRequest *request)
 
 		String html_str = renderTemplate(SYSTEM_TEMPLATE, data.as<JsonVariant>());
 		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (!html)
-		{
-			return; // Memory allocation failed
-		}
-		html->print(html_str);
-		html->addHeader("System", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "System");
 	}
 }
 
@@ -7452,16 +7450,7 @@ config.igate_phg[sizeof(config.igate_phg) - 1] = 0;
 		// instead of requiring one big contiguous heap block up front - this was
 		// the reproducible trigger for a heap corruption assert (block_trim_free)
 		// under real traffic, confirmed via heap-integrity diagnostics.
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (!html)
-		{
-			request->send(500, "text/html", "Memory allocation failed");
-			return;
-		}
-		html->print(html_str);
-		html->addHeader("IGATE", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "IGATE");
 	}
 }
 
@@ -8291,16 +8280,7 @@ config.digi_phg[sizeof(config.digi_phg) - 1] = 0;
 		esp_task_wdt_reset();
 		String html_str = renderTemplate(DIGI_TEMPLATE, data.as<JsonVariant>());
 		// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
-		AsyncResponseStream *html = request->beginResponseStream("text/html", html_str.length() + 200);
-		if (!html)
-		{
-			request->send(500, "text/html", "Memory allocation failed");
-			return;
-		}
-		html->print(html_str);
-		html->addHeader("digi", "content");
-		html->addHeader("Cache-Control", "no-cache");
-		request->send(html);
+		sendHtmlChunked(request, html_str, "digi");
 	}
 }
 
