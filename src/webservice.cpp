@@ -12082,9 +12082,9 @@ void handle_txdebug(AsyncWebServerRequest *request)
         response->printf(
             "</table>"
             "</div>"
-            // Hidden by default; revealed for 5 min by clicking the footer text
-            // (see script at the end of the page). Only emitted for the owner.
-            "<div class='card full' id='lu6bb' style='display:none'>"
+            // 2.1.5: always visible when the previous run ended abnormally (no hidden
+            // click-to-reveal any more). Only emitted for the owner (gate above).
+            "<div class='card full' id='lu6bb'>"
             "<h3>BEFORE LAST RESET (%s)</h3>"
             "<small>last TX events of the previous run | newest first | "
             "uptime is from that previous boot</small>"
@@ -12332,31 +12332,8 @@ void handle_txdebug(AsyncWebServerRequest *request)
         "</small></p>"
     );
 
-    // LU6JMF: technician-only reveal of the black box card. Click the last word
-    // ("OFF.") of the footer to show it for 5 minutes, then it hides again.
-    // The card exists in the HTML only for the owner (server-side gate above).
-    if (prevCount > 0)
-    {
-        response->print(
-            "<script>(function(){"
-            "var c=document.getElementById('lu6bb');if(!c)return;"
-            "var K='lu6bbUntil',T=300000,tm=null;"
-            "function hide(){c.style.display='none';"
-            "try{sessionStorage.removeItem(K);}catch(e){}}"
-            "function show(u){c.style.display='block';clearTimeout(tm);"
-            "tm=setTimeout(hide,Math.max(0,u-Date.now()));}"
-            "try{var u=parseInt(sessionStorage.getItem(K)||'0');"
-            "if(u>Date.now())show(u);}catch(e){}"
-            "var f=document.querySelector('p small');"
-            "if(f){f.innerHTML=f.innerHTML.replace('OFF.',"
-            "'<span id=\"lu6bbk\">OFF.</span>');"
-            "document.getElementById('lu6bbk').onclick=function(){"
-            "var u=Date.now()+T;"
-            "try{sessionStorage.setItem(K,u);}catch(e){}show(u);};}"
-            "})();</script>"
-        );
-    }
-
+    // 2.1.5: the black box card is now always shown (see above); the old
+    // click-on-"OFF." reveal script was removed.
     response->print("</body></html>");
 
     request->send(response);
