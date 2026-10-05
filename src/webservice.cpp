@@ -775,6 +775,8 @@ static const char *DASHBOARD_TEMPLATE =
 
 void handle_dashboard(AsyncWebServerRequest *request)
 {
+	// 2.1.5: feed the task watchdog - this handler runs on the async_tcp task itself
+	esp_task_wdt_reset();
 	char temp_buffer[200];
 	// if (!request->authenticate(config.http_username, config.http_password))
 	// {
@@ -1642,6 +1644,8 @@ static const char *STORAGE_TEMPLATE =
 
 void handle_storage(AsyncWebServerRequest *request)
 {
+	// 2.1.5: feed the task watchdog - this handler runs on the async_tcp task itself
+	esp_task_wdt_reset();
 	if (!request->authenticate(config.http_username, config.http_password))
 	{
 		return request->requestAuthentication();
@@ -2844,6 +2848,8 @@ extern "C" const char *wireguard_last_error; // wireguard_vpn.cpp - why the tunn
 
 void handle_vpn(AsyncWebServerRequest *request)
 {
+	// 2.1.5: feed the task watchdog - this handler runs on the async_tcp task itself
+	esp_task_wdt_reset();
 	if (!request->authenticate(config.http_username, config.http_password))
 	{
 		return request->requestAuthentication();
@@ -3071,6 +3077,8 @@ static const char *MQTT_TEMPLATE =
 
 void handle_mqtt(AsyncWebServerRequest *request)
 {
+	// 2.1.5: feed the task watchdog - this handler runs on the async_tcp task itself
+	esp_task_wdt_reset();
 	if (!request->authenticate(config.http_username, config.http_password))
 	{
 		return request->requestAuthentication();
@@ -5976,6 +5984,8 @@ step="1" value="{{filterDistant}}" /> Km.  <label style="vertical-align: bottom;
 
 void handle_system(AsyncWebServerRequest *request)
 {
+	// 2.1.5: feed the task watchdog - this handler runs on the async_tcp task itself
+	esp_task_wdt_reset();
 	if (!request->authenticate(config.http_username, config.http_password))
 	{
 		return request->requestAuthentication();
@@ -11068,6 +11078,8 @@ static const char *ABOUT_TEMPLATE =
 
 void handle_about(AsyncWebServerRequest *request)
 {
+	// 2.1.5: feed the task watchdog - this handler runs on the async_tcp task itself
+	esp_task_wdt_reset();
 	if (!request->authenticate(config.http_username, config.http_password))
 	{
 		return request->requestAuthentication();
@@ -11661,6 +11673,8 @@ void handle_prime(AsyncWebServerRequest *request)
 
 void handle_txdebug(AsyncWebServerRequest *request)
 {
+	// 2.1.5: feed the task watchdog - this handler runs on the async_tcp task itself
+	esp_task_wdt_reset();
     // LU6JMF - Marcelo Ferreira:
     // TX DEBUG is a PRIME resource. Hiding the link is not authorization;
     // direct access to /txdebug must pass the same PRIME checks.
@@ -11883,6 +11897,40 @@ void handle_txdebug(AsyncWebServerRequest *request)
         (unsigned long)queueDebug.saturated,
         (unsigned long)queueDebug.rejected
     );
+
+    // 2.1.5: system health (heap + lowest free stack ever seen per task). Read-only,
+    // no allocation. Lets us watch the heap trend and catch a task about to overflow
+    // its stack (Task WDT / random resets) without a USB cable.
+    {
+        const char *stackTasks[] = {"taskAPRS", "taskAPRSPoll", "taskNetwork", "async_tcp", "loopTask"};
+        response->print(
+            "</div>"
+            "<div class='card'>"
+            "<h3>SYSTEM HEALTH</h3>"
+            "<small>Heap and lowest free stack ever seen (bytes) | diagnostic</small>"
+            "<table>"
+        );
+        response->printf(
+            "<tr><td>Free heap</td><td>%lu</td></tr>"
+            "<tr><td>Lowest free heap</td><td>%lu</td></tr>"
+            "<tr><td>Largest free block</td><td>%lu</td></tr>",
+            (unsigned long)ESP.getFreeHeap(),
+            (unsigned long)ESP.getMinFreeHeap(),
+            (unsigned long)ESP.getMaxAllocHeap()
+        );
+        for (uint8_t t = 0; t < sizeof(stackTasks) / sizeof(stackTasks[0]); t++)
+        {
+            TaskHandle_t th = xTaskGetHandle(stackTasks[t]);
+            if (th == NULL)
+                continue;
+            unsigned long freeStack = (unsigned long)uxTaskGetStackHighWaterMark(th);
+            response->printf("<tr><td>Stack free: %s</td><td class='%s'>%lu</td></tr>",
+                             stackTasks[t],
+                             (freeStack < 512) ? "bad" : "ok",
+                             freeStack);
+        }
+        response->print("</table>");
+    }
 
     response->print(
         "</div>"
@@ -12356,6 +12404,8 @@ void handle_txdebug(AsyncWebServerRequest *request)
 
 void handle_gnss(AsyncWebServerRequest *request)
 {
+	// 2.1.5: feed the task watchdog - this handler runs on the async_tcp task itself
+	esp_task_wdt_reset();
 	// AsyncResponseStream grows its internal cbuf incrementally (small chunks)
 	AsyncResponseStream *webString = request->beginResponseStream("text/html", 20000);
 	if (!webString)
