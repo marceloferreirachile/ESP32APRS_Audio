@@ -464,8 +464,8 @@ int pkgMsgUpdate(const char *call, const char *raw, uint16_t msg_id, int8_t ack,
     char callsign[11];
     size_t sz = strlen(call);
     memset(callsign, 0, 11);
-    if (sz > 10)
-        sz = 10;
+    if (sz > 9)
+        sz = 9; // 2.1.5: msgType.callsign is char[10]; keep room for the NUL (was 10 -> 1 byte overrun)
     // strncpy(callsign, call, sz);
     memcpy(callsign, call, sz);
 
