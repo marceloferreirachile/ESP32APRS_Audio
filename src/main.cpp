@@ -3223,6 +3223,58 @@ uint8_t lu6jmfCrumbPrevEvents(Lu6jmfTxDebugEvent *events,
     return count;
 }
 
+// 2.1.5: last 4 watchdog recoveries, kept outside the rolling TX event log.
+#define LU6JMF_WD_SNAP_COUNT 4
+struct Lu6jmfWdSnap
+{
+    uint32_t atMs;
+    uint32_t stuckMs;
+    uint32_t packed;
+    uint32_t stackFree;
+    uint32_t heapFree;
+    uint8_t jobType;
+};
+static Lu6jmfWdSnap lu6jmfWdSnaps[LU6JMF_WD_SNAP_COUNT];
+static volatile uint8_t lu6jmfWdSnapHead = 0;
+static volatile uint8_t lu6jmfWdSnapUsed = 0;
+
+// Must be called from taskAPRS (uxTaskGetStackHighWaterMark(NULL) = calling task).
+void lu6jmfWdSnapshotSet(uint32_t stuckMs, uint32_t packed, uint8_t jobType)
+{
+    uint8_t h = lu6jmfWdSnapHead;
+    lu6jmfWdSnaps[h].atMs = millis();
+    lu6jmfWdSnaps[h].stuckMs = stuckMs;
+    lu6jmfWdSnaps[h].packed = packed;
+    lu6jmfWdSnaps[h].jobType = jobType;
+    lu6jmfWdSnaps[h].stackFree = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+    lu6jmfWdSnaps[h].heapFree = (uint32_t)ESP.getFreeHeap();
+    lu6jmfWdSnapHead = (h + 1) % LU6JMF_WD_SNAP_COUNT;
+    if (lu6jmfWdSnapUsed < LU6JMF_WD_SNAP_COUNT)
+        lu6jmfWdSnapUsed++;
+}
+
+uint8_t lu6jmfWdSnapshotGet(uint32_t *atMs, uint32_t *stuckMs, uint32_t *packed, uint8_t *jobType,
+                            uint32_t *stackFree, uint32_t *heapFree, uint8_t maxN)
+{
+    uint8_t used = lu6jmfWdSnapUsed;
+    uint8_t head = lu6jmfWdSnapHead;
+    if (used > maxN)
+        used = maxN;
+    for (uint8_t n = 0; n < used; n++)
+    {
+        int idx = (int)head - 1 - n;
+        while (idx < 0)
+            idx += LU6JMF_WD_SNAP_COUNT;
+        atMs[n] = lu6jmfWdSnaps[idx].atMs;
+        stuckMs[n] = lu6jmfWdSnaps[idx].stuckMs;
+        packed[n] = lu6jmfWdSnaps[idx].packed;
+        jobType[n] = lu6jmfWdSnaps[idx].jobType;
+        stackFree[n] = lu6jmfWdSnaps[idx].stackFree;
+        heapFree[n] = lu6jmfWdSnaps[idx].heapFree;
+    }
+    return used;
+}
+
 // 2.1.5: heap history (RAM only). Written by taskAPRS, read by the web task; a slightly
 // stale read is harmless for a diagnostic table.
 #define LU6JMF_HEAP_HIST 24
@@ -4936,7 +4988,7 @@ void setup()
 #if (CORE_DEBUG_LEVEL > 0)
         8192,            /* Stack size in words (debug) */
 #else
-        4096,            /* Stack size in words */
+        8192,            /* 2.1.5: was 4096 (see the other taskAPRS creation) */
 #endif
         NULL,            /* Task input parameter */
         2,               /* Priority of the task */
@@ -4987,7 +5039,7 @@ void setup()
         #if (CORE_DEBUG_LEVEL > 0)
         8192,            /* Stack size in words */
         #else
-        4096,            /* Stack size in words */
+        8192,            /* 2.1.5: was 4096. /txdebug SYSTEM HEALTH showed only 132 bytes ever free (field, Oct/2026) */
         #endif
         NULL,            /* Task input parameter */
         2,               /* Priority of the task */
@@ -7902,6 +7954,7 @@ void taskAPRS(void *pvParameters)
                 lu6jmfTxEventAdd(LU6JMF_TXEV_WATCHDOG_STATE,
                                  packed,
                                  lu6jmfRfActiveJobType);
+                lu6jmfWdSnapshotSet(stuckMs, packed, lu6jmfRfActiveJobType); // survives the event log rolling over
 
                 log_e("[LU6JMF-TX] WATCHDOG: RF scheduler busy %lu ms, forcing recovery (count=%lu, state=0x%06lx)",
                       (unsigned long)stuckMs,
