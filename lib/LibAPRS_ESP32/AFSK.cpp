@@ -1666,7 +1666,9 @@ void AFSK_StopTxCalibration(void)
 
 bool AFSK_StartTxCalibration(uint8_t toneType)
 {
-  if (txCalibrationActive || ModemIsTxTestOngoing())
+  // 2.1.5: also refuse if the modem is already keyed (a packet got on the air between the
+  // web handler's scheduler check and this call): the tone must never start on top of a TX.
+  if (txCalibrationActive || ModemIsTxTestOngoing() || getTransmit())
     return false; // mutex: a calibration (or other TX test) is already running - reject
 
   enum ModemTxTestMode mode;
