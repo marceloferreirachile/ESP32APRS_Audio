@@ -7875,26 +7875,36 @@ void taskAPRS(void *pvParameters)
 
         lu6jmfHeapSample(); // 2.1.5: hourly heap history for /txdebug (cheap time check)
 
-        if (adcEn == 1)
+        // 2.1.5: ROOT CAUSE of the "PTT stuck / watchdog recovery" stall. Every page load asks for
+        // /jquery.js, and that handler (also /storage, OTA...) sets adcEn=-1 / dacEn=-1 to pause the
+        // audio timers while it serves the file. If that lands while a packet is on the air, the
+        // DAC timer was stopped mid-frame: PTT keyed, ISR flag set, DAC timer not running, so the
+        // end of the frame never came (field capture: init=TRANSMITTING seen=1 keyed=1 isr=1 dac=0,
+        // OBJECT, ~28 s after boot = the moment the page was opened). Never touch the audio timers
+        // while a TX is in progress: the request stays pending and is applied right after the TX.
+        if (!(lu6jmfRfTxBusy || hw_afsk_dac_isr))
         {
-             AFSK_TimerEnable(true);
-             adcEn = 0;
-        }
-        else if (adcEn == -1)
-        {
-             AFSK_TimerEnable(false);
-             adcEn = 0;
-        }
+            if (adcEn == 1)
+            {
+                 AFSK_TimerEnable(true);
+                 adcEn = 0;
+            }
+            else if (adcEn == -1)
+            {
+                 AFSK_TimerEnable(false);
+                 adcEn = 0;
+            }
 
-        if (dacEn == 1)
-        {
-            DAC_TimerEnable(true);
-            dacEn = 0;
-        }
-        else if (dacEn == -1)
-        {
-            DAC_TimerEnable(false);
-            dacEn = 0;
+            if (dacEn == 1)
+            {
+                DAC_TimerEnable(true);
+                dacEn = 0;
+            }
+            else if (dacEn == -1)
+            {
+                DAC_TimerEnable(false);
+                dacEn = 0;
+            }
         }
         // ---------------------------------------------------------------------
         // LU6JMF - Marcelo Ferreira (Oct/2026)
