@@ -3131,6 +3131,7 @@ struct Lu6jmfCrumb
     uint8_t head; // next write index
     uint8_t used;
     Lu6jmfTxEvent ev[LU6JMF_CRUMB_COUNT];
+    uint32_t lastEpoch; // 2.1.5: wall-clock (UTC epoch) of the last ~30 s tick, 0 = clock never synced
 };
 
 RTC_NOINIT_ATTR static Lu6jmfCrumb lu6jmfCrumb;
@@ -3221,6 +3222,36 @@ uint8_t lu6jmfCrumbPrevEvents(Lu6jmfTxDebugEvent *events,
     }
 
     return count;
+}
+
+// 2.1.5: wall-clock for the black box. The TX events only carry uptime; here the last known
+// real time (NTP/GPS) is refreshed every ~30 s into the RTC crumb, so after a reset /txdebug can
+// say about WHEN the previous run ended. Called from taskAPRS (not from ISR/critical sections).
+void lu6jmfWallClockTick(void)
+{
+    static uint32_t nextMs = 0;
+    uint32_t now = millis();
+    if ((int32_t)(now - nextMs) < 0)
+        return;
+    nextMs = now + 30000UL;
+    time_t t = time(NULL);
+    if (t > 1700000000 && lu6jmfCrumb.magic == LU6JMF_CRUMB_MAGIC)
+        lu6jmfCrumb.lastEpoch = (uint32_t)t;
+}
+
+// Previous run's last known wall-clock time (UTC epoch), 0 if unknown.
+uint32_t lu6jmfCrumbPrevEpoch(void)
+{
+    return lu6jmfCrumbPrevValid ? lu6jmfCrumbPrev.lastEpoch : 0;
+}
+
+// This run's boot time (UTC epoch) = now - uptime; 0 while the clock is not synced yet.
+uint32_t lu6jmfBootEpoch(void)
+{
+    time_t t = time(NULL);
+    if (t <= 1700000000)
+        return 0;
+    return (uint32_t)t - (millis() / 1000UL);
 }
 
 // 2.1.5: last 4 watchdog recoveries, kept outside the rolling TX event log.
@@ -7874,6 +7905,7 @@ void taskAPRS(void *pvParameters)
     {
 
         lu6jmfHeapSample(); // 2.1.5: hourly heap history for /txdebug (cheap time check)
+        lu6jmfWallClockTick(); // 2.1.5: ~30 s wall-clock stamp into the black box (cheap time check)
 
         // 2.1.5: ROOT CAUSE of the "PTT stuck / watchdog recovery" stall. Every page load asks for
         // /jquery.js, and that handler (also /storage, OTA...) sets adcEn=-1 / dacEn=-1 to pause the

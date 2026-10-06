@@ -11796,6 +11796,22 @@ void handle_txdebug(AsyncWebServerRequest *request)
             (unsigned long)ESP.getMinFreeHeap(),
             (unsigned long)ESP.getMaxAllocHeap()
         );
+        {
+            // 2.1.5: boot time in local time (now - uptime); needs the clock to be synced (NTP/GPS).
+            uint32_t be = lu6jmfBootEpoch();
+            char bt[40];
+            if (be != 0)
+            {
+                time_t tb = (time_t)be;
+                struct tm tmb;
+                localtime_r(&tb, &tmb);
+                snprintf(bt, sizeof(bt), "%02d/%02d %02d:%02d:%02d",
+                         tmb.tm_mday, tmb.tm_mon + 1, tmb.tm_hour, tmb.tm_min, tmb.tm_sec);
+            }
+            else
+                snprintf(bt, sizeof(bt), "unknown (clock not synced)");
+            response->printf("<tr><td>Boot time (local)</td><td>%s</td></tr>", bt);
+        }
         for (uint8_t t = 0; t < sizeof(stackTasks) / sizeof(stackTasks[0]); t++)
         {
             TaskHandle_t th = xTaskGetHandle(stackTasks[t]);
@@ -12085,6 +12101,19 @@ void handle_txdebug(AsyncWebServerRequest *request)
         if (prevCount == 0)
             break;
 
+        // 2.1.5: about when the previous run ended (last ~30 s stamp kept in the black box).
+        char endTxt[64];
+        endTxt[0] = '\0';
+        uint32_t prevEpoch = lu6jmfCrumbPrevEpoch();
+        if (prevEpoch != 0)
+        {
+            time_t te = (time_t)prevEpoch;
+            struct tm tme;
+            localtime_r(&te, &tme);
+            snprintf(endTxt, sizeof(endTxt), " | previous run ended about %02d/%02d %02d:%02d (local)",
+                     tme.tm_mday, tme.tm_mon + 1, tme.tm_hour, tme.tm_min);
+        }
+
         response->printf(
             "</table>"
             "</div>"
@@ -12093,11 +12122,12 @@ void handle_txdebug(AsyncWebServerRequest *request)
             "<div class='card full' id='lu6bb'>"
             "<h3>BEFORE LAST RESET (%s)</h3>"
             "<small>last TX events of the previous run | newest first | "
-            "uptime is from that previous boot</small>"
+            "uptime is from that previous boot%s</small>"
             "<table class='log'>"
             "<tr><th>Uptime</th><th>Event</th><th>Job</th>"
             "<th style='text-align:right'>Value</th></tr>",
-            prevReason
+            prevReason,
+            endTxt
         );
     }
 
