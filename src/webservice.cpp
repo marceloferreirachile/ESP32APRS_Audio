@@ -2274,6 +2274,29 @@ static const char *RADIO_TEMPLATE =
 	"</td></tr>\n"
 	"</table><br />";
 
+// 2.1.5: job name for the persistent watchdog snapshot card on /txdebug.
+static const char *lu6jmfJobNameStr(uint8_t jobType)
+{
+	switch (jobType)
+	{
+	case LU6JMF_TXJOB_ACK:           return "ACK";
+	case LU6JMF_TXJOB_MESSAGE:       return "MESSAGE";
+	case LU6JMF_TXJOB_MSG_RETRY:     return "MSG RETRY";
+	case LU6JMF_TXJOB_DIGI:          return "DIGI";
+	case LU6JMF_TXJOB_TRACKER:       return "TRACKER";
+	case LU6JMF_TXJOB_IGATE:         return "IGATE";
+	case LU6JMF_TXJOB_DIGI_POSITION: return "DIGI POS";
+	case LU6JMF_TXJOB_WX:            return "WX";
+	case LU6JMF_TXJOB_TLM:           return "TLM";
+	case LU6JMF_TXJOB_BULLETIN:      return "BULLETIN";
+	case LU6JMF_TXJOB_NEWS:          return "NEWS";
+	case LU6JMF_TXJOB_OBJECT:        return "OBJECT";
+	case LU6JMF_TXJOB_INET2RF:       return "INET->RF";
+	case LU6JMF_TXJOB_EXTERNAL:      return "EXTERNAL";
+	default:                         return "GENERIC";
+	}
+}
+
 // 2.1.5: send an already-rendered HTML page as a CHUNKED response.
 // The old pattern (AsyncResponseStream + print(html_str)) kept TWO full copies of the page in
 // heap at once (the String plus the stream buffer, a big contiguous block): on the largest
@@ -11808,6 +11831,39 @@ void handle_txdebug(AsyncWebServerRequest *request)
                              (unsigned long)hMax[n]);
         }
         response->print("</table>");
+        // Persistent watchdog snapshots (the TX event log rolls over in minutes).
+        uint32_t wAt[4], wStuck[4], wPacked[4], wStack[4], wHeap[4];
+        uint8_t wJob[4];
+        uint8_t wCount = lu6jmfWdSnapshotGet(wAt, wStuck, wPacked, wJob, wStack, wHeap, 4);
+        if (wCount > 0)
+        {
+            response->print(
+                "</div>"
+                "<div class='card full'>"
+                "<h3>WATCHDOG RECOVERIES (since boot)</h3>"
+                "<small>Last 4, newest first | kept even after the event log rolls over | diagnostic</small>"
+                "<table class='log'>"
+                "<tr><th>Uptime</th><th>Job</th><th>Stuck</th><th>State</th>"
+                "<th style='text-align:right'>taskAPRS stack / heap</th></tr>");
+            for (uint8_t n = 0; n < wCount; n++)
+            {
+                uint32_t v = wPacked[n];
+                uint8_t st = v & 0x03;
+                response->printf(
+                    "<tr><td>%lu.%03lu s</td><td>%s</td><td>%lu ms</td>"
+                    "<td>init=%s full=%u seen=%u keyed=%u rx=%u isr=%u dac=%u h%u t%u</td>"
+                    "<td style='text-align:right'>%lu / %lu</td></tr>",
+                    (unsigned long)(wAt[n] / 1000), (unsigned long)(wAt[n] % 1000),
+                    lu6jmfJobNameStr(wJob[n]),
+                    (unsigned long)wStuck[n],
+                    (st == 0) ? "OFF" : (st == 1) ? "WAITING" : "TRANSMITTING",
+                    (unsigned)((v >> 2) & 1), (unsigned)((v >> 3) & 1), (unsigned)((v >> 4) & 1),
+                    (unsigned)((v >> 5) & 1), (unsigned)((v >> 6) & 1), (unsigned)((v >> 7) & 1),
+                    (unsigned)((v >> 8) & 0xFF), (unsigned)((v >> 16) & 0xFF),
+                    (unsigned long)wStack[n], (unsigned long)wHeap[n]);
+            }
+            response->print("</table>");
+        }
         if (hCount >= 3)
         {
             long delta = (long)hFree[0] - (long)hFree[hCount - 1];

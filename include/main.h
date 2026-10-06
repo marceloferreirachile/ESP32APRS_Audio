@@ -540,6 +540,12 @@ uint8_t lu6jmfCrumbPrevEvents(Lu6jmfTxDebugEvent *events,
 // 2.1.5: heap history for /txdebug (RAM only, lost on reset). One sample ~1 min after boot,
 // then one per hour (last 24 kept). lu6jmfHeapSample() is called from taskAPRS and decides
 // by itself when a sample is due. lu6jmfHeapHistory() copies them newest-first.
+// 2.1.5: persistent copy of the last 4 watchdog recoveries (the 24-entry TX event log rolls
+// over in a couple of minutes, which lost the evidence of a boot-time stall). Newest first.
+// stackFree = taskAPRS lowest free stack and heapFree at the moment of the recovery.
+void lu6jmfWdSnapshotSet(uint32_t stuckMs, uint32_t packed, uint8_t jobType);
+uint8_t lu6jmfWdSnapshotGet(uint32_t *atMs, uint32_t *stuckMs, uint32_t *packed, uint8_t *jobType,
+                            uint32_t *stackFree, uint32_t *heapFree, uint8_t maxN);
 void lu6jmfHeapSample(void);
 uint8_t lu6jmfHeapHistory(uint32_t *upMin, uint32_t *freeHeap, uint32_t *maxBlock, uint8_t maxN);
 
