@@ -2761,7 +2761,7 @@ void handle_calibrate_tone(AsyncWebServerRequest *request)
 	}
 	else
 	{
-		request->send(409, "text/plain", "A tone calibration is already in progress - wait for it to finish.");
+		request->send(409, "text/plain", "A tone is already playing or the digipeater is transmitting - wait a few seconds and press the button again.");
 	}
 }
 
