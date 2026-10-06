@@ -6705,7 +6705,7 @@ void sendIsPkgMsg(char *raw)
         aprsClient.println(tnc2Raw); // Send packet to Inet
 }
 
-void sendTelemetry_0(char *raw, bool header)
+bool sendTelemetry_0(char *raw, bool header) // 2.1.5: returns true if the packet was queued
 {
     char str[300];
     char call[11];
@@ -6787,7 +6787,7 @@ void sendTelemetry_0(char *raw, bool header)
         SendMode |= RF_CHANNEL;
     if (config.tlm0_2inet)
         SendMode |= INET_CHANNEL;
-    pkgTxPushJob(str, strlen(str), 0, SendMode, LU6JMF_TXJOB_TLM, LU6JMF_TXPRIO_VERY_LOW);
+    bool queuedTlm = pkgTxPushJob(str, strlen(str), 0, SendMode, LU6JMF_TXJOB_TLM, LU6JMF_TXPRIO_VERY_LOW);
 
     // 2.1.5: the block below pushed the SAME packet a second time to RF and also wrote it
     // straight to APRS-IS, but the pkgTxPushJob() above already carries both channels
@@ -6816,6 +6816,7 @@ void sendTelemetry_0(char *raw, bool header)
         }
     }
 #endif
+    return queuedTlm;
 }
 
 void sendTelemetry_trk(char *raw)
@@ -9626,6 +9627,7 @@ void taskAPRS(void *pvParameters)
                 // rejections). Now one per pass, 15 s apart; the full interval is armed
                 // after the last one.
                 static uint8_t tlmHdrStep = 0;
+                bool hdrOk = true; // false if the TX queue refused this step: retry it in 5 s
                 systemTLM.ParmTimeout = millis() + ((tlmHdrStep < 3) ? 15000UL : (unsigned long)(config.tlm0_info_interval * 1000));
                 char rawInfo[100];
                 char name[10];
@@ -9638,7 +9640,7 @@ void taskAPRS(void *pvParameters)
                     strcat(rawInfo, name);
                 }
                 if (tlmHdrStep == 0)
-                    sendTelemetry_0(rawInfo, true);
+                    hdrOk = sendTelemetry_0(rawInfo, true);
                 memset(rawInfo, 0, sizeof(rawInfo));
                 sprintf(rawInfo, "UNIT.");
                 for (int i = 0; i < 13; i++)
@@ -9649,7 +9651,7 @@ void taskAPRS(void *pvParameters)
                     strcat(rawInfo, name);
                 }
                 if (tlmHdrStep == 1)
-                    sendTelemetry_0(rawInfo, true);
+                    hdrOk = sendTelemetry_0(rawInfo, true);
                 memset(rawInfo, 0, sizeof(rawInfo));
                 sprintf(rawInfo, "EQNS.");
                 for (int i = 0; i < 5; i++)
@@ -9673,7 +9675,7 @@ void taskAPRS(void *pvParameters)
                     strcat(rawInfo, name);
                 }
                 if (tlmHdrStep == 2)
-                    sendTelemetry_0(rawInfo, true);
+                    hdrOk = sendTelemetry_0(rawInfo, true);
                 memset(rawInfo, 0, sizeof(rawInfo));
                 sprintf(rawInfo, "BITS.");
                 uint8_t b = 1;
@@ -9692,8 +9694,11 @@ void taskAPRS(void *pvParameters)
                 strcat(rawInfo, ",");
                 strcat(rawInfo, config.tlm0_comment);
                 if (tlmHdrStep == 3)
-                    sendTelemetry_0(rawInfo, true);
-                tlmHdrStep = (tlmHdrStep + 1) & 3; // 0..3, then back to 0 for the next interval
+                    hdrOk = sendTelemetry_0(rawInfo, true);
+                if (hdrOk)
+                    tlmHdrStep = (tlmHdrStep + 1) & 3; // 0..3, then back to 0 for the next interval
+                else
+                    systemTLM.ParmTimeout = millis() + 5000UL; // queue full: do NOT lose this header, retry same step
             }
 
             if (systemTLM.TeleTimeout < millis())
