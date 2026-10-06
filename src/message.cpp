@@ -612,7 +612,10 @@ void sendAPRSMessageRetry()
             // ฟอร์แมต: FROM>APRS,TCPIP*::TOCALL   :MESSAGE
             char toCallFixed[10];
             memset(toCallFixed, 0x20, 10);
-            memcpy(toCallFixed, msgQueue[i].callsign, strlen(msgQueue[i].callsign));
+            size_t retryLen = strlen(msgQueue[i].callsign);
+            if (retryLen > 9)
+                retryLen = 9; // 2.1.5: never overrun the 10-byte buffer
+            memcpy(toCallFixed, msgQueue[i].callsign, retryLen);
             toCallFixed[9] = 0;
             // snprintf(toCallFixed, sizeof(toCallFixed), "%-9s", toCall.c_str()); // 9 char padded
 
@@ -659,7 +662,12 @@ void sendAPRSAck(const String &toCall, const String &msgNo)
     // ฟอร์แมต ACK: :TOCALL   :ackNN
     char toCallFixed[10];
     memset(toCallFixed, 0x20, 10);
-    memcpy(toCallFixed, toCall.c_str(), toCall.length());
+    // 2.1.5: clamp to 9 chars (APRS addressee field). A malformed packet with a long source
+    // callsign used to overflow this 10-byte stack buffer.
+    size_t ackLen = toCall.length();
+    if (ackLen > 9)
+        ackLen = 9;
+    memcpy(toCallFixed, toCall.c_str(), ackLen);
     toCallFixed[9] = 0;
     // snprintf(toCallFixed, sizeof(toCallFixed), "%-9s", toCall.c_str());
     String path = "";
@@ -725,7 +733,11 @@ void handleIncomingAPRS(const String &line)
                 message.trim();
             }
 
-            if (message.startsWith("ack"))
+            // 2.1.5: a real ACK carries no "{id" (msgNo still empty here). Before, ANY text that
+            // began with "ack" and had a message number (e.g. "acknowledged{12") was taken as an
+            // ACK: it replaced the real msgNo, was never ACKed back and never reached the chat.
+            bool isAck = message.startsWith("ack") && msgNo.length() == 0;
+            if (isAck)
             {
                 msgNo = message.substring(3);
             }
@@ -735,7 +747,7 @@ void handleIncomingAPRS(const String &line)
             // ถ้าเป็นข้อความถึงเราเอง ให้ตอบกลับ ack
             if (toCall.equalsIgnoreCase(config.msg_mycall) && msgNo.length() > 0)
             {
-                if (message.startsWith("ack"))
+                if (isAck)
                 {
                     msgNo = message.substring(3);
                     int i = pkgMsg_Find(fromCall.c_str(), msgNo.toInt(), false);
