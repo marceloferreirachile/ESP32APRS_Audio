@@ -3223,6 +3223,50 @@ uint8_t lu6jmfCrumbPrevEvents(Lu6jmfTxDebugEvent *events,
     return count;
 }
 
+// 2.1.5: heap history (RAM only). Written by taskAPRS, read by the web task; a slightly
+// stale read is harmless for a diagnostic table.
+#define LU6JMF_HEAP_HIST 24
+static uint32_t lu6jmfHeapUpMin[LU6JMF_HEAP_HIST];
+static uint32_t lu6jmfHeapFree[LU6JMF_HEAP_HIST];
+static uint32_t lu6jmfHeapMaxBlk[LU6JMF_HEAP_HIST];
+static volatile uint8_t lu6jmfHeapHead = 0;
+static volatile uint8_t lu6jmfHeapUsed = 0;
+static uint32_t lu6jmfHeapNextMs = 60000UL;
+
+void lu6jmfHeapSample(void)
+{
+    uint32_t now = millis();
+    if ((int32_t)(now - lu6jmfHeapNextMs) < 0)
+        return;
+    lu6jmfHeapNextMs = now + 3600000UL;
+
+    uint8_t h = lu6jmfHeapHead;
+    lu6jmfHeapUpMin[h] = now / 60000UL;
+    lu6jmfHeapFree[h] = ESP.getFreeHeap();
+    lu6jmfHeapMaxBlk[h] = ESP.getMaxAllocHeap();
+    lu6jmfHeapHead = (h + 1) % LU6JMF_HEAP_HIST;
+    if (lu6jmfHeapUsed < LU6JMF_HEAP_HIST)
+        lu6jmfHeapUsed++;
+}
+
+uint8_t lu6jmfHeapHistory(uint32_t *upMin, uint32_t *freeHeap, uint32_t *maxBlock, uint8_t maxN)
+{
+    uint8_t used = lu6jmfHeapUsed;
+    uint8_t head = lu6jmfHeapHead;
+    if (used > maxN)
+        used = maxN;
+    for (uint8_t n = 0; n < used; n++)
+    {
+        int idx = (int)head - 1 - n;
+        while (idx < 0)
+            idx += LU6JMF_HEAP_HIST;
+        upMin[n] = lu6jmfHeapUpMin[idx];
+        freeHeap[n] = lu6jmfHeapFree[idx];
+        maxBlock[n] = lu6jmfHeapMaxBlk[idx];
+    }
+    return used;
+}
+
 // -----------------------------------------------------------------------------
 // LU6JMF - Marcelo Ferreira
 // Lightweight TX Scheduler diagnostics for the temporary /txdebug web page.
@@ -7776,6 +7820,8 @@ void taskAPRS(void *pvParameters)
     log_d("Task APRS has been start");
     for (;;)
     {
+
+        lu6jmfHeapSample(); // 2.1.5: hourly heap history for /txdebug (cheap time check)
 
         if (adcEn == 1)
         {

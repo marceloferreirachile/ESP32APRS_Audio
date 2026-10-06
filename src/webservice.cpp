@@ -11783,6 +11783,38 @@ void handle_txdebug(AsyncWebServerRequest *request)
                              freeStack);
         }
         response->print("</table>");
+
+        // Heap history: one sample per hour (newest first). Falling steadily without ever
+        // recovering = leak; going up and down = normal use.
+        uint32_t hUp[24], hFree[24], hMax[24];
+        uint8_t hCount = lu6jmfHeapHistory(hUp, hFree, hMax, 24);
+        response->print(
+            "</div>"
+            "<div class='card'>"
+            "<h3>HEAP HISTORY</h3>"
+            "<small>One sample per hour, last 24 (RAM only, cleared on reset) | diagnostic</small>"
+            "<table class='log'>"
+            "<tr><th>Uptime</th><th>Free heap</th><th style='text-align:right'>Largest block</th></tr>");
+        if (hCount == 0)
+        {
+            response->print("<tr><td colspan='3'>First sample about 1 minute after boot.</td></tr>");
+        }
+        for (uint8_t n = 0; n < hCount; n++)
+        {
+            response->printf("<tr><td>%luh %02lum</td><td>%lu</td><td style='text-align:right'>%lu</td></tr>",
+                             (unsigned long)(hUp[n] / 60),
+                             (unsigned long)(hUp[n] % 60),
+                             (unsigned long)hFree[n],
+                             (unsigned long)hMax[n]);
+        }
+        response->print("</table>");
+        if (hCount >= 3)
+        {
+            long delta = (long)hFree[0] - (long)hFree[hCount - 1];
+            response->printf("<small>Trend: %+ld bytes of free heap over %luh (oldest to newest).</small>",
+                             delta,
+                             (unsigned long)((hUp[0] - hUp[hCount - 1]) / 60));
+        }
     }
 
     response->print(

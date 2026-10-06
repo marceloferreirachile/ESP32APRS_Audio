@@ -537,6 +537,12 @@ uint8_t lu6jmfCrumbPrevEvents(Lu6jmfTxDebugEvent *events,
                               char *reason,
                               size_t reasonLen);
 
+// 2.1.5: heap history for /txdebug (RAM only, lost on reset). One sample ~1 min after boot,
+// then one per hour (last 24 kept). lu6jmfHeapSample() is called from taskAPRS and decides
+// by itself when a sample is due. lu6jmfHeapHistory() copies them newest-first.
+void lu6jmfHeapSample(void);
+uint8_t lu6jmfHeapHistory(uint32_t *upMin, uint32_t *freeHeap, uint32_t *maxBlock, uint8_t maxN);
+
 struct Lu6jmfTxTimingDebug
 {
     uint8_t jobType;
