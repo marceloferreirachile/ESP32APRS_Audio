@@ -546,6 +546,10 @@ uint8_t lu6jmfCrumbPrevEvents(Lu6jmfTxDebugEvent *events,
 void lu6jmfWdSnapshotSet(uint32_t stuckMs, uint32_t packed, uint8_t jobType);
 uint8_t lu6jmfWdSnapshotGet(uint32_t *atMs, uint32_t *stuckMs, uint32_t *packed, uint8_t *jobType,
                             uint32_t *stackFree, uint32_t *heapFree, uint8_t maxN);
+// 2.1.5: wall-clock for the black box ("previous run ended about ...") and the boot time.
+void lu6jmfWallClockTick(void);
+uint32_t lu6jmfCrumbPrevEpoch(void);
+uint32_t lu6jmfBootEpoch(void);
 void lu6jmfHeapSample(void);
 uint8_t lu6jmfHeapHistory(uint32_t *upMin, uint32_t *freeHeap, uint32_t *maxBlock, uint8_t maxN);
 
