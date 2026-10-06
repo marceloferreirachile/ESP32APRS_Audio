@@ -10979,8 +10979,10 @@ void handle_about(AsyncWebServerRequest *request)
 	char FirmwareOTA[50];
 	char hwVersion[48];
 	// Build a dot-free version string for use in firmware filenames
-	char ver[20];
-	sprintf(ver, "v%s-%s.bin", VERSION, VERSION_BUILD);
+	// 2.1.5: was char[20] + sprintf. "v2.1.5-dev-lu6jmf.bin" is 21 chars + NUL, so the dev build
+	// overflowed this buffer into the next stack variables (garbled "Firmware File" on About).
+	char ver[48];
+	snprintf(ver, sizeof(ver), "v%s-%s.bin", VERSION, VERSION_BUILD);
 #if defined(TTGO_TWR)
 	strcpy(hwVersion, "LiLyGo T-TWRPlus");
 	sprintf(FirmwareOTA, "ESP32S3_TWR_%s", ver);
