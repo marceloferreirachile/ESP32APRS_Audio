@@ -6,6 +6,8 @@
 
 This is a custom fork by LU6JMF (Marcelo, Concepcion del Uruguay, Entre Rios, Argentina), running digipeater LU6JMF-10 "ESP32APRS_CDU", built on top of the original nakhonthai/ESP32APRS_Audio base. See the [releases page](https://github.com/marceloferreirachile/ESP32APRS_Audio/releases) for the full changelog.
 
+**License / Source code:** this firmware is based on ESP32APRS by Somkiat Nakhonthai (HS5TQA) and is distributed under the GNU General Public License v3 (see [LICENSE](LICENSE)). From v2.1.4-lu6jmf on, the source is not published here, but the complete corresponding source code of any released version is available on request, free of charge, for at least 3 years from its release date: **marcelobrachile@gmail.com** (please include the version number, e.g. v2.1.4-lu6jmf).
+
 **New device / full reset:** use the one-click browser installer, no software needed: **https://marceloferreirachile.github.io/ESP32APRS_Audio/**
 
 **Existing device (this fork or another firmware), no USB needed:** update through the device's own web panel - see "Existing device" in the [latest release notes](https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/latest). In short:
