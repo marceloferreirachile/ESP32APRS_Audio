@@ -1940,7 +1940,7 @@ config.oled_enable = true;
     config.rx_display = true;
 
     // afsk,TNC
-    sprintf(config.ntp_host, "ntp.nakhonthai.net");
+    sprintf(config.ntp_host, "pool.ntp.org"); // LU6JMF: ntp.nakhonthai.net did not answer from Argentina
 
     sprintf(config.path[0], "WIDE1-1");
     sprintf(config.path[1], "WIDE1-1,WIDE2-1");
