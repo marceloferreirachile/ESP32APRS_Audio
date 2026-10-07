@@ -3183,7 +3183,7 @@ void lu6jmfCrumbBoot(void)
         lu6jmfCrumb.magic == LU6JMF_CRUMB_MAGIC &&
         lu6jmfCrumb.head < LU6JMF_CRUMB_COUNT &&
         lu6jmfCrumb.used <= LU6JMF_CRUMB_COUNT &&
-        lu6jmfCrumb.used > 0)
+        (lu6jmfCrumb.used > 0 || lu6jmfCrumb.lastUptimeS > 0)) // a run with no TX yet still has its uptime tick
     {
         memcpy(&lu6jmfCrumbPrev, &lu6jmfCrumb, sizeof(lu6jmfCrumbPrev));
         lu6jmfCrumbPrevValid = true;

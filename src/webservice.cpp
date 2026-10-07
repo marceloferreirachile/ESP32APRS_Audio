@@ -11631,7 +11631,7 @@ void handle_txdebug(AsyncWebServerRequest *request)
     char endTxt[160];
     endTxt[0] = '\0';
     uint32_t prevEpoch = lu6jmfCrumbPrevEpoch();
-    if (prevCount != 0 && prevEpoch != 0)
+    if ((prevCount != 0 || prevReason[0] != 0) && prevEpoch != 0)
     {
         time_t te = (time_t)prevEpoch;
         struct tm tme;
@@ -11640,7 +11640,7 @@ void handle_txdebug(AsyncWebServerRequest *request)
                  tme.tm_mday, tme.tm_mon + 1, tme.tm_hour, tme.tm_min);
     }
     uint32_t prevUp = lu6jmfCrumbPrevUptimeS();
-    if (prevCount != 0 && prevUp != 0)
+    if ((prevCount != 0 || prevReason[0] != 0) && prevUp != 0)
     {
         size_t used = strlen(endTxt);
         snprintf(endTxt + used, sizeof(endTxt) - used, " | it ran for %lud %02luh %02lum",
@@ -11729,7 +11729,8 @@ void handle_txdebug(AsyncWebServerRequest *request)
     // 2.1.5: LAST RESTART banner at the top (easy to find; the page refreshes every 5 s so the
     // card at the bottom was hard to reach). Reason + about when the previous run ended + how long
     // it ran. Without black-box data (power-on, or first boot after an update) it says so.
-    if (prevCount != 0)
+    // shown also when the previous run had no TX events (reason + run time are still known)
+    if (prevCount != 0 || prevReason[0] != 0)
         response->printf(
             "<div style='margin-top:14px;padding:10px 14px;border:1px solid #ffb000;"
             "border-radius:8px;background:#2a2200;color:#ffd466;font-size:13px'>"
