@@ -3132,6 +3132,7 @@ struct Lu6jmfCrumb
     uint8_t used;
     Lu6jmfTxEvent ev[LU6JMF_CRUMB_COUNT];
     uint32_t lastEpoch; // 2.1.5: wall-clock (UTC epoch) of the last ~30 s tick, 0 = clock never synced
+    uint32_t lastUptimeS; // 2.1.5: uptime in seconds at the last ~30 s tick = how long that run lasted
 };
 
 RTC_NOINIT_ATTR static Lu6jmfCrumb lu6jmfCrumb;
@@ -3234,9 +3235,18 @@ void lu6jmfWallClockTick(void)
     if ((int32_t)(now - nextMs) < 0)
         return;
     nextMs = now + 30000UL;
+    if (lu6jmfCrumb.magic != LU6JMF_CRUMB_MAGIC)
+        return;
+    lu6jmfCrumb.lastUptimeS = now / 1000UL; // always known, no clock needed
     time_t t = time(NULL);
-    if (t > 1700000000 && lu6jmfCrumb.magic == LU6JMF_CRUMB_MAGIC)
+    if (t > 1700000000)
         lu6jmfCrumb.lastEpoch = (uint32_t)t;
+}
+
+// Previous run's duration in seconds (uptime at its last ~30 s tick), 0 if unknown.
+uint32_t lu6jmfCrumbPrevUptimeS(void)
+{
+    return lu6jmfCrumbPrevValid ? lu6jmfCrumbPrev.lastUptimeS : 0;
 }
 
 // Previous run's last known wall-clock time (UTC epoch), 0 if unknown.
