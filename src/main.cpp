@@ -1770,7 +1770,7 @@ void defaultConfig()
     memset(config.igate_phg, 0, sizeof(config.igate_phg));
     config.igate_path = 8;
     sprintf(config.igate_comment, "");
-    sprintf(config.igate_status, "https://github.com/nakhonthai/ESP32APRS_Audio");
+    strlcpy(config.igate_status, "AR-APRS iGate - Argentina APRS System", sizeof(config.igate_status));
     config.igate_sts_interval = 1800;
 
     // DIGI REPEATER
@@ -1795,7 +1795,7 @@ void defaultConfig()
     sprintf(config.digi_symbol, "A#");
     memset(config.digi_phg, 0, sizeof(config.digi_phg));
     sprintf(config.digi_comment, "");
-    sprintf(config.digi_status, "https://github.com/nakhonthai/ESP32APRS_Audio");
+    strlcpy(config.digi_status, "AR-APRS Digi - Argentina APRS System", sizeof(config.digi_status));
     config.digi_sts_interval = 1800;
 
     // Tracker
@@ -1835,7 +1835,7 @@ void defaultConfig()
     sprintf(config.trk_mycall, "NOCALL");
     sprintf(config.trk_comment, "");
     memset(config.trk_item, 0, sizeof(config.trk_item));
-    sprintf(config.trk_status, "https://github.com/nakhonthai/ESP32APRS_Audio");
+    strlcpy(config.trk_status, "AR-APRS Tracker - Argentina APRS System", sizeof(config.trk_status));
     config.trk_sts_interval = 1800;
 
     // WX
