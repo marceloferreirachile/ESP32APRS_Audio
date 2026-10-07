@@ -10515,7 +10515,9 @@ void taskNetwork(void *pvParameters)
             // config.pwr_sleep_activate |= ACTIVATE_WIFI;
             if (millis() > NTP_Timeout)
             {
-                NTP_Timeout = millis() + 86400000;
+                // LU6JMF: retry in 1 min until the first sync succeeds (was: 24 h even when
+                // the NTP server did not answer -> clock stuck in 1970 for a whole day)
+                NTP_Timeout = millis() + 60000;
                 // setSyncProvider(getNtpTime);
                 log_d("Contacting Time Server\n");
                 configTime(3600 * config.timeZone, 0, config.ntp_host);
@@ -10526,6 +10528,7 @@ void taskNetwork(void *pvParameters)
                     time_t systemTime;
                     time(&systemTime);
                     setTime(systemTime);
+                    NTP_Timeout = millis() + 86400000; // synced: next refresh in 24 h
                     if (systemUptime == 0)
                     {
                         systemUptime = time(NULL);
