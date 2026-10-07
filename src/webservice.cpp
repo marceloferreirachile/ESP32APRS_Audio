@@ -11624,6 +11624,30 @@ void handle_txdebug(AsyncWebServerRequest *request)
         primeUserCallsign().equalsIgnoreCase(LU6JMF_BLACKBOX_OWNER))
         prevCount = lu6jmfCrumbPrevEvents(prevEvents, 16, prevReason, sizeof(prevReason));
 
+    // 2.1.5: about when the previous run ended and how long it ran (black box stamps, ~30 s
+    // resolution). Shown in the LAST RESTART banner at the TOP of the page and again in the
+    // BEFORE LAST RESET card at the bottom.
+    char endTxt[160];
+    endTxt[0] = '\0';
+    uint32_t prevEpoch = lu6jmfCrumbPrevEpoch();
+    if (prevCount != 0 && prevEpoch != 0)
+    {
+        time_t te = (time_t)prevEpoch;
+        struct tm tme;
+        localtime_r(&te, &tme);
+        snprintf(endTxt, sizeof(endTxt), " | previous run ended about %02d/%02d %02d:%02d (local)",
+                 tme.tm_mday, tme.tm_mon + 1, tme.tm_hour, tme.tm_min);
+    }
+    uint32_t prevUp = lu6jmfCrumbPrevUptimeS();
+    if (prevCount != 0 && prevUp != 0)
+    {
+        size_t used = strlen(endTxt);
+        snprintf(endTxt + used, sizeof(endTxt) - used, " | it ran for %lud %02luh %02lum",
+                 (unsigned long)(prevUp / 86400UL),
+                 (unsigned long)((prevUp % 86400UL) / 3600UL),
+                 (unsigned long)((prevUp % 3600UL) / 60UL));
+    }
+
     // LU6JMF - Marcelo Ferreira
     // Phase 2J: local read-only snapshot of learned RF airtime.
     Lu6jmfTxTimingDebug timing[15];
@@ -11699,6 +11723,24 @@ void handle_txdebug(AsyncWebServerRequest *request)
         "</style></head><body>"
         "<h2>AR-APRS TX DEBUG</h2>"
         "<small>Argentina APRS System | refresh 5s<br>LU6JMF &mdash; Marcelo Ferreira &middot; Creator</small>"
+    );
+
+    // 2.1.5: LAST RESTART banner at the top (easy to find; the page refreshes every 5 s so the
+    // card at the bottom was hard to reach). Reason + about when the previous run ended + how long
+    // it ran. Without black-box data (power-on, or first boot after an update) it says so.
+    if (prevCount != 0)
+        response->printf(
+            "<div style='margin-top:14px;padding:10px 14px;border:1px solid #ffb000;"
+            "border-radius:8px;background:#2a2200;color:#ffd466;font-size:13px'>"
+            "<b>LAST RESTART:</b> %s%s</div>",
+            prevReason, endTxt);
+    else
+        response->print(
+            "<div style='margin-top:14px;padding:10px 14px;border:1px solid #444;"
+            "border-radius:8px;background:#1a1a1a;color:#aaa;font-size:13px'>"
+            "<b>LAST RESTART:</b> no data (power-on or first boot after an update)</div>");
+
+    response->print(
         "<div class='grid'>"
         "<div class='card'>"
         "<h3>RF SCHEDULER</h3>"
@@ -12100,29 +12142,6 @@ void handle_txdebug(AsyncWebServerRequest *request)
     {
         if (prevCount == 0)
             break;
-
-        // 2.1.5: about when the previous run ended (last ~30 s stamp kept in the black box).
-        char endTxt[160];
-        endTxt[0] = '\0';
-        uint32_t prevEpoch = lu6jmfCrumbPrevEpoch();
-        if (prevEpoch != 0)
-        {
-            time_t te = (time_t)prevEpoch;
-            struct tm tme;
-            localtime_r(&te, &tme);
-            snprintf(endTxt, sizeof(endTxt), " | previous run ended about %02d/%02d %02d:%02d (local)",
-                     tme.tm_mday, tme.tm_mon + 1, tme.tm_hour, tme.tm_min);
-        }
-        // How long the previous run lasted (works even if the clock never synced).
-        uint32_t prevUp = lu6jmfCrumbPrevUptimeS();
-        if (prevUp != 0)
-        {
-            size_t used = strlen(endTxt);
-            snprintf(endTxt + used, sizeof(endTxt) - used, " | it ran for %lud %02luh %02lum",
-                     (unsigned long)(prevUp / 86400UL),
-                     (unsigned long)((prevUp % 86400UL) / 3600UL),
-                     (unsigned long)((prevUp % 3600UL) / 60UL));
-        }
 
         response->printf(
             "</table>"
