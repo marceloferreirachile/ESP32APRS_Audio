@@ -1251,6 +1251,13 @@ bool loadConfiguration(const char *filename, Configuration &config)
 
         // Close the file (Curiously, File's destructor doesn't close the file)
         // f.close();
+        // LU6JMF: status text left by nakhonthai's firmware (his GitHub link) -> AR-APRS text per function
+        if (strstr(config.igate_status, "github.com/nakhonthai") != NULL)
+            strlcpy(config.igate_status, "AR-APRS iGate - Argentina APRS System", sizeof(config.igate_status));
+        if (strstr(config.digi_status, "github.com/nakhonthai") != NULL)
+            strlcpy(config.digi_status, "AR-APRS Digi - Argentina APRS System", sizeof(config.digi_status));
+        if (strstr(config.trk_status, "github.com/nakhonthai") != NULL)
+            strlcpy(config.trk_status, "AR-APRS Tracker - Argentina APRS System", sizeof(config.trk_status));
         return true;
     }
     else
