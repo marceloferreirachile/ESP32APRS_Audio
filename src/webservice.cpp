@@ -12102,7 +12102,7 @@ void handle_txdebug(AsyncWebServerRequest *request)
             break;
 
         // 2.1.5: about when the previous run ended (last ~30 s stamp kept in the black box).
-        char endTxt[64];
+        char endTxt[160];
         endTxt[0] = '\0';
         uint32_t prevEpoch = lu6jmfCrumbPrevEpoch();
         if (prevEpoch != 0)
@@ -12112,6 +12112,16 @@ void handle_txdebug(AsyncWebServerRequest *request)
             localtime_r(&te, &tme);
             snprintf(endTxt, sizeof(endTxt), " | previous run ended about %02d/%02d %02d:%02d (local)",
                      tme.tm_mday, tme.tm_mon + 1, tme.tm_hour, tme.tm_min);
+        }
+        // How long the previous run lasted (works even if the clock never synced).
+        uint32_t prevUp = lu6jmfCrumbPrevUptimeS();
+        if (prevUp != 0)
+        {
+            size_t used = strlen(endTxt);
+            snprintf(endTxt + used, sizeof(endTxt) - used, " | it ran for %lud %02luh %02lum",
+                     (unsigned long)(prevUp / 86400UL),
+                     (unsigned long)((prevUp % 86400UL) / 3600UL),
+                     (unsigned long)((prevUp % 3600UL) / 60UL));
         }
 
         response->printf(
