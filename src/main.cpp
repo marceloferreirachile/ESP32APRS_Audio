@@ -3122,7 +3122,10 @@ static uint8_t lu6jmfTxEventUsed = 0;
 // RAM and shown on /txdebug, so a crash at a remote site can be investigated
 // without a USB cable. Cost: 16 events x 12 bytes (~200 bytes of RTC memory).
 // -----------------------------------------------------------------------------
-#define LU6JMF_CRUMB_MAGIC 0x4C364A4DUL // 'L6JM'
+// 2.1.5: magic bumped 'L6JM' -> 'L6JN' because the crumb layout changed (lastEpoch, lastUptimeS).
+// A black box left by an older firmware is now rejected on the first boot after the update
+// instead of being read with the wrong layout (garbage "it ran for 42828d ...").
+#define LU6JMF_CRUMB_MAGIC 0x4C364A4EUL // 'L6JN'
 #define LU6JMF_CRUMB_COUNT 16
 
 struct Lu6jmfCrumb
