@@ -52,4 +52,6 @@ This firmware is a modified version of ESP32APRS_Audio by nakhonthai and is dist
 The complete corresponding source code of this release is available on request, free of charge, for at least 3 years from its release date (written offer, GPL v3 section 6(b)).
 To request it, write to **marcelobrachile@gmail.com** and include the version, v2.1.5-lu6jmf.
 
+The "Source code" archives below are generated automatically by GitHub from this repository (installer and docs) and do not contain the v2.1.5 source. Request it by email as described above.
+
 73 de LU6JMF
