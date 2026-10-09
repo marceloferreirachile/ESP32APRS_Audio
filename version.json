@@ -1,11 +1,11 @@
 {
-  "version": "2.1.4",
+  "version": "2.1.5",
   "build": "lu6jmf",
-  "date": "2026-10-04",
-  "tag": "v2.1.4-lu6jmf",
-  "filename": "ESP32_NODISP_v2.1.4-lu6jmf.bin",
-  "fs_version": "2.1.4",
+  "date": "2026-10-09",
+  "tag": "v2.1.5-lu6jmf",
+  "filename": "ESP32_NODISP_v2.1.5-lu6jmf.bin",
+  "fs_version": "2.1.5",
   "fs_build": "lu6jmf",
-  "fs_date": "2026-10-04",
+  "fs_date": "2026-10-09",
   "fs_filename": "littlefs.bin"
 }
