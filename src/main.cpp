@@ -1651,7 +1651,7 @@ void defaultConfig()
         config.wifi_sta[i].wifi_pass[0] = 0;
     }
     sprintf(config.wifi_ap_ssid, "ESP32APRS_Audio");
-    sprintf(config.wifi_ap_pass, "aprsthnetwork");
+    config.wifi_ap_pass[0] = 0; // LU6JMF: open setup AP, access control is the web login (admin/admin)
 
     // Blutooth
     config.bt_slave = false;
