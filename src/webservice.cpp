@@ -6753,6 +6753,9 @@ static const char *IGATE_TEMPLATE =
 	"</tr>\n"
 	"<tr><td align=\"right\"><b>PHG Text</b></td><td align=\"left\"><input name=\"texttouse\" type=\"text\" size=\"6\" style=\"background-color: rgb(97, 239, 170);\" value=\"{{phg}}\"/> <input type=\"button\" value=\"Calculate PHG\" onclick=\"javascript:calculatePHGR()\" /></td></tr>\n"
 	"</table></td>"
+	// LU6JMF: fill Power/Gain/Height/Direction from the saved PHG text, so the
+	// calculator shows what was used instead of the hardcoded 1W/6dBi/10ft.
+	"<script>(function(){var t=document.getElementsByName('texttouse')[0];if(!t)return;var v=(t.value||'').toUpperCase();if(v.length<7||v.substr(0,3)!='PHG')return;var P=+v[3],H=+v[4],G=+v[5],D=+v[6];if(isNaN(P+H+G+D))return;var s=document.getElementById('power');for(var i=0;i<s.options.length;i++){if(calcPower(parseFloat(s.options[i].value))==P){s.selectedIndex=i;break;}}var h=document.getElementById('haat'),hv=String(10*Math.pow(2,H));for(var j=0;j<h.options.length;j++){if(h.options[j].value==hv){h.selectedIndex=j;break;}}document.getElementById('gain').value=G;var d=document.getElementById('direction');if(D<d.options.length)d.selectedIndex=D;})();</script>\n"
 	"</tr>\n"
 	"<tr><td colspan=\"2\" align=\"right\">\n"
 	"<div><button class=\"button\" type='submit' id='submitIGATE'  name=\"commitIGATE\"> Apply Change </button></div>\n"
@@ -7716,6 +7719,9 @@ static const char *DIGI_TEMPLATE =
 	"</tr>\n"
 	"<tr><td align=\"right\"><b>PHG Text</b></td><td align=\"left\"><input name=\"texttouse\" type=\"text\" size=\"6\" style=\"background-color: rgb(97, 239, 170);\" value=\"{{phg}}\"/> <input type=\"button\" value=\"Calculate PHG\" onclick=\"javascript:calculatePHGR()\" /></td></tr>\n"
 	"</table></td>"
+	// LU6JMF: fill Power/Gain/Height/Direction from the saved PHG text, so the
+	// calculator shows what was used instead of the hardcoded 1W/6dBi/10ft.
+	"<script>(function(){var t=document.getElementsByName('texttouse')[0];if(!t)return;var v=(t.value||'').toUpperCase();if(v.length<7||v.substr(0,3)!='PHG')return;var P=+v[3],H=+v[4],G=+v[5],D=+v[6];if(isNaN(P+H+G+D))return;var s=document.getElementById('power');for(var i=0;i<s.options.length;i++){if(calcPower(parseFloat(s.options[i].value))==P){s.selectedIndex=i;break;}}var h=document.getElementById('haat'),hv=String(10*Math.pow(2,H));for(var j=0;j<h.options.length;j++){if(h.options[j].value==hv){h.selectedIndex=j;break;}}document.getElementById('gain').value=G;var d=document.getElementById('direction');if(D<d.options.length)d.selectedIndex=D;})();</script>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Filter:</b></td>\n"
 	"<td align=\"center\">\n"
