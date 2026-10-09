@@ -1206,9 +1206,13 @@ void event_lastHeard(bool gethtml)
 					strncpy(path, pkg.raw + end_ssid + 1, path_len);
 					path[path_len] = '\0';
 				}
-				if (end_ssid < 5)
+				// LU6JMF: a packet without path has no comma before ':' - the first
+				// comma may be inside the comment ("EL TALAR ,TIGRE"). Using it as
+				// the end of the destination broke Mic-E decoding (the latitude is
+				// in the destination) and the station vanished from LAST HEARD.
+				if (end_ssid < 5 || end_ssid > start_info)
 					end_ssid = start_info;
-				if ((start_dstssid > start_dst) && (start_dstssid < start_dst + 10))
+				if ((start_dstssid > start_dst) && (start_dstssid < start_dst + 10) && (start_dstssid < end_ssid))
 				{
 					aprs.dstcall_end_or_ssid = &aprs.data[start_dstssid];
 				}
