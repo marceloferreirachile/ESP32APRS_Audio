@@ -639,7 +639,7 @@ webString->print("function printLastHeard(data) {\n");
 	webString->print("<br />\n");
 	webString->print("<div class=\"footer\">\n");
 	// LU6JMF - Marcelo Ferreira: AR-APRS signature.
-	webString->print("AR-APRS &middot; Argentina APRS System &middot; 2027<br />\n");
+	webString->print("AR-APRS &middot; Argentina APRS System &middot; 2026<br />\n");
 	webString->print("LU6JMF &mdash; Marcelo Ferreira\n");
 	webString->print("<br />\n");
 	webString->print("</div>\n");
