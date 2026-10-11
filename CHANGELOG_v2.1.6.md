@@ -31,6 +31,12 @@ Rule: `v2.1.5` is frozen and identical to the published release. All new audio w
 - **File:** `src/webservice.cpp`, IGATE and DIGI pages.
 - The same change is already in AR-LORA (`lu6jmf/from-2.1.5`).
 
+### Dashboard: long WiFi SSID no longer breaks the layout
+- **Before:** a long network name (e.g. "Wifi ALVAREZ-2.4GHz") stretched the WiFi table and pushed the side column out of place.
+- **Now:** the SSID cell wraps inside the table.
+- **File:** `src/webservice.cpp`, dashboard WiFi table.
+- Same change in AR-LORA (`lu6jmf/from-2.1.5`), found by the Wireless Tracker tester.
+
 ## Before release (checklist)
 - [ ] Set `-DVERSION="2.1.6"` (now `2.1.6-dev`) and update `version.json` (still describes 2.1.5).
 - [ ] Build `pio run -e esp32-nodisp`, install on LU6JMF-10, and validate:

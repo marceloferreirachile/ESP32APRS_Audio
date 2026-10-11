@@ -744,7 +744,7 @@ static const char *DASHBOARD_TEMPLATE =
 	"{{/if}}"
 	"<br />\n<table>\n<tr>\n<th colspan=\"2\">WiFi</th>\n</tr>\n"
 	"<tr>\n<td>MODE</td>\n<td style=\"background: #ffffff;\">{{wifiMode}}</td>\n</tr>\n"
-	"<tr>\n<td>SSID</td>\n<td style=\"background: #ffffff;\">{{ssid}}</td>\n</tr>\n"
+	"<tr>\n<td>SSID</td>\n<td style=\"background: #ffffff; word-break: break-all; overflow-wrap: anywhere;\">{{ssid}}</td>\n</tr>\n"
 	"<tr>\n<td>RSSI</td>\n"
 	"{{#if wifiConnected}}"
 	"<td style=\"background: #ffffff;\">{{rssi}} dBm</td>\n"
