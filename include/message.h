@@ -38,7 +38,7 @@ void pkgMsgSort(msgType a[]);
 // APRS Query feature (?APRSV/?VER/?ABOUT, ?IGATE, ?DX) - "APRS Queries" standard
 // (ref. SA7SKY APRS-Queries.pdf). handleAPRSQuery() returns "" when the text is
 // not a recognized query, so the caller can fall through to AT-command handling.
-String handleAPRSQuery(const String &queryText);
+String handleAPRSQuery(const String &queryText, const String &tnc2Line);
 void dxRecordTrackPacket(const char *callsign, const String &tnc2);
 // void processMessage(const char* message);
 // void sendMessage(const char* message);
