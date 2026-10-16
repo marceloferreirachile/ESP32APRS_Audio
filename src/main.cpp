@@ -7870,6 +7870,7 @@ uint32_t blnNextEpoch[9] = {0};
 unsigned long objActivatedAt[4] = {0};
 unsigned long objSTSInterval[4] = {0};
 uint16_t objSentCount[4] = {0};
+volatile bool lu6jmfQueryBeacon = false; // 2.1.6: set by the ?APRSP query, handled in taskAPRS
 
 // Bulletin (BLN1-BLN9) feature + CPU-temp dashboard fix: custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
 int digiTlmInvCount = 0;
@@ -7916,6 +7917,16 @@ void taskAPRS(void *pvParameters)
     log_d("Task APRS has been start");
     for (;;)
     {
+
+        // 2.1.6: ?APRSP query - beacon now (iGate, Digi and Tracker, whatever is enabled)
+        if (lu6jmfQueryBeacon)
+        {
+            lu6jmfQueryBeacon = false;
+            iGatetickInterval = 0;
+            DiGiInterval = 0;
+            if (config.trk_en)
+                EVENT_TX_POSITION = 9;
+        }
 
         lu6jmfHeapSample(); // 2.1.5: hourly heap history for /txdebug (cheap time check)
         lu6jmfWallClockTick(); // 2.1.5: ~30 s wall-clock stamp into the black box (cheap time check)

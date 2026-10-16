@@ -128,7 +128,13 @@ static String formatUptime(unsigned long secs)
 
 // Returns "" when queryTextIn is not a recognized query (caller falls
 // through to normal AT-command handling, unchanged).
-String handleAPRSQuery(const String &queryTextIn)
+// 2.1.6: extra APRS queries (?APRSP ?APRS? ?APRSD ?APRSS ?APRST/?PING? ?APRSO).
+extern pkgListType *pkgList;
+extern WiFiClient aprsClient;
+extern volatile bool lu6jmfQueryBeacon;
+extern bool sendAPRSObject(uint8_t idx, const char *name, double lat, double lon, const char *symbol, const String &comment);
+
+String handleAPRSQuery(const String &queryTextIn, const String &tnc2Line)
 {
     String q = queryTextIn;
     q.trim();
@@ -140,10 +146,101 @@ String handleAPRSQuery(const String &queryTextIn)
         time_t now = time(NULL);
         unsigned long upSecs = (systemUptime > 0 && now > systemUptime) ? (unsigned long)(now - systemUptime) : 0;
         char buf[100];
-        snprintf(buf, sizeof(buf), "ESP32APRS_CDU v%s-%s up %s heap %luK",
+        snprintf(buf, sizeof(buf), "AR-APRS v%s-%s up %s heap %luK",
                  VERSION, VERSION_BUILD, formatUptime(upSecs).c_str(),
                  (unsigned long)(ESP.getFreeHeap() / 1024));
         return String(buf);
+    }
+
+    // ?APRS? - list of the queries this station answers.
+    // "?APRS" too: it is the ready-made query text on Yaesu radios (FT5D / FTM-510).
+    if (qUpper == "?APRS?" || qUpper == "?APRS")
+        return String("?APRSP ?APRSD ?APRSS ?APRST ?PING? ?APRSO ?APRSV ?VER ?IGATE ?DX");
+
+    // ?APRSP - send our position now (iGate / Digi / Tracker, whatever is enabled)
+    if (qUpper == "?APRSP")
+    {
+        lu6jmfQueryBeacon = true; // taskAPRS picks it up on its next loop
+        return String("Position sent");
+    }
+
+    // ?APRSS - short status of the station
+    if (qUpper == "?APRSS")
+    {
+        time_t now = time(NULL);
+        unsigned long upSecs = (systemUptime > 0 && now > systemUptime) ? (unsigned long)(now - systemUptime) : 0;
+        char buf[100];
+        snprintf(buf, sizeof(buf), "IGate %s IS %s Digi %s Trk %s up %s",
+                 config.igate_en ? "ON" : "OFF",
+                 aprsClient.connected() ? "OK" : "DOWN",
+                 config.digi_en ? "ON" : "OFF",
+                 config.trk_en ? "ON" : "OFF",
+                 formatUptime(upSecs).c_str());
+        return String(buf);
+    }
+
+    // ?APRST / ?PING? - reply with the path the query came through
+    if (qUpper == "?APRST" || qUpper == "?PING?")
+    {
+        int c = tnc2Line.indexOf(':');
+        String hdr = (c > 0) ? tnc2Line.substring(0, c) : tnc2Line;
+        if (hdr.length() > 67)
+            hdr = hdr.substring(0, 67);
+        return hdr;
+    }
+
+    // ?APRSD - stations heard direct on RF (no digipeater) in the last hour
+    if (qUpper == "?APRSD")
+    {
+        String out = "Directs=";
+        time_t now = time(NULL);
+        if (pkgList != NULL && psramLock(pdMS_TO_TICKS(200)))
+        {
+            for (int i = 0; i < PKGLISTSIZE; i++)
+            {
+                pkgListType &p = pkgList[i];
+                if (p.calsign[0] == 0 || p.raw == NULL || p.channel != 0)
+                    continue; // empty slot, or heard from APRS-IS
+                if (now - p.time > 3600)
+                    continue;
+                const char *colon = strchr(p.raw, ':');
+                const char *gt = strchr(p.raw, '>');
+                if (colon == NULL || gt == NULL || gt > colon)
+                    continue;
+                bool digied = false;
+                for (const char *c = gt; c < colon; c++)
+                    if (*c == '*') { digied = true; break; }
+                if (digied)
+                    continue;
+                String call = String(p.calsign);
+                call.trim();
+                if (call.length() == 0 || out.indexOf(" " + call + " ") >= 0 || out.endsWith(" " + call))
+                    continue;
+                if (out.length() + 1 + call.length() > 67)
+                    break;
+                out += " " + call;
+            }
+            psramUnlock();
+        }
+        if (out == "Directs=")
+            out += " none";
+        return out;
+    }
+
+    // ?APRSO - send our enabled objects again
+    if (qUpper == "?APRSO")
+    {
+        int n = 0;
+        for (uint8_t oi = 0; oi < 4; oi++)
+        {
+            if (config.obj_en[oi] && strlen(config.obj_name[oi]) >= 3)
+            {
+                if (sendAPRSObject(oi, config.obj_name[oi], config.obj_lat[oi], config.obj_lon[oi],
+                                   config.obj_symbol[oi], String(config.obj_text[oi])))
+                    n++;
+            }
+        }
+        return String(n) + " Objects Transmitted";
     }
 
     if (qUpper == "?IGATE")
@@ -473,7 +570,10 @@ int pkgMsgUpdate(const char *call, const char *raw, uint16_t msg_id, int8_t ack,
     int i = -1;
     // if (ack > 0) // Check ACK to update
     //{
-    i = pkgMsg_Find(call, msg_id, rxtx);
+    // 2.1.6: received messages without a number all come with msg_id 0; don't let a new
+    // one overwrite the previous one from the same station - always take a new slot.
+    if (!(rxtx && msg_id == 0))
+        i = pkgMsg_Find(call, msg_id, rxtx);
     //}
 
     if (i < 0)
@@ -693,6 +793,47 @@ void sendAPRSAck(const String &toCall, const String &msgNo)
     log_d("Send APRS ACK to %s msgNo %s TNC2: %s", toCall.c_str(), msgNo.c_str(), packet.c_str());
 }
 
+// 2.1.6: duplicate filter for messages addressed to us. The same message can arrive twice:
+// once from RF and once more via APRS-IS, re-injected by a faulty iGate far away (seen
+// 2026-10-15: KE9DJN-10, Indiana USA, re-gating LU6JMF-1 messages as qAR with the TOCALL
+// changed to APRS, so APRS-IS did not drop it as a dupe). Same station + same text + same
+// message number (or none) within 30 s = copy, ignored. A real retry from the sender comes
+// later than that (Yaesu: about once a minute) and is still handled.
+static portMUX_TYPE lu6jmfDupMux = portMUX_INITIALIZER_UNLOCKED;
+static bool lu6jmfMsgSeenRecently(const String &from, const String &text, const String &no)
+{
+    static uint32_t hashes[8] = {0};
+    static unsigned long seenAt[8] = {0};
+    static uint8_t next = 0;
+    String key = from + ">" + text + "{" + no;
+    key.toUpperCase();
+    uint32_t h = 2166136261u; // FNV-1a
+    for (size_t k = 0; k < key.length(); k++)
+    {
+        h ^= (uint8_t)key[k];
+        h *= 16777619u;
+    }
+    unsigned long now = millis();
+    bool dup = false;
+    portENTER_CRITICAL(&lu6jmfDupMux);
+    for (int k = 0; k < 8; k++)
+    {
+        if (seenAt[k] != 0 && hashes[k] == h && (now - seenAt[k]) < 30000UL)
+        {
+            dup = true;
+            break;
+        }
+    }
+    if (!dup)
+    {
+        hashes[next] = h;
+        seenAt[next] = now;
+        next = (next + 1) % 8;
+    }
+    portEXIT_CRITICAL(&lu6jmfDupMux);
+    return dup;
+}
+
 // ===== จัดการข้อความขาเข้า =====
 void handleIncomingAPRS(const String &line)
 {
@@ -744,6 +885,14 @@ void handleIncomingAPRS(const String &line)
 
             log_d("📩 Message from %s to %s : %s", fromCall.c_str(), toCall.c_str(), message.c_str());
 
+            // 2.1.6: ignore a second copy of the same message (see lu6jmfMsgSeenRecently)
+            if (!isAck && toCall.equalsIgnoreCase(config.msg_mycall) &&
+                lu6jmfMsgSeenRecently(fromCall, message, msgNo))
+            {
+                log_d("Duplicate message from %s ignored: %s", fromCall.c_str(), message.c_str());
+                return;
+            }
+
             // ถ้าเป็นข้อความถึงเราเอง ให้ตอบกลับ ack
             if (toCall.equalsIgnoreCase(config.msg_mycall) && msgNo.length() > 0)
             {
@@ -777,7 +926,7 @@ void handleIncomingAPRS(const String &line)
                     sendAPRSAck(fromCall, msgNo);
                     // LU6JMF - Marcelo Ferreira: APRS Query feature (?APRSV/?IGATE/?DX),
                     // checked before AT-commands since queries always start with '?'.
-                    String queryResponse = handleAPRSQuery(decrypted);
+                    String queryResponse = handleAPRSQuery(decrypted, line);
                     if (queryResponse != "")
                     {
                         // 2.1.5: query replies now use the normal retry policy (msg_retry /
@@ -792,6 +941,21 @@ void handleIncomingAPRS(const String &line)
                             sendAPRSMessage(fromCall, response, config.msg_encrypt);
                     }
                 }
+                event_chatMessage(false);
+            }
+            // 2.1.6: a message to us WITHOUT a message number ("{nn"). APRS allows it (the
+            // sender just expects no ACK), and the Yaesu FTM-510 sends some messages that way.
+            // Before, these were dropped completely: not shown in the chat, queries not answered.
+            // Now: show it in the chat and answer queries. No ACK (there is no number to ACK).
+            // Not with encryption (the IV needs the message number). AT commands stay
+            // numbered-only, as before.
+            else if (toCall.equalsIgnoreCase(config.msg_mycall) && msgNo.length() == 0 &&
+                     !isAck && !config.msg_encrypt && message.length() > 0)
+            {
+                pkgMsgUpdate(fromCall.c_str(), message.c_str(), 0, -1, true); // RX Message, no number
+                String queryResponse = handleAPRSQuery(message, line);
+                if (queryResponse != "")
+                    sendAPRSMessage(fromCall, queryResponse, false, false);
                 event_chatMessage(false);
             }
         }
