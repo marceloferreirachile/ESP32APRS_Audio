@@ -22,6 +22,7 @@ extern "C" {
 
 #include "wireguardif.h"
 #include "wireguard.h"
+#include "wireguard-platform.h"
 
 #include "wireguard_vpn.h"
 #include <lwip/tcpip.h>
@@ -185,6 +186,21 @@ void wireguard_setup()
         wireguard_last_error = "Server address is empty";
         log_d("WireGuard NOT started: %s", wireguard_last_error);
         return;
+    }
+    // LU6JMF: start WireGuard's random generator once. esp_wireguard_init() does it, but this
+    // function calls netif_add() directly, so it never ran: on ESP32-S3 / ESP-IDF 5 the first
+    // random number crashed the board (null entropy function -> reboot loop); on the classic
+    // ESP32 the generator ran without a seed.
+    static bool wgRandomReady = false;
+    if (!wgRandomReady)
+    {
+        if (wireguard_platform_init() != ESP_OK)
+        {
+            wireguard_last_error = "WireGuard random generator could not start";
+            log_d("WireGuard NOT started: %s", wireguard_last_error);
+            return;
+        }
+        wgRandomReady = true;
     }
     struct wireguardif_init_data wg;
     struct wireguardif_peer peer;
