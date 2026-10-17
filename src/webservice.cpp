@@ -2942,7 +2942,10 @@ static const char *VPN_TEMPLATE =
 	"contentType: false,\n"
 	"processData: false,\n"
 	"success: function (data) {\n"
-	"alert(\"Submited Successfully\");\n"
+	// LU6JMF: the tunnel only starts/stops at boot - restart right away, so "VPN off" really means off
+	"var rb = new FormData(); rb.append('REBOOT','1');\n"
+	"fetch('/system',{method:'POST',body:rb});\n"
+	"alert(\"Saved. The board is restarting so the VPN change takes effect (about 1 minute).\");\n"
 	"},\n"
 	"error: function (data) {\n"
 	"alert(\"An error occurred.\");\n"
