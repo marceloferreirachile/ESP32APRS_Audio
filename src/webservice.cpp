@@ -173,6 +173,38 @@ static String lu6jmfStationCall()
 	return c;
 }
 
+
+#define LU6JMF_FW_NAME "AR-APRS"
+// LU6JMF: modes enabled, short text ("iGate Digi")
+static String lu6jmfModes()
+{
+	String m = "";
+	if (config.igate_en) m += "iGate ";
+	if (config.digi_en) m += "Digi ";
+	if (config.trk_en) m += "Tracker ";
+	if (config.wx_en) m += "WX ";
+	m.trim();
+	return m;
+}
+
+// LU6JMF: what "New Register" sends to vpn.tracktotal.ar, so the PRIME panel knows which board it is.
+// JSON is valid JavaScript; '<' escaped so a Host Name can never close the <script>.
+static String lu6jmfVpnRegJson(const String &espId)
+{
+	JsonDocument d;
+	d["name"] = espId;
+	d["call"] = lu6jmfStationCall();
+	d["fw"] = LU6JMF_FW_NAME;
+	d["ver"] = String(VERSION) + VERSION_BUILD;
+	d["chip"] = ESP.getChipModel();
+	d["host"] = config.host_name;
+	d["modes"] = lu6jmfModes();
+	String s;
+	serializeJson(d, s);
+	s.replace("<", "\\u003c");
+	return s;
+}
+
 // 2.1.6: left side of the page header - which board this is: the Host Name (System page), like
 // the original firmware showed on top; while it is still the factory name, the station callsign.
 // Below it the enabled modes and, with the built-in radio module, its frequency.
@@ -843,10 +875,9 @@ void handle_dashboard(AsyncWebServerRequest *request)
 	// 2.1.5: feed the task watchdog - this handler runs on the async_tcp task itself
 	esp_task_wdt_reset();
 	char temp_buffer[200];
-	// if (!request->authenticate(config.http_username, config.http_password))
-	// {
-	// 	return request->requestAuthentication();
-	// }
+	// LU6JMF: login required (was open: showed the WiFi network name to anyone reaching the board)
+	if (!request->authenticate(config.http_username, config.http_password))
+		return request->requestAuthentication();
 	StandByTick = millis() + (config.pwr_stanby_delay * 1000);
 
 	JsonDocument data;
@@ -1103,8 +1134,52 @@ static const char *SYSINFO_TEMPLATE =
 	"<td><b>{{cpuTemp}}</b></td>\n"
 	"</tr>\n</table>\n";
 
+
+// LU6JMF: /boardinfo - read every few minutes by vpn.tracktotal.ar through the tunnel, for the
+// PRIME panel. Open on purpose, so it only carries what the board already shows on the air.
+void handle_boardinfo(AsyncWebServerRequest *request)
+{
+	JsonDocument d;
+	char b[48];
+	d["fw"] = LU6JMF_FW_NAME;
+	d["ver"] = String(VERSION) + VERSION_BUILD;
+	d["chip"] = ESP.getChipModel();
+	d["call"] = lu6jmfStationCall();
+	d["modes"] = lu6jmfModes();
+	d["uptime"] = (millis() / 1000) - upTimeStamp;
+	d["heapFree"] = ESP.getFreeHeap();
+	float t = temperatureRead();
+	if (!isnan(t) && t > -40.0f && t < 125.0f)
+		d["cpuTemp"] = roundf(t * 10) / 10;
+	if (VBat_Flag)
+		d["vbat"] = roundf(VBat * 100) / 100;
+	d["rf"] = config.rf_en;
+#ifdef RADIO_LORA
+	snprintf(b, sizeof(b), "%.3f", config.rf_freq);
+	d["freq"] = b;
+	if (config.rf_mode == RF_MODE_LoRa)
+		snprintf(b, sizeof(b), "SF%d BW%g CR%d", config.rf_sf, config.rf_bw, config.rf_cr);
+	else
+		snprintf(b, sizeof(b), "FSK mode %d", config.rf_mode);
+	d["loraMode"] = b;
+	d["txPower"] = config.rf_power;
+#else
+	snprintf(b, sizeof(b), "%.4f", config.freq_tx);
+	d["freqTx"] = b;
+	snprintf(b, sizeof(b), "%.4f", config.freq_rx);
+	d["freqRx"] = b;
+	d["txPower"] = config.rf_power ? "HIGH" : "LOW";
+#endif
+	String out;
+	serializeJson(d, out);
+	request->send(200, "application/json", out);
+}
+
 void handle_sysinfo(AsyncWebServerRequest *request)
 {
+	// LU6JMF: login required (was open: reachable from the Internet through the VPN port)
+	if (!request->authenticate(config.http_username, config.http_password))
+		return request->requestAuthentication();
 	JsonDocument data;
 	char temp_buffer[64];
 
@@ -2877,7 +2952,7 @@ static const char *VPN_TEMPLATE =
 	"function vpnMsg(t) { var e = document.getElementById('vpnreg'); if (e) e.textContent = t; }\n"
 	"function loadVPNConfig() {\n"
 	"const url = \"https://vpn.tracktotal.ar/wg/create\";\n"
-	"const espID = {'name': '{{espId}}', 'call': '{{myCall}}'};\n"
+	"const espID = {{regJson}};\n"
 	"vpnMsg('Registering... the server can take up to a minute, please wait.');\n"
 	"const ctl = new AbortController();\n"
 	"const tm = setTimeout(() => ctl.abort(), 90000);\n"
@@ -3071,7 +3146,7 @@ void handle_vpn(AsyncWebServerRequest *request)
 		String ESP32_ID = WiFi.macAddress();
 		ESP32_ID.replace(":", "");
 		data["espId"] = ESP32_ID;
-		data["myCall"] = lu6jmfStationCall(); // 2.1.6: sent with New Register so the PRIME panel shows who owns the board
+		data["regJson"] = lu6jmfVpnRegJson(ESP32_ID); // 2.1.6: board info (callsign, version, chip...) for the PRIME panel
 		data["vpnEnabled"] = config.vpn;
 		data["peerAddress"] = config.wg_peer_address;
 		data["port"] = config.wg_port;
@@ -12866,6 +12941,8 @@ void webService()
 					{ handle_txdebug(request); });
 	async_server.on("/sidebarInfo", HTTP_GET, [](AsyncWebServerRequest *request)
 					{ handle_sidebar(request); });
+	async_server.on("/boardinfo", HTTP_GET, [](AsyncWebServerRequest *request)
+					{ handle_boardinfo(request); });
 	async_server.on("/sysinfo", HTTP_GET, [](AsyncWebServerRequest *request)
 					{ handle_sysinfo(request); });
 	// async_server.on("/lastHeard", HTTP_GET, [](AsyncWebServerRequest *request)

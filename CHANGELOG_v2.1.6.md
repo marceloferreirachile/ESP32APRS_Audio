@@ -99,6 +99,11 @@ Rule: `v2.1.5` is frozen and identical to the published release. All new audio w
 - Boards with an external radio (rf off) show no frequency: the firmware does not know it.
 - **File:** `src/webservice.cpp` (`lu6jmfHeaderInfo`, both header paths).
 
+### Board info for the PRIME panel; dashboard pages now need the login
+- New Register now also sends firmware, version, chip, Host Name and enabled modes (one JSON built on the board; `<` escaped).
+- New open page `/boardinfo` (JSON): firmware, version, chip, callsign, modes, uptime, free RAM, CPU temp, battery, radio frequency/power. Read every 10 min by vpn.tracktotal.ar through the tunnel. Nothing private in it (no WiFi name, no passwords).
+- `/sysinfo` and `/dashboard` now ask for the login. Before they answered anyone, also from the Internet through the VPN port, and `/dashboard` showed the WiFi network name. The board's own page is already logged in, so it keeps working - to test.
+
 ## Before release (checklist)
 - [ ] **Release waits for the TOCALL** (aprsorg/aprs-deviceid issue #378, APJMF1 = AR-APRS, APJMF2 = AR-LORA). After approval: replace `APE32A` / `APE32L` / `APE32I` with `APJMF1` everywhere the firmware builds a packet, rebuild, test on LU6JMF-10 that aprs.fi shows APJMF1, then release (decided 2026-10-16: ship 2.1.6 with everything new, TOCALL included).
 - [ ] Still to test: `?aprs`, `?aprst`, `?aprso`; PHG fields; open setup AP after Factory Reset.
