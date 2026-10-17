@@ -132,7 +132,7 @@ data.forEach(row => {
 const tr = document.createElement("tr");
 tr.innerHTML = `
 <td>${row.time}</td>
-<td><img src="/symbols/icons/${row.icon}" style="width:20px;height:20px;" onerror="iconError(this, '${row.icon}', '${(row.callsign||'?').charAt(0)}');"><span style="display:none;width:20px;height:20px;"></span></td>
+<td><img src="https://vpn.tracktotal.ar/symbols/icons/${row.icon}" style="width:20px;height:20px;" onerror="iconError(this, '${row.icon}', '${(row.callsign||'?').charAt(0)}');"><span style="display:none;width:20px;height:20px;"></span></td>
 <td><a style="text-decoration:underline;" href="https://www.qrz.com/db/${encodeURIComponent(row.callsign.split('-')[0])}" target="_blank" rel="noopener">${row.callsign}</a> <a href="https://aprs.fi/#!z=12&call=a%2F${encodeURIComponent(row.callsign)}&timerange=3600&tail=3600" target="_blank" rel="noopener" title="Ver en aprs.fi">🗺</a></td>
 <td align="left">${row.path}</td>
 <td>${row.dx !== null ? row.dx : "-"}</td>
