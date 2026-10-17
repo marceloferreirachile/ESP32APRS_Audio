@@ -107,6 +107,9 @@ Rule: `v2.1.5` is frozen and identical to the published release. All new audio w
 ### VPN: WireGuard random generator is now started
 - `wireguard_setup()` (HS5TQA code) creates the tunnel with `netif_add()` directly and never called `wireguard_platform_init()`, so the random generator used for the handshake keys ran without a seed. On the ESP32-S3 (AR-LORA) the same bug crashed the board in a loop (null entropy function). Now started once before the tunnel; if it fails, the VPN page shows why.
 
+### VPN page: Apply Change restarts the board
+- The tunnel only starts or stops at boot. Before, switching the VPN off and saving left it running until a manual reboot (the panel still showed the board online). Now saving the VPN page restarts the board right away.
+
 ## Before release (checklist)
 - [ ] **Release waits for the TOCALL** (aprsorg/aprs-deviceid issue #378, APJMF1 = AR-APRS, APJMF2 = AR-LORA). After approval: replace `APE32A` / `APE32L` / `APE32I` with `APJMF1` everywhere the firmware builds a packet, rebuild, test on LU6JMF-10 that aprs.fi shows APJMF1, then release (decided 2026-10-16: ship 2.1.6 with everything new, TOCALL included).
 - [ ] Still to test: `?aprs`, `?aprst`, `?aprso`; PHG fields; open setup AP after Factory Reset.
