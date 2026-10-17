@@ -68,11 +68,43 @@ Rule: `v2.1.5` is frozen and identical to the published release. All new audio w
 - **File:** `src/message.cpp` (`lu6jmfMsgSeenRecently`, called in `handleIncomingAPRS`).
 - Tested 2026-10-15 (build 22:00:40): `?aprss` from the FTM-510 shown once, answered once.
 
+### VPN: our own server (vpn.tracktotal.ar) instead of HS5TQA's
+- **Before:** "New Register" on the VPN page asked HS5TQA's server (`http://hs1.hs5tqa.ampr.org:81/wg/create`, unencrypted) and the default server was `vpn.nakhonthai.net`.
+- **Now:** it asks `https://vpn.tracktotal.ar/wg/create` (same reply format), default server `vpn.tracktotal.ar`. Our boards get 10.66.1.N and are reachable at `http://vpn.tracktotal.ar:20000+N`, shown on the VPN page.
+  - Boards still registered on HS5TQA's server (10.44.x.y) keep working and keep their links until they press New Register again.
+- Server side (TrackTotal VPS, not in the firmware): WireGuard `wgaprs` UDP 51820, registration service `vpn_api.py` (one slot per board MAC, max 5 new per internet address per hour), files in Radio Amador/vpn_aprs.
+- New Register also sends the station callsign, so the PRIME VPN page shows (and pre-fills the note with) who owns each board.
+- New Register now saves the settings and restarts the board by itself (no Apply Change / reboot by hand). If saving fails, the page says so with the error code.
+- On boot, a board with HS5TQA's VPN settings and the VPN **off** gets them cleared and the server set to `vpn.tracktotal.ar` (so an OTA update leaves the VPN page ready for New Register). A board with HS5TQA's VPN **on** is left as it is.
+- **Files:** `src/webservice.cpp` (VPN page), `src/main.cpp` (default server).
+- Tested 2026-10-16 on LU6JMF-10 (build 20:15): New Register saved and restarted by itself, board online at 10.66.1.2, opened from outside at http://vpn.tracktotal.ar:20002 (also from Buenos Aires), shown online in PRIME > VPN.
+
+### Icons and favicon come from the board, not from HS5TQA's server
+- **Before:** LAST HEARD, the symbol pickers (IGATE, DIGI, OBJ) and the browser tab icon loaded images from `http://aprs.nakhonthai.net`. When that server answered, the pages showed its icons instead of the aprs.fi-style ones packed on the board; when it was down, the pickers showed no icon.
+- **Now:** all icons come from the board (`/symbols/icons/...`, packed in `data/symbols/icons.dat`). The tab icon is the digi symbol from the same pack.
+- Boards that got `main_shell.html` in LittleFS from an older installer: the firmware replaces those addresses when it loads the template, so OTA alone is enough (no filesystem upload).
+- **Files:** `src/webservice.cpp`, `data/templates/main_shell.html` (for new installs).
+
+### Fewer dependencies on outside servers
+- Factory default APRS-IS server: `rotate.aprs2.net` (was `aprs.nakhonthai.net`), same as the installer `default.cfg`. Only matters after a Factory Reset without that file.
+- Factory default MQTT server: empty (was `mqtt.nakhonthai.net`).
+- IGATE page help next to Server Host/Port: suggests rotate.aprs2.net / 14580 (was links to HS5TQA's servers).
+- TNC2 and GNSS pages load jQuery from the board (`/jquery-3.7.1.js`) instead of `apps.bdimg.com`. The gauge charts still load Highcharts from `code.highcharts.com`.
+- Kept on purpose: credits to HS5TQA (About, file headers), and the links for boards still on the old VPN (10.44.x.y).
+- **Files:** `src/main.cpp`, `src/webservice.cpp`.
+
+### Header shows which board you are on
+- Left side of the page header: the Host Name from the System page, like the original firmware showed on top (while it is still the factory name: the iGate callsign + SSID, or "NOCALL - not configured"), the enabled modes (iGate / Digi / Tracker / WX) and, when the built-in radio module is enabled, its frequency. Asked by the Buenos Aires tester, who manages more than one board.
+- Boards with an external radio (rf off) show no frequency: the firmware does not know it.
+- **File:** `src/webservice.cpp` (`lu6jmfHeaderInfo`, both header paths).
+
 ## Before release (checklist)
+- [ ] **Release waits for the TOCALL** (aprsorg/aprs-deviceid issue #378, APJMF1 = AR-APRS, APJMF2 = AR-LORA). After approval: replace `APE32A` / `APE32L` / `APE32I` with `APJMF1` everywhere the firmware builds a packet, rebuild, test on LU6JMF-10 that aprs.fi shows APJMF1, then release (decided 2026-10-16: ship 2.1.6 with everything new, TOCALL included).
+- [ ] Still to test: `?aprs`, `?aprst`, `?aprso`; PHG fields; open setup AP after Factory Reset.
 - [ ] Set `-DVERSION="2.1.6"` (now `2.1.6-dev`) and update `version.json` (still describes 2.1.5).
 - [ ] Build `pio run -e esp32-nodisp`, install on LU6JMF-10, and validate:
   - [ ] PHG fields come back with the saved values.
   - [ ] After a Factory Reset on a spare board, the setup AP comes up open.
 - [ ] Release notes in English with the GPL v3 written offer.
-- [ ] Installer littlefs **with** the generic `data/default.cfg` (NOCALL, open AP, admin/admin). Never remove it.
-- [ ] Flash usage: esp32-nodisp was at 94.7% in 2.1.5. Check what can be trimmed before adding features.
+- [ ] Installer littlefs **with** the generic `data/default.cfg` (NOCALL, open AP, admin/admin, VPN server vpn.tracktotal.ar). Never remove it.
+- [ ] Flash usage: esp32-nodisp was at 94.7% in 2.1.5, 94.9% now (2026-10-16). Check what can be trimmed before adding features.

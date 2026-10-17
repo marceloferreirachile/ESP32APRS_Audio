@@ -1740,7 +1740,7 @@ void defaultConfig()
     config.audio_hpf = false;
     config.audio_lpf = false;
     config.preamble = 3;
-    sprintf(config.ntp_host, "aprs.nakhonthai.net");
+    sprintf(config.ntp_host, "pool.ntp.org"); // 2.1.6 (was aprs.nakhonthai.net; set again below anyway)
 
     // IGATE
     config.igate_bcn = false;
@@ -1755,7 +1755,7 @@ void defaultConfig()
     config.aprs_ssid = 1;
     config.aprs_port = 14580;
     sprintf(config.aprs_mycall, "NOCALL");
-    sprintf(config.aprs_host, "aprs.nakhonthai.net");
+    sprintf(config.aprs_host, "rotate.aprs2.net"); // 2.1.6: same as the installer default.cfg (was aprs.nakhonthai.net)
     memset(config.aprs_passcode, 0, sizeof(config.aprs_passcode));
     sprintf(config.aprs_moniCall, "%s-%d", config.aprs_mycall, config.aprs_ssid);
     sprintf(config.aprs_filter, "m/10");
@@ -1950,7 +1950,7 @@ config.oled_enable = true;
     // VPN Wireguard
     config.vpn = false;
     config.wg_port = 51820;
-    sprintf(config.wg_peer_address, "vpn.nakhonthai.net");
+    sprintf(config.wg_peer_address, "vpn.tracktotal.ar"); // 2.1.6: our VPN server (was vpn.nakhonthai.net)
     sprintf(config.wg_local_address, "192.168.1.2");
     sprintf(config.wg_netmask_address, "255.255.255.0");
     sprintf(config.wg_gw_address, "192.168.1.1");
@@ -2265,7 +2265,7 @@ config.oled_enable = true;
     config.log = 0;
 #ifdef MQTT
     config.en_mqtt = false;
-    sprintf(config.mqtt_host, "mqtt.nakhonthai.net");
+    config.mqtt_host[0] = 0; // 2.1.6: no default MQTT server (was mqtt.nakhonthai.net)
     char strCID[13];
     uint64_t chipid = ESP.getEfuseMac();
     sprintf(strCID, "%04X%08X", (uint16_t)(chipid >> 32), (uint32_t)chipid);
@@ -4680,6 +4680,22 @@ void setup()
     {
         if (!loadConfiguration("/default.cfg", config))
             defaultConfig();
+    }
+
+    // 2.1.6: leftovers of HS5TQA's VPN on a board where the VPN is OFF -> switch the page to our
+    // server and clear the old keys/addresses, so "New Register" starts clean. A board that has
+    // HS5TQA's VPN switched ON is left alone (its owner may be using it right now).
+    if (!config.vpn && strstr(config.wg_peer_address, "nakhonthai") != NULL)
+    {
+        strlcpy(config.wg_peer_address, "vpn.tracktotal.ar", sizeof(config.wg_peer_address));
+        config.wg_port = 51820;
+        config.wg_local_address[0] = 0;
+        strlcpy(config.wg_netmask_address, "255.255.255.0", sizeof(config.wg_netmask_address));
+        config.wg_gw_address[0] = 0;
+        config.wg_public_key[0] = 0;
+        config.wg_private_key[0] = 0;
+        saveConfiguration("/default.cfg", config);
+        log_d("Old HS5TQA VPN settings (VPN off) replaced by vpn.tracktotal.ar defaults");
     }
 
     //setCpuFrequencyMhz(config.cpuFreq);
