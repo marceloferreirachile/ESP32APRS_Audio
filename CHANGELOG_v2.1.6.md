@@ -82,6 +82,7 @@ Rule: `v2.1.5` is frozen and identical to the published release. All new audio w
 ### Icons and favicon come from the board, not from HS5TQA's server
 - **Before:** LAST HEARD, the symbol pickers (IGATE, DIGI, OBJ) and the browser tab icon loaded images from `http://aprs.nakhonthai.net`. When that server answered, the pages showed its icons instead of the aprs.fi-style ones packed on the board; when it was down, the pickers showed no icon.
 - **Now:** all icons come from the board (`/symbols/icons/...`, packed in `data/symbols/icons.dat`). The tab icon is the digi symbol from the same pack.
+- LAST HEARD loads its icons from our server `https://vpn.tracktotal.ar/symbols/icons/<code>-<1|2>.png` (same names as before): the aprs.fi symbols (github.com/hessu/aprs-symbols) cut at 48 px, sharp at 20 px. Without internet it falls back to the board icons (12 px, to fit LittleFS), then to a drawn shape. Server side: `vpn_aprs/install_icons.sh`. Symbol pickers use the board icons.
 - Boards that got `main_shell.html` in LittleFS from an older installer: the firmware replaces those addresses when it loads the template, so OTA alone is enough (no filesystem upload).
 - **Files:** `src/webservice.cpp`, `data/templates/main_shell.html` (for new installs).
 

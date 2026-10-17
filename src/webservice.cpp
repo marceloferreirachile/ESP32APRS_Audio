@@ -384,6 +384,9 @@ void setMainPage(AsyncWebServerRequest *request)
 			tpl.replace("{{TITLE}}", "<title>AR-APRS - Argentina APRS System</title>\n");
 			// 2.1.6: boards updated only by OTA keep the old main_shell.html in LittleFS, which
 			// still points icons and the tab icon at HS5TQA's server - fix it on the fly.
+			// 2.1.6: LAST HEARD icons from our server (aprs.fi style, 48 px); offline -> iconError() uses the board icons
+			tpl.replace("<td><img src=\"http://aprs.nakhonthai.net/symbols/icons/${row.icon}\"", "<td><img src=\"https://vpn.tracktotal.ar/symbols/icons/${row.icon}\"");
+			tpl.replace("<td><img src=\"/symbols/icons/${row.icon}\"", "<td><img src=\"https://vpn.tracktotal.ar/symbols/icons/${row.icon}\"");
 			tpl.replace("http://aprs.nakhonthai.net/symbols/icons/", "/symbols/icons/");
 			tpl.replace("<link rel=\"shortcut icon\" href=\"http://aprs.nakhonthai.net/favicon.ico\" type=\"image/x-icon\" />",
 						"<link rel=\"icon\" href=\"/symbols/icons/35-1.png\" type=\"image/png\" />");
@@ -603,7 +606,7 @@ webString->print("function printLastHeard(data) {\n");
 	webString->print("const tr = document.createElement(\"tr\");\n");
 	webString->print("tr.innerHTML = `\n");
 	webString->print("<td>${row.time}</td>\n");
-	webString->print("<td><img src=\"/symbols/icons/${row.icon}\" style=\"width:20px;height:20px;\" onerror=\"iconError(this, '${row.icon}', '${(row.callsign||'?').charAt(0)}');\"><span style=\"display:none;width:20px;height:20px;\"></span></td>\n");
+	webString->print("<td><img src=\"https://vpn.tracktotal.ar/symbols/icons/${row.icon}\" style=\"width:20px;height:20px;\" onerror=\"iconError(this, '${row.icon}', '${(row.callsign||'?').charAt(0)}');\"><span style=\"display:none;width:20px;height:20px;\"></span></td>\n");
 	// Clickable callsign -> aprs.fi - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
 	webString->print("<td><a style=\"text-decoration:underline;\" href=\"https://www.qrz.com/db/${encodeURIComponent(row.callsign.split('-')[0])}\" target=\"_blank\" rel=\"noopener\">${row.callsign}</a> <a href=\"https://aprs.fi/#!z=12&call=a%2F${encodeURIComponent(row.callsign)}&timerange=3600&tail=3600\" target=\"_blank\" rel=\"noopener\" title=\"Ver en aprs.fi\">🗺</a></td>\n");
 	webString->print("<td align=\"left\">${row.path}</td>\n");
