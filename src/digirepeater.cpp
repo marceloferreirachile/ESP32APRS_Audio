@@ -23,6 +23,13 @@ int digiProcess(AX25Msg &Packet)
         return 0; // NO DST
     }
 
+    // LU6JMF (APRS 1.2, 4.2b): never digipeat a packet that we originated (loop protection)
+    if (!strcmp(&Packet.src.call[0], &config.digi_mycall[0]) && Packet.src.ssid == config.digi_ssid)
+    {
+        digiLog.DropRx++;
+        return 0;
+    }
+
     if (!strncmp(&Packet.src.call[0], "NOCALL", 6))
     {
         digiLog.DropRx++;
@@ -155,8 +162,28 @@ int digiProcess(AX25Msg &Packet)
                     j = 2;
                     break;
                 }
+                else if (Packet.rpt_count < AX25_MAX_RPT)
+                {
+                    // LU6JMF (APRS 1.2, 4.3.2a): WIDEn-N with N>=2 -> insert our callsign, marked used,
+                    // before the decremented alias:  SRC>DST,WIDE2-2  ->  SRC>DST,LU6JMF-10*,WIDE2-1
+                    // (HS5TQA's code only decremented N, so nobody could tell the packet went through us)
+                    for (int k = Packet.rpt_count; k > idx; k--)
+                    {
+                        strcpy(&Packet.rpt_list[k].call[0], &Packet.rpt_list[k - 1].call[0]);
+                        Packet.rpt_list[k].ssid = Packet.rpt_list[k - 1].ssid;
+                        Packet.rpt_flags &= ~(1 << k); // everything after the first unused one is unused
+                    }
+                    Packet.rpt_count += 1;
+                    strcpy(&Packet.rpt_list[idx].call[0], &config.digi_mycall[0]);
+                    Packet.rpt_list[idx].ssid = config.digi_ssid;
+                    Packet.rpt_flags |= (1 << idx);
+                    Packet.rpt_list[idx + 1].ssid = ctmp;
+                    j = 2;
+                    break;
+                }
                 else
                 {
+                    // path already has 8 addresses: no room for our callsign, only decrement N
                     Packet.rpt_list[idx].ssid = ctmp;
                     Packet.rpt_flags &= ~(1 << idx);
                     j = 2;
