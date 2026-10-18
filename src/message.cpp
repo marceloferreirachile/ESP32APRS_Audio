@@ -572,7 +572,7 @@ int pkgMsgUpdate(const char *call, const char *raw, uint16_t msg_id, int8_t ack,
     //{
     // 2.1.6: received messages without a number all come with msg_id 0; don't let a new
     // one overwrite the previous one from the same station - always take a new slot.
-    if (!(rxtx && msg_id == 0))
+    if (msg_id != 0) // 2.1.6: number-less messages (RX, or our one-shot query replies) never overwrite each other
         i = pkgMsg_Find(call, msg_id, rxtx);
     //}
 
@@ -834,6 +834,89 @@ static bool lu6jmfMsgSeenRecently(const String &from, const String &text, const 
     return dup;
 }
 
+// 2.1.6 (APRS 1.2, ch. 15): "responses to queries are one-time transmissions that also do not
+// have a message identifier, so that they too are not acknowledged". With encryption the reply
+// stays a numbered message (the encryption IV is the message number).
+void lu6jmfQueryReply(const String &toCall, const String &text)
+{
+    if (config.msg_encrypt)
+    {
+        sendAPRSMessage(toCall, text, true, false);
+        return;
+    }
+    String to = toCall;
+    to.trim();
+    to.toUpperCase();
+    if (to.length() == 0 || text.length() == 0)
+        return;
+    char toFixed[10];
+    memset(toFixed, 0x20, sizeof(toFixed));
+    memcpy(toFixed, to.c_str(), to.length() > 9 ? 9 : to.length());
+    toFixed[9] = 0;
+    String me = String(config.msg_mycall);
+    me.trim();
+    me.toUpperCase();
+    String path = "";
+    if (config.msg_path < 5)
+    {
+        if (config.msg_path > 0)
+            path += "-" + String(config.msg_path);
+    }
+    else
+        path += "," + getPath(config.msg_path);
+    String packet = me + ">APE32L" + path + "::" + String(toFixed) + ":" + text;
+    uint8_t mode = 0;
+    if (config.msg_rf)
+        mode |= RF_CHANNEL;
+    if (config.msg_inet)
+        mode |= INET_CHANNEL;
+    pkgTxPushJob(packet.c_str(), packet.length(), 0, mode, LU6JMF_TXJOB_MESSAGE, LU6JMF_TXPRIO_HIGH);
+    pkgMsgUpdate(to.c_str(), text.c_str(), 0, -2, false); // shown in the chat, never retried
+    event_chatMessage(false);
+}
+
+// 2.1.6 (APRS 1.2, ch. 15): general queries heard on RF. ?APRS? -> our position (like ?APRSP);
+// ?IGATE? -> "<IGATE,MSG_CNT=n,LOC_CNT=n". At most one answer per type every 5 minutes.
+void lu6jmfGeneralQuery(const String &tnc2)
+{
+    int colon = tnc2.indexOf(':');
+    if (colon < 0 || colon + 1 >= (int)tnc2.length() || tnc2[colon + 1] != '?')
+        return;
+    String q = tnc2.substring(colon + 1, colon + 9);
+    q.toUpperCase();
+    static unsigned long lastAprs = 0, lastIgate = 0;
+    unsigned long now = millis();
+    if (q.startsWith("?APRS?"))
+    {
+        if (!(config.igate_en || config.digi_en || config.trk_en) || (lastAprs && now - lastAprs < 300000UL))
+            return;
+        lastAprs = now | 1;
+        lu6jmfQueryBeacon = true;
+    }
+    else if (q.startsWith("?IGATE?"))
+    {
+        if (!config.igate_en || (lastIgate && now - lastIgate < 300000UL))
+            return;
+        lastIgate = now | 1;
+        int loc = 0; // stations heard on RF in the last 30 minutes
+        time_t t = time(NULL);
+        if (pkgList != NULL && psramLock(pdMS_TO_TICKS(200)))
+        {
+            for (int i = 0; i < PKGLISTSIZE; i++)
+                if (pkgList[i].calsign[0] != 0 && pkgList[i].channel == 0 && t - pkgList[i].time <= 1800)
+                    loc++;
+            psramUnlock();
+        }
+        String me = String(config.aprs_mycall);
+        me.trim();
+        me.toUpperCase();
+        if (config.aprs_ssid > 0)
+            me += "-" + String(config.aprs_ssid);
+        String packet = me + ">APE32L:<IGATE,MSG_CNT=" + String((unsigned)status.inet2rf) + ",LOC_CNT=" + String(loc);
+        pkgTxPushJob(packet.c_str(), packet.length(), 0, RF_CHANNEL, LU6JMF_TXJOB_IGATE, LU6JMF_TXPRIO_NORMAL);
+    }
+}
+
 // ===== จัดการข้อความขาเข้า =====
 void handleIncomingAPRS(const String &line)
 {
@@ -885,9 +968,24 @@ void handleIncomingAPRS(const String &line)
 
             log_d("📩 Message from %s to %s : %s", fromCall.c_str(), toCall.c_str(), message.c_str());
 
+            // 2.1.6 (APRS 1.2 "reply-ack"): a message number "MM}AA" also acknowledges OUR message AA
+            String msgNoMM = msgNo;
+            int rbrace = msgNo.indexOf('}');
+            if (!isAck && rbrace >= 0)
+            {
+                msgNoMM = msgNo.substring(0, rbrace);
+                String aa = msgNo.substring(rbrace + 1);
+                if (aa.length() > 0 && toCall.equalsIgnoreCase(config.msg_mycall))
+                {
+                    int k = pkgMsg_Find(fromCall.c_str(), aa.toInt(), false);
+                    if (k > -1)
+                        msgQueue[k].ack = -2; // our message AA was received
+                }
+            }
+
             // 2.1.6: ignore a second copy of the same message (see lu6jmfMsgSeenRecently)
             if (!isAck && toCall.equalsIgnoreCase(config.msg_mycall) &&
-                lu6jmfMsgSeenRecently(fromCall, message, msgNo))
+                lu6jmfMsgSeenRecently(fromCall, message, msgNoMM))
             {
                 log_d("Duplicate message from %s ignored: %s", fromCall.c_str(), message.c_str());
                 return;
@@ -932,7 +1030,7 @@ void handleIncomingAPRS(const String &line)
                         // 2.1.5: query replies now use the normal retry policy (msg_retry /
                         // msg_interval) so a reply lost after the ACK is re-sent until the
                         // asker ACKs it. Before 2.1.4 it was noRetry=true (sent once only).
-                        sendAPRSMessage(fromCall, queryResponse, config.msg_encrypt, false);
+                        lu6jmfQueryReply(fromCall, queryResponse);
                     }
                     else if (config.at_cmd_msg)
                     {
@@ -955,7 +1053,7 @@ void handleIncomingAPRS(const String &line)
                 pkgMsgUpdate(fromCall.c_str(), message.c_str(), 0, -1, true); // RX Message, no number
                 String queryResponse = handleAPRSQuery(message, line);
                 if (queryResponse != "")
-                    sendAPRSMessage(fromCall, queryResponse, false, false);
+                    lu6jmfQueryReply(fromCall, queryResponse);
                 event_chatMessage(false);
             }
         }

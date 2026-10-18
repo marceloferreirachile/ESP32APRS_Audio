@@ -110,6 +110,14 @@ Rule: `v2.1.5` is frozen and identical to the published release. All new audio w
 ### VPN page: Apply Change restarts the board
 - The tunnel only starts or stops at boot. Before, switching the VPN off and saving left it running until a manual reboot (the panel still showed the board online). Now saving the VPN page restarts the board right away.
 
+### APRS 1.2 conformance (WB2OSZ, github.com/wb2osz/aprsspec - APRS101 is obsolete)
+- Digipeater: WIDEn-N with N>=2 now inserts our callsign: `SRC>DST,WIDE2-2` -> `SRC>DST,LU6JMF-10*,WIDE2-1` (HS5TQA's code only decremented N, the path did not show the packet went through us). With 8 addresses already in the path it only decrements, as before.
+- Digipeater: the same packet (source, destination without SSID, info) is not repeated again within 30 s (copies heard through other digis); our own packets are never digipeated.
+- Fixed `pkgTxDuplicate()`: it compared with `>= 0` (true for about half of all queued packets) and could silently cancel an unrelated beacon/message waiting in the TX queue whenever a packet was digipeated.
+- Query replies (?APRSP, ?VER, ?IGATE...) are now one-time messages without a message number, as the spec says (not acknowledged, not retried). With message encryption on they stay numbered.
+- Reply-ack: an incoming message number `MM}AA` also confirms our message AA; duplicate check uses MM only.
+- General queries heard on RF: `?APRS?` sends our position, `?IGATE?` answers `<IGATE,MSG_CNT=n,LOC_CNT=n` (iGate on). At most once every 5 minutes each.
+
 ## Before release (checklist)
 - [ ] **Release waits for the TOCALL** (aprsorg/aprs-deviceid issue #378, APJMF1 = AR-APRS, APJMF2 = AR-LORA). After approval: replace `APE32A` / `APE32L` / `APE32I` with `APJMF1` everywhere the firmware builds a packet, rebuild, test on LU6JMF-10 that aprs.fi shows APJMF1, then release (decided 2026-10-16: ship 2.1.6 with everything new, TOCALL included).
 - [ ] Still to test: `?aprs`, `?aprst`, `?aprso`; PHG fields; open setup AP after Factory Reset.

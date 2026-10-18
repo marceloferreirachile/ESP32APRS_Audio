@@ -2829,6 +2829,8 @@ int pkgListUpdate(char *call, char *raw, uint16_t type, bool channel, uint16_t a
     return i;
 }
 
+bool lu6jmfDigiSeen(uint32_t h);
+void lu6jmfDigiRemember(uint32_t h);
 bool pkgTxDuplicate(AX25Msg ax25)
 {
     psramLock();
@@ -2844,13 +2846,15 @@ bool pkgTxDuplicate(AX25Msg ax25)
                 sprintf(callsign, "%s-%d", ax25.src.call, ax25.src.ssid);
             else
                 sprintf(callsign, "%s", ax25.src.call);
-            if (strncmp(&txQueue[i].Info[0], callsign, strlen(callsign)) >= 0) // Check duplicate src callsign
+            // LU6JMF: was ">= 0" (true for about half of ALL queued packets) and compared ":info" with
+            // "info" - an incoming packet could silently cancel an unrelated beacon/message waiting to go out.
+            size_t cl = strlen(callsign);
+            if (strncmp(&txQueue[i].Info[0], callsign, cl) == 0 && txQueue[i].Info[cl] == '>') // same source callsign
             {
                 char *ecs1 = strstr(txQueue[i].Info, ":");
                 if (ecs1 == NULL)
                     continue;
-                ;
-                if (strncmp(ecs1, (const char *)ax25.info, strlen(ecs1)) >= 0)
+                if (strcmp(ecs1 + 1, (const char *)ax25.info) == 0)
                 { // Check duplicate aprs info
                     txQueue[i].Active = false;
                     psramUnlock();
@@ -7888,6 +7892,26 @@ unsigned long objSTSInterval[4] = {0};
 uint16_t objSentCount[4] = {0};
 volatile bool lu6jmfQueryBeacon = false; // 2.1.6: set by the ?APRSP query, handled in taskAPRS
 
+// 2.1.6 (APRS 1.2, digipeater 4.2a / 4.4b): packets we digipeated in the last 30 s (hash of source,
+// destination without SSID and info). Only the RF task touches it.
+static uint32_t lu6jmfDigiHash[16] = {0};
+static unsigned long lu6jmfDigiAt[16] = {0};
+static uint8_t lu6jmfDigiNext = 0;
+bool lu6jmfDigiSeen(uint32_t h)
+{
+    unsigned long now = millis();
+    for (int k = 0; k < 16; k++)
+        if (lu6jmfDigiAt[k] != 0 && lu6jmfDigiHash[k] == h && (now - lu6jmfDigiAt[k]) < 30000UL)
+            return true;
+    return false;
+}
+void lu6jmfDigiRemember(uint32_t h)
+{
+    lu6jmfDigiHash[lu6jmfDigiNext] = h;
+    lu6jmfDigiAt[lu6jmfDigiNext] = millis() | 1;
+    lu6jmfDigiNext = (lu6jmfDigiNext + 1) % 16;
+}
+
 // Bulletin (BLN1-BLN9) feature + CPU-temp dashboard fix: custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
 int digiTlmInvCount = 0;
 unsigned long msgInterval = 0;
@@ -8766,6 +8790,7 @@ void taskAPRS(void *pvParameters)
                         // (farthest RF station heard with position, resets every hour)
                         // for every RF packet, not just messages.
                         dxRecordTrackPacket(call, tnc2);
+                        lu6jmfGeneralQuery(tnc2); // 2.1.6: ?APRS? / ?IGATE? heard on RF (APRS 1.2, ch. 15)
                     }
 
                     if (config.msg_enable && (type & FILTER_MESSAGE))
@@ -9640,7 +9665,17 @@ void taskAPRS(void *pvParameters)
                 {
                     // Packet recheck
                     pkgTxDuplicate(incomingPacket); // Search duplicate in tx and drop packet for renew
-                    int dlyFlag = digiProcess(incomingPacket);
+                    // LU6JMF (APRS 1.2, 4.2a): same source + destination (no SSID) + info already
+                    // digipeated in the last 30 s -> don't repeat it again (copies heard via other digis)
+                    uint32_t digiHash = 2166136261u;
+                    {
+                        char hk[16];
+                        snprintf(hk, sizeof(hk), "%s-%d>", incomingPacket.src.call, incomingPacket.src.ssid);
+                        for (const char *c = hk; *c; c++) { digiHash ^= (uint8_t)*c; digiHash *= 16777619u; }
+                        for (const char *c = incomingPacket.dst.call; *c; c++) { digiHash ^= (uint8_t)*c; digiHash *= 16777619u; }
+                        for (size_t c = 0; c < incomingPacket.len && incomingPacket.info[c]; c++) { digiHash ^= incomingPacket.info[c]; digiHash *= 16777619u; }
+                    }
+                    int dlyFlag = lu6jmfDigiSeen(digiHash) ? 0 : digiProcess(incomingPacket);
                     log_d("Digi Process Flag=%d\n", dlyFlag);
                     if (dlyFlag > 0)
                     {
@@ -9678,6 +9713,7 @@ void taskAPRS(void *pvParameters)
                         //  digiPkg.toCharArray(rawP, digiPkg.length());
                         // memcpy(rawP, digiPkg.c_str(), digiPkg.length());
                         pkgTxPushJob(digiPkg.c_str(), digiPkg.length(), digiDelay, RF_CHANNEL, LU6JMF_TXJOB_DIGI, LU6JMF_TXPRIO_NORMAL);
+                        lu6jmfDigiRemember(digiHash);
                         digiPkg.clear();
                         // pkgTxPush(rawP, digiPkg.length(), digiDelay, RF_CHANNEL);
                         sprintf(sts, "--src call--\n%s\nDelay: %dms.", incomingPacket.src.call, digiDelay);
