@@ -142,3 +142,9 @@ Rule: `v2.1.5` is frozen and identical to the published release. All new audio w
 ## VPN key security
 
 - The WireGuard private key is now generated on the board and never leaves it; the VPN server receives only the public key. Before, the server generated the key pair, kept the private key and returned it to anyone who sent the board's MAC address. Boards already registered keep working (their saved key is kept).
+
+## Crash diagnosis
+
+- `/txdebug`: new LAST CRASH card - task, program counter and backtrace of the last crash stored on the board (ESP-IDF core dump), so a crash far away can be located from a photo of the page.
+- Build: every build keeps its `firmware.elf` in `firmware_releases/elf/` (newest 10), needed to decode those addresses.
+- Fixed a crash ("stack smashing") when building a long AX.25 frame for RF: the frame was assembled in a 300-byte stack buffer with no limit (up to 10 addresses + the text could pass it). Buffers are now 400 bytes and a frame that does not fit is refused instead of overwriting memory. Found with the new LAST CRASH card on LU6JMF-10.

@@ -11758,6 +11758,63 @@ void handle_prime(AsyncWebServerRequest *request)
 	request->send(response);
 }
 
+// 2.1.6: LAST CRASH card for /txdebug - WHERE the code was when the board crashed. ESP-IDF saves
+// a "core dump" of the crash in the coredump flash partition (min_spiffs.csv has one); here we
+// read its summary (task, program counter, backtrace) so a user far away can just send a photo of
+// /txdebug and we find the exact source line with addr2line on the firmware.elf of that build.
+// Builds without core dump support show "not recorded by this build" (no compile error).
+#if __has_include(<esp_core_dump.h>)
+#include <esp_core_dump.h>
+#define LU6JMF_HAVE_COREDUMP_H 1
+#endif
+static void lu6jmfCrashCard(AsyncResponseStream *response)
+{
+	response->print(
+		"<div class='card full'>"
+		"<h3>LAST CRASH</h3>"
+		"<small>where the code was at the last crash stored on the board (may be older than the last reset) | diagnostic</small>"
+		"<table>");
+#if defined(LU6JMF_HAVE_COREDUMP_H) && CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH
+	size_t cdAddr = 0, cdSize = 0;
+	if (esp_core_dump_image_get(&cdAddr, &cdSize) != ESP_OK)
+	{
+		response->print("<tr><td>Stored crash</td><td>none</td></tr>");
+	}
+	else
+	{
+#if CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF
+		esp_core_dump_summary_t *cs = (esp_core_dump_summary_t *)malloc(sizeof(esp_core_dump_summary_t));
+		if (cs && esp_core_dump_get_summary(cs) == ESP_OK)
+		{
+			response->printf("<tr><td>Task</td><td>%.16s</td></tr>", cs->exc_task);
+			response->printf("<tr><td>PC</td><td>0x%08lx</td></tr>", (unsigned long)cs->exc_pc);
+#if CONFIG_IDF_TARGET_ARCH_XTENSA
+			response->printf("<tr><td>Cause / address</td><td>%lu / 0x%08lx</td></tr>",
+							 (unsigned long)cs->ex_info.exc_cause, (unsigned long)cs->ex_info.exc_vaddr);
+			response->print("<tr><td>Backtrace</td><td style='white-space:normal;font-family:monospace'>");
+			for (uint32_t i = 0; i < cs->exc_bt_info.depth && i < 16; i++)
+				response->printf("0x%08lx ", (unsigned long)cs->exc_bt_info.bt[i]);
+			if (cs->exc_bt_info.corrupted)
+				response->print("(corrupted)");
+			response->print("</td></tr>");
+#endif
+			response->printf("<tr><td>Firmware ELF</td><td>%.16s</td></tr>", (const char *)cs->app_elf_sha256);
+		}
+		else
+		{
+			response->print("<tr><td>Stored crash</td><td>present, but could not be read</td></tr>");
+		}
+		free(cs);
+#else
+		response->printf("<tr><td>Stored crash</td><td>present (%u bytes) - read it over USB</td></tr>", (unsigned)cdSize);
+#endif
+	}
+#else
+	response->print("<tr><td>Stored crash</td><td>not recorded by this build</td></tr>");
+#endif
+	response->print("</table></div>");
+}
+
 void handle_txdebug(AsyncWebServerRequest *request)
 {
 	// 2.1.5: feed the task watchdog - this handler runs on the async_tcp task itself
@@ -12603,6 +12660,9 @@ void handle_txdebug(AsyncWebServerRequest *request)
     response->print(
         "</table>"
         "</div>"
+    );
+    lu6jmfCrashCard(response); // 2.1.6
+    response->print(
         "</div>"
         "<p><small>"
         "Scheduler completion is released only after real PTT OFF."

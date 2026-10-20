@@ -1382,7 +1382,8 @@ char ax25_encode(ax25frame &frame, char *txt, int size)
         // printf("p{:}=%d\r\n",p);
         // Get String APRS
         memset(&frame.data, 0, sizeof(frame.data));
-        for (i = 0; i < (size - p); i++)
+        // LU6JMF 2.1.6: never past frame.data (and keep its ending zero); txt[size] is not ours either
+        for (i = 0; i < (int)(size - p - 1) && i < (int)sizeof(frame.data) - 1; i++)
             frame.data[i] = txt[p + i + 1];
         p2 = strpos(txt, '>');
         if (p2 > 0 && p2 < size)
@@ -1462,7 +1463,11 @@ int hdlcFrame(uint8_t *outbuf, size_t outbuf_len, AX25Ctx *ctx, ax25frame *pkg)
     uint8_t data = 0;
     ctx->crc_out = CRC_CCIT_INIT_VAL;
     int raw_count = 0;
-    uint8_t info[300];
+    // LU6JMF 2.1.6: was info[300] with no limit. Up to 10 addresses (70 bytes) + 2 + the text
+    // could pass 300 bytes - a long packet (e.g. from the Internet to RF) overwrote the stack and
+    // the board crashed ("stack smashing", seen in the core dump of LU6JMF-10).
+    uint8_t info[400];
+    const size_t cap = (outbuf_len < sizeof(info)) ? outbuf_len : sizeof(info);
     //info[idx++] = HDLC_FLAG;
 
     for (i = 0; i < 10; i++)
@@ -1499,7 +1504,10 @@ int hdlcFrame(uint8_t *outbuf, size_t outbuf_len, AX25Ctx *ctx, ax25frame *pkg)
     ax25_putRaw(&info[idx++], ctx, AX25_CTRL_UI);      // Control field - 0x03 is APRS UI-frame
     ax25_putRaw(&info[idx++], ctx, AX25_PID_NOLAYER3); // Protocol ID - 0xF0 is no layer 3
 
-    for (i = 0; i < strlen(pkg->data); i++)
+    size_t dataLen = strnlen(pkg->data, sizeof(pkg->data));
+    if ((size_t)idx + dataLen > cap)
+        return 0; // too long for one AX.25 frame: refused (counted as AX.25 rejected), no crash
+    for (i = 0; i < (int)dataLen; i++)
     {
         ax25_putRaw(&info[idx++], ctx, (uint8_t)pkg->data[i]);
     }
