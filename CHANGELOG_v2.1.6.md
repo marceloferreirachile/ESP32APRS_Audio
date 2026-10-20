@@ -134,3 +134,7 @@ Rule: `v2.1.5` is frozen and identical to the published release. All new audio w
 - Fixed reboot with I2C sensors (BME280, BMP280, Si7021, CCS811, SHT): a full WiFi reconnection deleted the sensor objects and the next reading used the deleted object. Sensors are no longer touched on WiFi reconnect, and each reading checks the sensor exists.
 - Fixed the I2C "busy" flag staying stuck during sensor setup when the BME280/CCS811 was already created (caused 0.5 s waits on every I2C access).
 - `/txdebug`: SYSTEM HEALTH now also shows the free stack of the sensor task (only when a sensor is enabled).
+
+## Messages
+
+- A message repeated by the sender (same station, text and number, within 10 minutes - our ACK was lost) gets the ACK again but is not processed or answered again (before: only copies within 30 s were ignored, and without re-sending the ACK).
