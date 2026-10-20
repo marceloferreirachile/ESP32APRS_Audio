@@ -798,7 +798,9 @@ void sendAPRSAck(const String &toCall, const String &msgNo)
 // 2026-10-15: KE9DJN-10, Indiana USA, re-gating LU6JMF-1 messages as qAR with the TOCALL
 // changed to APRS, so APRS-IS did not drop it as a dupe). Same station + same text + same
 // message number (or none) within 30 s = copy, ignored. A real retry from the sender comes
-// later than that (Yaesu: about once a minute) and is still handled.
+// later than that (Yaesu: about once a minute).
+// A NUMBERED message (same station + text + number) is remembered for 10 min: the sender's
+// retries (our ACK was lost) get the ACK again, but are not processed/answered again.
 static portMUX_TYPE lu6jmfDupMux = portMUX_INITIALIZER_UNLOCKED;
 static bool lu6jmfMsgSeenRecently(const String &from, const String &text, const String &no)
 {
@@ -818,7 +820,7 @@ static bool lu6jmfMsgSeenRecently(const String &from, const String &text, const 
     portENTER_CRITICAL(&lu6jmfDupMux);
     for (int k = 0; k < 8; k++)
     {
-        if (seenAt[k] != 0 && hashes[k] == h && (now - seenAt[k]) < 30000UL)
+        if (seenAt[k] != 0 && hashes[k] == h && (now - seenAt[k]) < (no.length() ? 600000UL : 30000UL))
         {
             dup = true;
             break;
@@ -987,6 +989,8 @@ void handleIncomingAPRS(const String &line)
             if (!isAck && toCall.equalsIgnoreCase(config.msg_mycall) &&
                 lu6jmfMsgSeenRecently(fromCall, message, msgNoMM))
             {
+                if (msgNo.length() > 0)
+                    sendAPRSAck(fromCall, msgNo); // the sender is retrying: our ACK was lost
                 log_d("Duplicate message from %s ignored: %s", fromCall.c_str(), message.c_str());
                 return;
             }
