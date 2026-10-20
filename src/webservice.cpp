@@ -17,6 +17,7 @@
 #include "template_engine.h"
 #include "base64.hpp"
 #include "wireguard_vpn.h"
+#include <mbedtls/base64.h>
 #include <LibAPRSesp.h>
 #include <parse_aprs.h>
 #include "jquery_min_js.h"
@@ -189,10 +190,51 @@ static String lu6jmfModes()
 
 // LU6JMF: what "New Register" sends to vpn.tracktotal.ar, so the PRIME panel knows which board it is.
 // JSON is valid JavaScript; '<' escaped so a Host Name can never close the <script>.
-static String lu6jmfVpnRegJson(const String &espId)
+// 2.1.6: WireGuard key made ON THE BOARD. The private key never leaves the board: the VPN
+// server gets only the public key (before, the server made the pair, kept the private key and
+// gave it back to anyone who asked with the board's MAC). A key already saved (also one the
+// server made before) is kept, so boards already on the VPN go on working.
+extern "C" int crypto_scalarmult_curve25519(unsigned char *q, const unsigned char *n, const unsigned char *p);
+extern "C" void esp_fill_random(void *buf, size_t len);
+static bool lu6jmfWgKeys(String &priv64, String &pub64)
+{
+	uint8_t priv[32], pub[32];
+	static const uint8_t basepoint[32] = {9};
+	unsigned char b64[48];
+	size_t olen = 0;
+	bool have = strlen(config.wg_private_key) == 44 &&
+				mbedtls_base64_decode(priv, sizeof(priv), &olen, (const unsigned char *)config.wg_private_key, 44) == 0 && olen == 32;
+	if (!have)
+	{
+		esp_fill_random(priv, sizeof(priv));
+		priv[0] &= 248; // X25519 private key "clamping", as wg genkey does
+		priv[31] = (priv[31] & 127) | 64;
+	}
+	bool ok = crypto_scalarmult_curve25519(pub, priv, basepoint) == 0;
+	if (ok && mbedtls_base64_encode(b64, sizeof(b64), &olen, priv, 32) == 0)
+	{
+		b64[olen] = 0;
+		priv64 = (char *)b64;
+	}
+	else
+		ok = false;
+	if (ok && mbedtls_base64_encode(b64, sizeof(b64), &olen, pub, 32) == 0)
+	{
+		b64[olen] = 0;
+		pub64 = (char *)b64;
+	}
+	else
+		ok = false;
+	memset(priv, 0, sizeof(priv));
+	return ok;
+}
+
+static String lu6jmfVpnRegJson(const String &espId, const String &pubKey)
 {
 	JsonDocument d;
 	d["name"] = espId;
+	if (pubKey.length() == 44)
+		d["pubkey"] = pubKey; // 2.1.6: only the PUBLIC key goes to the VPN server
 	d["call"] = lu6jmfStationCall();
 	d["fw"] = LU6JMF_FW_NAME;
 	d["ver"] = String(VERSION) + VERSION_BUILD;
@@ -2977,7 +3019,7 @@ static const char *VPN_TEMPLATE =
 	"document.getElementById(\"wg_netmask_address\").value = \"255.255.255.0\";\n"
 	"document.getElementById(\"wg_gw_address\").value = data.Gateway;\n"
 	"document.getElementById(\"wg_public_key\").value = data.PublicKey;\n"
-	"document.getElementById(\"wg_private_key\").value = data.PrivateKey;\n"
+	"if (data.PrivateKey) document.getElementById(\"wg_private_key\").value = data.PrivateKey;\n" // 2.1.6: new server sends none (the board made its own key)
 	// 2.1.6: save right away and restart, so New Register is enough (no Apply Change / reboot by hand)
 	"var fd = new FormData(document.getElementById('fromVPN'));\n"
 	"fetch('/vpn',{method:'POST',body:fd})\n"
@@ -3149,7 +3191,9 @@ void handle_vpn(AsyncWebServerRequest *request)
 		String ESP32_ID = WiFi.macAddress();
 		ESP32_ID.replace(":", "");
 		data["espId"] = ESP32_ID;
-		data["regJson"] = lu6jmfVpnRegJson(ESP32_ID); // 2.1.6: board info (callsign, version, chip...) for the PRIME panel
+		String wgPriv, wgPub;
+		bool wgKeys = lu6jmfWgKeys(wgPriv, wgPub);
+		data["regJson"] = lu6jmfVpnRegJson(ESP32_ID, wgKeys ? wgPub : String("")); // 2.1.6: board info (callsign, version, chip...) for the PRIME panel
 		data["vpnEnabled"] = config.vpn;
 		data["peerAddress"] = config.wg_peer_address;
 		data["port"] = config.wg_port;
@@ -3157,7 +3201,7 @@ void handle_vpn(AsyncWebServerRequest *request)
 		data["netmask"] = config.wg_netmask_address;
 		data["gateway"] = config.wg_gw_address;
 		data["publicKey"] = config.wg_public_key;
-		data["privateKey"] = config.wg_private_key;
+		data["privateKey"] = wgKeys ? wgPriv : String(config.wg_private_key); // 2.1.6: the board's own key (saved with the page)
 
 		// LU6JMF: tell the user WHY the tunnel is not up (it used to fail silently / crash).
 		{
@@ -10997,7 +11041,7 @@ static const char *ABOUT_TEMPLATE =
 	"<tr><td align=\"right\"><b>Country: </b></td><td align=\"left\">Concepcion del Uruguay, Entre Rios, Argentina</td></tr>\n"
 	"<tr><td align=\"right\"><b>Github: </b></td><td align=\"left\"><a href=\"https://github.com/marceloferreirachile/ESP32APRS_Audio\" target=\"_blank\">github.com/marceloferreirachile/ESP32APRS_Audio</a></td></tr>"
 	"<tr><td align=\"right\"><b>Original: </b></td><td align=\"left\">Mr.Somkiat Nakhonthai (HS5TQA) - <a href=\"https://github.com/nakhonthai\" target=\"_blank\">github.com/nakhonthai</a></td></tr>\n"
-	"<tr><td align=\"right\" style=\"vertical-align:top;\"><b>License: </b></td><td align=\"left\" style=\"white-space:normal;\">GNU GPL v3. Source code of this version on request (free, 3 years): <a href=\"mailto:marcelobrachile@gmail.com\">marcelobrachile@gmail.com</a></td></tr>\n"
+	"<tr><td align=\"right\" style=\"vertical-align:top;\"><b>License: </b></td><td align=\"left\" style=\"white-space:normal;\">GNU GPL v3. Source code (every release tag): <a href=\"https://github.com/marceloferreirachile/ESP32APRS_Audio\" target=\"_blank\">github.com/marceloferreirachile/ESP32APRS_Audio</a></td></tr>\n"
 	"<tr><td align=\"right\"><b>WhatsApp: </b></td><td align=\"left\"><a href=\"https://wa.me/5493442311119\" target=\"_blank\">wa.me/5493442311119</a></td></tr>"
 	"<tr><td align=\"right\"><b>Donate: </b></td><td align=\"left\"><a href=\"https://www.paypal.me/MarceloFerreira673\" target=\"_blank\">paypal.me/MarceloFerreira673</a></td></tr>"
 	"</table>"

@@ -138,3 +138,7 @@ Rule: `v2.1.5` is frozen and identical to the published release. All new audio w
 ## Messages
 
 - A message repeated by the sender (same station, text and number, within 10 minutes - our ACK was lost) gets the ACK again but is not processed or answered again (before: only copies within 30 s were ignored, and without re-sending the ACK).
+
+## VPN key security
+
+- The WireGuard private key is now generated on the board and never leaves it; the VPN server receives only the public key. Before, the server generated the key pair, kept the private key and returned it to anyone who sent the board's MAC address. Boards already registered keep working (their saved key is kept).
