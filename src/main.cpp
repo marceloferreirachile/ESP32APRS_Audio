@@ -10017,8 +10017,9 @@ unsigned long lastAPCheck = 0;
 
 void wifiConnection()
 {
-    // Cleanup sensor objects before WiFi reconnection to prevent memory leaks
-    cleanupSensors();
+    // 2.1.6: do NOT delete the sensor objects here. Nothing re-created them afterwards, so the
+    // next reading in taskSensor used a deleted/NULL object and the board rebooted after the first
+    // full WiFi reconnection. Sensors have nothing to do with WiFi; sensorInit() already reuses them.
 
     // Cleanup ADC resources to prevent memory leaks
     AFSK_deinit();

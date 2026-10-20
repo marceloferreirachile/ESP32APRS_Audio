@@ -11988,7 +11988,7 @@ void handle_txdebug(AsyncWebServerRequest *request)
     // no allocation. Lets us watch the heap trend and catch a task about to overflow
     // its stack (Task WDT / random resets) without a USB cable.
     {
-        const char *stackTasks[] = {"taskAPRS", "taskAPRSPoll", "taskNetwork", "async_tcp", "loopTask"};
+        const char *stackTasks[] = {"taskAPRS", "taskAPRSPoll", "taskNetwork", "async_tcp", "loopTask", "taskSensor"};
         response->print(
             "</div>"
             "<div class='card'>"
