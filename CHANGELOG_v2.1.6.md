@@ -128,3 +128,9 @@ Rule: `v2.1.5` is frozen and identical to the published release. All new audio w
 - [ ] Release notes in English with the GPL v3 written offer.
 - [ ] Installer littlefs **with** the generic `data/default.cfg` (NOCALL, open AP, admin/admin, VPN server vpn.tracktotal.ar). Never remove it.
 - [ ] Flash usage: esp32-nodisp was at 94.7% in 2.1.5, 94.9% now (2026-10-16). Check what can be trimmed before adding features.
+
+## Sensors (BME280 and other I2C sensors)
+
+- Fixed reboot with I2C sensors (BME280, BMP280, Si7021, CCS811, SHT): a full WiFi reconnection deleted the sensor objects and the next reading used the deleted object. Sensors are no longer touched on WiFi reconnect, and each reading checks the sensor exists.
+- Fixed the I2C "busy" flag staying stuck during sensor setup when the BME280/CCS811 was already created (caused 0.5 s waits on every I2C access).
+- `/txdebug`: SYSTEM HEALTH now also shows the free stack of the sensor task (only when a sensor is enabled).

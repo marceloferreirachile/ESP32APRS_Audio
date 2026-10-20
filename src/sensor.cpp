@@ -1000,7 +1000,7 @@ bool getSensor(int cfgIdx)
                     break;
             }
             i2c_busy = true;
-            if (getBME_I2C(*bme, PORT_BME280_I2C0))
+            if (bme != NULL && getBME_I2C(*bme, PORT_BME280_I2C0))
             {
                 i2c_busy = false;
                 return true;
@@ -1011,7 +1011,7 @@ bool getSensor(int cfgIdx)
     case PORT_BME280_I2C1:
         if (config.i2c1_enable)
         {
-            if (getBME_I2C(*bme, PORT_BME280_I2C1))
+            if (bme != NULL && getBME_I2C(*bme, PORT_BME280_I2C1))
             {
                 return true;
             }
@@ -1020,35 +1020,35 @@ bool getSensor(int cfgIdx)
     case PORT_BMP280_I2C0:
         if (config.i2c_enable)
         {
-            if (getBMP_I2C(*bmp280, port))
+            if (bmp280 != NULL && getBMP_I2C(*bmp280, port))
                 return true;
         }
         break;
     case PORT_BMP280_I2C1:
         if (config.i2c1_enable)
         {
-            if (getBMP_I2C(*bmp280, port))
+            if (bmp280 != NULL && getBMP_I2C(*bmp280, port))
                 return true;
         }
         break;
     case PORT_SI7021_I2C0:
         if (config.i2c_enable)
         {
-            if (getSI7021_I2C(*Si7021, port))
+            if (Si7021 != NULL && getSI7021_I2C(*Si7021, port))
                 return true;
         }
         break;
     case PORT_SI7021_I2C1:
         if (config.i2c1_enable)
         {
-            if (getSI7021_I2C(*Si7021, port))
+            if (Si7021 != NULL && getSI7021_I2C(*Si7021, port))
                 return true;
         }
         break;
     case PORT_CCS811_I2C0:
         if (config.i2c_enable)
         {
-            if (ccs->available())
+            if (ccs != NULL && ccs->available())
             {
                 //float temp = ccs->calculateTemperature();
                 //log_d("CCS811 temperature %0.2fC", temp);
@@ -1058,7 +1058,7 @@ bool getSensor(int cfgIdx)
             }
             else
             {
-                if (ccs->checkError())
+                if (ccs != NULL && ccs->checkError())
                 {
                     ccs->begin(config.sensor[cfgIdx].address, &Wire);
                     log_d("CCS811 Restart boot");
@@ -1069,7 +1069,7 @@ bool getSensor(int cfgIdx)
     case PORT_CCS811_I2C1:
         if (config.i2c1_enable)
         {
-            if (ccs->available())
+            if (ccs != NULL && ccs->available())
             {
                 if (getCCS_I2C(*ccs, port))
                 {
@@ -1102,14 +1102,14 @@ bool getSensor(int cfgIdx)
         if (config.i2c_enable)
         {
 
-            if (getSHT_I2C(*sht, port))
+            if (sht != NULL && getSHT_I2C(*sht, port))
                 return true;
         }
         break;
     case PORT_SHT_I2C1:
         if (config.i2c_enable)
         {
-            if (getSHT_I2C(*sht, port))
+            if (sht != NULL && getSHT_I2C(*sht, port))
                 return true;
         }
         break;
@@ -1196,6 +1196,8 @@ void sensorInit(bool resetAll)
         case PORT_BME280_I2C0:
             if (config.i2c_enable)
             {
+                if (bme != NULL) // 2.1.6: check BEFORE taking the I2C flag (it stayed stuck "busy")
+                    break;
                 int i2c_timeout = 0;
                 while (i2c_busy)
                 {
@@ -1204,8 +1206,6 @@ void sensorInit(bool resetAll)
                         break;
                 }
                 i2c_busy = true;
-                if (bme != NULL)
-                    break;
                 bme = new Adafruit_BME280();
                 if (!bme->begin(config.sensor[i].address, &Wire)) // 0x76=118,0x77=119
                 {
@@ -1321,6 +1321,8 @@ void sensorInit(bool resetAll)
         case PORT_CCS811_I2C0:
             if (config.i2c_enable)
             {
+                if (ccs != NULL) // 2.1.6: check BEFORE taking the I2C flag (it stayed stuck "busy")
+                    break;
                 int i2c_timeout = 0;
                 while (i2c_busy)
                 {
@@ -1329,8 +1331,6 @@ void sensorInit(bool resetAll)
                         break;
                 }
                 i2c_busy = true;
-                if (ccs != NULL)
-                    break;
                 ccs = new Adafruit_CCS811();
                 if (ccs->begin(config.sensor[i].address, &Wire))
                 {
