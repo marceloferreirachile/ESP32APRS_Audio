@@ -334,11 +334,11 @@ void APRS_sendPkt(void *_buffer, size_t length)
 
 bool APRS_sendTNC2Pkt(const uint8_t *raw, size_t length)
 {
-    uint8_t data[300];
+    uint8_t data[400]; // LU6JMF 2.1.6: was 300 (see hdlcFrame)
     int size=0;
     ax25frame frame;
     ax25_encode(frame, (char *)raw, length);
-    size=hdlcFrame(data, 300, &AX25, &frame);
+    size=hdlcFrame(data, sizeof(data), &AX25, &frame);
     log_d("TX HDLC Fram size=%d",size);
 
     // -------------------------------------------------------------------------

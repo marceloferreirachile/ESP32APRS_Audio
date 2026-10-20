@@ -49,6 +49,22 @@ def copy_firmware(source, target, env):
     shutil.copy2(src, easy_dst)
     print("*** Firmware also saved (easy-to-find copy): {} ***\n".format(easy_dst))
 
+    # LU6JMF 2.1.6: keep the firmware.elf of every build (newest 10). It is needed to turn the
+    # LAST CRASH addresses shown on /txdebug into source file:line (xtensa addr2line).
+    try:
+        elf_src = os.path.join(os.path.dirname(src), "firmware.elf")
+        elf_dir = os.path.join(easy_dir, "elf")
+        os.makedirs(elf_dir, exist_ok=True)
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        elf_dst = os.path.join(elf_dir, "{}_v{}-{}_{}.elf".format(prefix, version_raw, version_build, stamp))
+        shutil.copy2(elf_src, elf_dst)
+        olds = sorted(f for f in os.listdir(elf_dir) if f.startswith(prefix + "_") and f.endswith(".elf"))
+        for f in olds[:-10]:
+            os.remove(os.path.join(elf_dir, f))
+        print("*** ELF kept for crash decoding: {} ***\n".format(elf_dst))
+    except Exception as e:
+        print("*** Could not keep the ELF: {} ***\n".format(e))
+
     # Write version info (used by webservice.cpp handle_check_version to detect
     # new firmware releases). JSON is used instead of plain text so it can be
     # parsed easily with ArduinoJson on the device.
