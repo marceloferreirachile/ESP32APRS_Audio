@@ -119,13 +119,13 @@ Rule: `v2.1.5` is frozen and identical to the published release. All new audio w
 - General queries heard on RF: `?APRS?` sends our position, `?IGATE?` answers `<IGATE,MSG_CNT=n,LOC_CNT=n` (iGate on). At most once every 5 minutes each.
 
 ## Before release (checklist)
-- [ ] **Release waits for the TOCALL** (aprsorg/aprs-deviceid issue #378, APJMF1 = AR-APRS, APJMF2 = AR-LORA). After approval: replace `APE32A` / `APE32L` / `APE32I` with `APJMF1` everywhere the firmware builds a packet, rebuild, test on LU6JMF-10 that aprs.fi shows APJMF1, then release (decided 2026-10-16: ship 2.1.6 with everything new, TOCALL included).
+- [x] TOCALL: 2.1.6 keeps `APE32A`; `APJMF1` / `APJMF2` in a later version.
 - [ ] Still to test: `?aprs`, `?aprst`, `?aprso`; PHG fields; open setup AP after Factory Reset.
-- [ ] Set `-DVERSION="2.1.6"` (now `2.1.6-dev`) and update `version.json` (still describes 2.1.5).
+- [x] `-DVERSION="2.1.6"` set (2026-10-30). [ ] `version.json` in the public repo (still describes 2.1.5).
 - [ ] Build `pio run -e esp32-nodisp`, install on LU6JMF-10, and validate:
   - [ ] PHG fields come back with the saved values.
   - [ ] After a Factory Reset on a spare board, the setup AP comes up open.
-- [ ] Release notes in English with the GPL v3 written offer.
+- [ ] Short release notes in English (source is public since 2026-10-20: no written offer needed, link to the tag).
 - [ ] Installer littlefs **with** the generic `data/default.cfg` (NOCALL, open AP, admin/admin, VPN server vpn.tracktotal.ar). Never remove it.
 - [ ] Flash usage: esp32-nodisp was at 94.7% in 2.1.5, 94.9% now (2026-10-16). Check what can be trimmed before adding features.
 
