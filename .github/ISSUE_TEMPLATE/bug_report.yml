@@ -1,0 +1,51 @@
+name: "Reportar un problema / Report a problem"
+description: "Algo no funciona como debería en AR-APRS. / Something is not working in AR-APRS."
+title: "[Problema] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gracias por avisar. Completá los datos de abajo, así podemos encontrar el problema más rápido.
+        Thanks for reporting. Please fill in the fields below.
+  - type: dropdown
+    id: placa
+    attributes:
+      label: "Placa / Board"
+      options:
+        - "ESP32 DOIT DevKit (ESP32_NODISP)"
+        - "Otra / Other"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: "Versión del firmware / Firmware version"
+      description: "Aparece arriba en la página de la placa y en ABOUT. / Shown at the top of the board page and in ABOUT."
+      placeholder: "v2.1.6-lu6jmf"
+    validations:
+      required: true
+  - type: textarea
+    id: problema
+    attributes:
+      label: "¿Qué pasa? / What happens?"
+      description: "Qué esperabas que pasara y qué pasó. / What you expected and what happened."
+    validations:
+      required: true
+  - type: textarea
+    id: pasos
+    attributes:
+      label: "¿Cómo se repite? / How to reproduce"
+      placeholder: |
+        1. ...
+        2. ...
+  - type: textarea
+    id: txdebug
+    attributes:
+      label: "Foto de /txdebug y del pie de página / Photo of /txdebug and the page footer"
+      description: "Si la placa se reinició sola: abrir http://IP-de-la-placa/txdebug y pegar aquí una captura de toda la página, y otra del pie de página (build / reset). / If the board restarted by itself, paste a screenshot of http://BOARD-IP/txdebug and of the page footer."
+  - type: textarea
+    id: extra
+    attributes:
+      label: "Otros datos / Other details"
+      description: "Radio usada, sensores conectados, configuración especial… / Radio, sensors, special settings…"
