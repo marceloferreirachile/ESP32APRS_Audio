@@ -41,12 +41,13 @@
 
 <h2 style="font-size:1.1em">Update by USB, keeping the configuration</h2>
 <div class="box">
+  <p style="background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;padding:10px;margin:0 0 8px 0"><strong>Important:</strong> in the next window, leave <strong>"Erase device" unchecked</strong> and click <strong>Next</strong>. If you check it, the configuration is erased.</p>
   <esp-web-install-button manifest="./manifest-update.json">
     <button slot="activate">Update AR-APRS v2.1.6-lu6jmf (keep configuration)</button>
     <span slot="unsupported">Your browser doesn't support Web Serial. Use Google Chrome or Microsoft Edge on a computer (doesn't work on mobile).</span>
     <span slot="not-allowed">This page needs to be served over HTTPS to work (it already is).</span>
   </esp-web-install-button>
-  <p style="font-size:0.9em"><strong>When asked "Erase device", leave it unchecked</strong> and click Next. Only for boards that already run AR-APRS. It writes the new firmware and keeps everything else: WiFi, callsign, settings and VPN key. The web files are not changed; if the release notes say they changed, upload them in the <strong>File</strong> tab.</p>
+  <p style="font-size:0.9em">Only for boards that already run AR-APRS. It writes the new firmware and keeps everything else: WiFi, callsign, settings and VPN key. The web files are not changed; if the release notes say they changed, upload them in the <strong>File</strong> tab.</p>
 </div>
 
 <div class="box">
