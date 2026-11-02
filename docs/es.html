@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>AR-APRS - Instalador (LU6JMF)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<style>
+  body { font-family: -apple-system, Arial, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; line-height: 1.5; }
+  h1 { font-size: 1.4em; }
+  .box { border: 1px solid #ccc; border-radius: 8px; padding: 20px; margin: 20px 0; background: #f8f8f8; }
+  esp-web-install-button { display: block; margin: 20px 0; }
+  ol { padding-left: 20px; }
+  .warn { background: #fff3cd; border: 1px solid #ffe69c; border-radius: 6px; padding: 12px; margin: 16px 0; }
+</style>
+</head>
+<body>
+<p style="text-align:right;margin:0"><a href="index.html">🇬🇧 English</a></p>
+
+<h1>AR-APRS &middot; Argentina APRS System (LU6JMF) — Instalador v2.1.6-lu6jmf</h1>
+
+<p>Firmware para digipeater / iGate / tracker APRS con ESP32, basado en ESP32APRS_Audio (nakhonthai). Instala firmware e íconos con un solo clic, directamente desde el navegador (Chrome o Edge), sin instalar ningún programa.</p>
+
+<h2 style="font-size:1.1em">Placa nueva o instalación desde cero</h2>
+<div class="box">
+  <ol>
+    <li>Conectá el ESP32 a la computadora con un cable USB de datos.</li>
+    <li>Hacé clic en el botón de abajo y elegí el puerto de la placa.</li>
+    <li>Esperá a que termine (alrededor de 1 minuto).</li>
+  </ol>
+
+  <esp-web-install-button manifest="./manifest.json">
+    <button slot="activate">Instalar AR-APRS v2.1.6-lu6jmf</button>
+    <span slot="unsupported">Tu navegador no soporta Web Serial. Usá Google Chrome o Microsoft Edge en una computadora (no funciona en el celular).</span>
+    <span slot="not-allowed">Esta página necesita HTTPS para funcionar (ya lo tiene).</span>
+  </esp-web-install-button>
+</div>
+
+<div class="warn">
+  <strong>Atención:</strong> esto borra todo lo que tiene la placa (incluida la configuración de WiFi y APRS) e instala desde cero. Después de instalar, configurá el WiFi, el indicativo y lo demás desde la página web de la placa (al arrancar crea su propia red WiFi <code>ESP32APRS_AP</code>, sin contraseña; abrir <code>http://192.168.4.1</code>, usuario y clave <code>admin</code> / <code>admin</code>).
+</div>
+
+<h2 style="font-size:1.1em">Actualizar por USB, manteniendo la configuración</h2>
+<div class="box">
+  <p style="background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;padding:10px;margin:0 0 8px 0"><strong>Importante:</strong> en la ventana siguiente, dejá la casilla <strong>"Erase device" sin marcar</strong> y hacé clic en <strong>Next</strong>. Si la marcás, se borra la configuración.</p>
+  <esp-web-install-button manifest="./manifest-update.json">
+    <button slot="activate">Actualizar AR-APRS v2.1.6-lu6jmf (mantiene la configuración)</button>
+    <span slot="unsupported">Tu navegador no soporta Web Serial. Usá Google Chrome o Microsoft Edge en una computadora (no funciona en el celular).</span>
+    <span slot="not-allowed">Esta página necesita HTTPS para funcionar (ya lo tiene).</span>
+  </esp-web-install-button>
+  <p style="font-size:0.9em">Solo para placas que ya tienen AR-APRS. Graba el firmware nuevo y mantiene todo lo demás: WiFi, indicativo, configuración y clave de la VPN. Los archivos web no cambian; si las notas de la versión dicen que cambiaron, subilos en la solapa <strong>File</strong>.</p>
+</div>
+
+<div class="box">
+  <p>¿La placa ya funciona y querés actualizarla sin USB? Descargá los archivos de la <a href="https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/latest">última versión</a> y subilos desde la placa: <strong>About</strong> → Manual Firmware Update (el .bin) y <strong>File</strong> (main_shell.html, style.css e icons.dat).</p>
+</div>
+
+<p>Repositorio: <a href="https://github.com/marceloferreirachile/ESP32APRS_Audio">github.com/marceloferreirachile/ESP32APRS_Audio</a></p>
+
+<p style="font-size:0.85em;opacity:0.8">Licencia: GNU GPL v3, basado en ESP32APRS de Somkiat Nakhonthai (HS5TQA). Código fuente de cada versión: <a href="https://github.com/marceloferreirachile/ESP32APRS_Audio">github.com/marceloferreirachile/ESP32APRS_Audio</a> (tags de cada versión).</p>
+
+</body>
+</html>
