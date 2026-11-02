@@ -20,6 +20,7 @@
 
 <p>Custom firmware for the LU6JMF-10 digipeater, based on ESP32APRS_Audio (nakhonthai). Flashes firmware + icons in a single click, directly from your browser (Chrome or Edge), no software installation needed.</p>
 
+<h2 style="font-size:1.1em">New board or full reset</h2>
 <div class="box">
   <ol>
     <li>Connect the ESP32 to your computer via USB cable.</li>
@@ -36,6 +37,16 @@
 
 <div class="warn">
   <strong>Warning:</strong> this erases everything currently on the device (including WiFi/APRS configuration) and flashes from scratch. After installing, configure WiFi, callsign, and other settings through the device's own web interface (it creates its own WiFi network on first boot).
+</div>
+
+<h2 style="font-size:1.1em">Update by USB, keeping the configuration</h2>
+<div class="box">
+  <esp-web-install-button manifest="./manifest-update.json">
+    <button slot="activate">Update AR-APRS v2.1.6-lu6jmf (keep configuration)</button>
+    <span slot="unsupported">Your browser doesn't support Web Serial. Use Google Chrome or Microsoft Edge on a computer (doesn't work on mobile).</span>
+    <span slot="not-allowed">This page needs to be served over HTTPS to work (it already is).</span>
+  </esp-web-install-button>
+  <p style="font-size:0.9em">Only for boards that already run AR-APRS. It writes the new firmware and keeps everything else: WiFi, callsign, settings and VPN key. The web files are not changed; if the release notes say they changed, upload them in the <strong>File</strong> tab.</p>
 </div>
 
 <div class="box">

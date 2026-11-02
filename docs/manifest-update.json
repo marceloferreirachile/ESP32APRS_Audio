@@ -1,0 +1,28 @@
+{
+  "name": "AR-APRS (LU6JMF) v2.1.6-lu6jmf - update (keeps configuration)",
+  "version": "2.1.6-lu6jmf",
+  "new_install_prompt_erase": false,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        {
+          "path": "./bin/bootloader.bin",
+          "offset": 4096
+        },
+        {
+          "path": "./bin/partitions.bin",
+          "offset": 32768
+        },
+        {
+          "path": "./bin/otadata_blank.bin",
+          "offset": 57344
+        },
+        {
+          "path": "./bin/firmware.bin",
+          "offset": 65536
+        }
+      ]
+    }
+  ]
+}
