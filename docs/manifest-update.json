@@ -1,7 +1,7 @@
 {
   "name": "AR-APRS (LU6JMF) v2.1.6-lu6jmf - update (keeps configuration)",
   "version": "2.1.6-lu6jmf",
-  "new_install_prompt_erase": false,
+  "new_install_prompt_erase": true,
   "builds": [
     {
       "chipFamily": "ESP32",
