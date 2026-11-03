@@ -1160,7 +1160,8 @@ bool loadConfiguration(const char *filename, Configuration &config)
                 // One-time compatibility with our earlier BLN implementation,
                 // where the interval was stored in seconds.
                 // Values above the current UI maximum (1440 min) are legacy seconds.
-                if (bi < 4 && config.bln_interval[bi] > 1440)
+                // 2.1.7: also NEWS5-NEWS9 (before, only BLN1-BLN4 were converted and NEWS kept e.g. 1800 = old 30 min in seconds)
+                if (config.bln_interval[bi] > 1440)
                 {
                     config.bln_interval[bi] =
                         (config.bln_interval[bi] + 30) / 60;

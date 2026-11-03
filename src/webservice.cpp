@@ -3511,7 +3511,8 @@ static void formatMinutesShort(char *buf, size_t bufSize, unsigned long totalMin
 }
 
 // v2.1.2-lu6jmf: preview of the resulting NEWS send schedule (growing-gap: msg1 immediate,
-// then gaps 2T,3T,4T,5T,... -> cumulative offsets 0, 2T, 5T, 9T, 14T, 20T, ...)
+// then gaps T,2T,3T,4T,... -> cumulative offsets 0, T, 3T, 6T, 10T, 15T, ...)
+// 2.1.7: was 0, 2T, 5T, 9T... which did not match what taskAPRS really sends.
 static void buildNewsSchedulePreview(char *buf, size_t bufSize, uint16_t baseTMinutes)
 {
 	if (baseTMinutes < 5)
@@ -3520,7 +3521,7 @@ static void buildNewsSchedulePreview(char *buf, size_t bufSize, uint16_t baseTMi
 	char part[16];
 	for (uint8_t k = 0; k <= 5; k++)
 	{
-		unsigned long offsetMin = (k == 0) ? 0UL : (unsigned long)baseTMinutes * k * (k + 3) / 2UL;
+		unsigned long offsetMin = (k == 0) ? 0UL : (unsigned long)baseTMinutes * k * (k + 1) / 2UL; // same as taskAPRS: 0, T, 3T, 6T, 10T, 15T
 		if (k == 0)
 			strlcpy(part, "0", sizeof(part));
 		else
