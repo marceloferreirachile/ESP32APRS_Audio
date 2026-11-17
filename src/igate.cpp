@@ -64,11 +64,9 @@ int igateProcess(AX25Msg &Packet)
 {
     int idx;
 
-    // Check for duplicate packets
-    if(isDuplicatePacket(Packet)) {
-        status.dupCount++;  // Increment duplicate counter
-        return 0;
-    }
+    // 2.1.7 (IGATE-HINTS, hessu/aprsc): no duplicate filter on RF->APRS-IS.
+    // APRS-IS drops duplicates itself and uses them for "who heard who"; the old
+    // short hash here could also drop different packets by mistake.
 
     if (Packet.len < 2)
     {
@@ -241,34 +239,30 @@ int igateProcess(AX25Msg &Packet)
     // Add Information field separator
     headerLen += snprintf(&header[headerLen], sizeof(header) - headerLen, ":");
 
+    if (headerLen < 0)
+        headerLen = 0;
+    if ((size_t)headerLen >= sizeof(header))
+        headerLen = sizeof(header) - 1;
+
+    // 2.1.7 (IGATE-HINTS): send the info field unmodified, only up to the first CR or LF.
+    // Before, CR/LF were removed and the rest glued together (a modified duplicate).
+    size_t infoLen = Packet.len;
+    const uint8_t *eol = (const uint8_t *)memchr(&Packet.info[0], '\r', infoLen);
+    if (eol)
+        infoLen = eol - &Packet.info[0];
+    eol = (const uint8_t *)memchr(&Packet.info[0], '\n', infoLen);
+    if (eol)
+        infoLen = eol - &Packet.info[0];
+
     uint8_t *Raw = (uint8_t *)calloc(500,sizeof(uint8_t));
     if (Raw)
     {
-        memset(Raw, 0, 500); // Clear frame packet
-        size_t hSize = headerLen; // Use actual header length instead of strlen()
-        memcpy(&Raw[0], header, hSize);           // Copy header to frame packet
-        memcpy(&Raw[hSize], &Packet.info[0], Packet.len); // Copy info to frame packet
-        uint8_t *ptr = &Raw[0];
-        int i, rmv = 0;
-        size_t fsize=hSize + Packet.len;        
-        // Remove CR,LF in frame packet
-        for (i = 0; i < fsize; i++)
-        {
-            if ((Raw[i] == '\r') || (Raw[i] == '\n'))
-            {
-                ptr++;
-                rmv++;
-            }
-            else
-            {
-                Raw[i] = *ptr++;
-            }
-            if(i>(fsize-rmv)){
-                i=fsize-rmv;
-                break;
-            }
-        }
-        if(i>500 || i>fsize) i=strlen((char*)Raw);
+        size_t hSize = headerLen;
+        if (hSize + infoLen > 500)
+            infoLen = 500 - hSize;
+        memcpy(&Raw[0], header, hSize);                    // Copy header to frame packet
+        memcpy(&Raw[hSize], &Packet.info[0], infoLen);     // Copy info (binary safe)
+        size_t i = hSize + infoLen;
         log_d("RF2INET: %s", Raw);
         if(aprsClient.connected()){
             aprsClient.write(&Raw[0], i); // Send binary frame packet to APRS-IS (aprsc)

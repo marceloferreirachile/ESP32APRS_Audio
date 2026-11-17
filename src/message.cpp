@@ -672,7 +672,7 @@ void sendAPRSMessage(const String &toCall, const String &message, bool encrypt, 
         path += getPath(config.msg_path);
     }
 
-    String packet = myCallUP + ">APE32L" + path + "::" + String(toCallFixed) + ":" + encrypted + "{" + String(msgID);
+    String packet = myCallUP + ">APJMF1" + path + "::" + String(toCallFixed) + ":" + encrypted + "{" + String(msgID);
 
     uint8_t SendMode = 0;
     if (config.msg_rf)
@@ -741,7 +741,7 @@ void sendAPRSMessageRetry()
                 path += ",";
                 path += getPath(config.msg_path);
             }
-            String packet = String(config.msg_mycall) + ">APE32L" + path + "::" + String(toCallFixed) + ":" + encrypted + "{" + String(msgQueue[i].msgID);
+            String packet = String(config.msg_mycall) + ">APJMF1" + path + "::" + String(toCallFixed) + ":" + encrypted + "{" + String(msgQueue[i].msgID);
             uint8_t SendMode = 0;
             if (config.msg_rf)
                 SendMode |= RF_CHANNEL;
@@ -782,7 +782,7 @@ void sendAPRSAck(const String &toCall, const String &msgNo)
         path += getPath(config.msg_path);
     }
 
-    String packet = String(config.msg_mycall) + ">APE32L" + path + "::" + String(toCallFixed) + ":ack" + msgNo;
+    String packet = String(config.msg_mycall) + ">APJMF1" + path + "::" + String(toCallFixed) + ":ack" + msgNo;
     uint8_t SendMode = 0;
     if (config.msg_rf)
         SendMode |= RF_CHANNEL;
@@ -866,13 +866,17 @@ void lu6jmfQueryReply(const String &toCall, const String &text)
     }
     else
         path += "," + getPath(config.msg_path);
-    String packet = me + ">APE32L" + path + "::" + String(toFixed) + ":" + text;
+    String packet = me + ">APJMF1" + path + "::" + String(toFixed) + ":" + text;
     uint8_t mode = 0;
     if (config.msg_rf)
         mode |= RF_CHANNEL;
     if (config.msg_inet)
         mode |= INET_CHANNEL;
     pkgTxPushJob(packet.c_str(), packet.length(), 0, mode, LU6JMF_TXJOB_MESSAGE, LU6JMF_TXPRIO_HIGH);
+    // 2.1.7: an unnumbered reply never gets an ACK, so send it a second time on RF ~10 s later
+    // (radios like the FTM-510 can miss the single copy).
+    if (config.msg_rf)
+        pkgTxPushJob(packet.c_str(), packet.length(), 10000, RF_CHANNEL, LU6JMF_TXJOB_MESSAGE, LU6JMF_TXPRIO_NORMAL);
     pkgMsgUpdate(to.c_str(), text.c_str(), 0, -2, false); // shown in the chat, never retried
     event_chatMessage(false);
 }
@@ -914,7 +918,7 @@ void lu6jmfGeneralQuery(const String &tnc2)
         me.toUpperCase();
         if (config.aprs_ssid > 0)
             me += "-" + String(config.aprs_ssid);
-        String packet = me + ">APE32L:<IGATE,MSG_CNT=" + String((unsigned)status.inet2rf) + ",LOC_CNT=" + String(loc);
+        String packet = me + ">APJMF1:<IGATE,MSG_CNT=" + String((unsigned)status.inet2rf) + ",LOC_CNT=" + String(loc);
         pkgTxPushJob(packet.c_str(), packet.length(), 0, RF_CHANNEL, LU6JMF_TXJOB_IGATE, LU6JMF_TXPRIO_NORMAL);
     }
 }

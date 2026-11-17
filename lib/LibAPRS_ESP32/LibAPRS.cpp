@@ -22,7 +22,7 @@ AX25Call path2;
 
 char CALL[7] = "NOCALL";
 int CALL_SSID = 0;
-char DST[7] = "APE32I";
+char DST[7] = "APJMF1";
 int DST_SSID = 0;
 char PATH1[7] = "WIDE1";
 int PATH1_SSID = 1;

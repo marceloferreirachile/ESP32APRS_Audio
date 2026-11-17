@@ -10944,7 +10944,7 @@ void handle_test(AsyncWebServerRequest *request)
 	webString->print("</head><body>\n<table>\n");
 	// webString->print("<tr><td><form accept-charset=\"UTF-8\" action=\"/test\" class=\"form-horizontal\" id=\"test_form\" method=\"post\">\n");
 	// webString->print("<div style=\"margin-left: 20px;\"><input type='submit' class=\"btn btn-danger\" name=\"sendBeacon\" value='SEND BEACON'></div><br />\n");
-	// webString->print("<div style=\"margin-left: 20px;\">TNC2 RAW: <input id=\"raw\" name=\"raw\" type=\"text\" size=\"60\" value=\"" + String(config.aprs_mycall) + ">APE32I,WIDE1-1:>Test Status\"/></div>\n");
+	// webString->print("<div style=\"margin-left: 20px;\">TNC2 RAW: <input id=\"raw\" name=\"raw\" type=\"text\" size=\"60\" value=\"" + String(config.aprs_mycall) + ">APJMF1,WIDE1-1:>Test Status\"/></div>\n");
 	// webString->print("<div style=\"margin-left: 20px;\"><input type='submit' class=\"btn btn-primary\" name=\"sendRaw\" value='SEND RAW'></div> <br />\n");
 	// webString->print("</form></td></tr>\n");
 	// webString->print("<tr><td><hr width=\"80%\" /></td></tr>\n");
