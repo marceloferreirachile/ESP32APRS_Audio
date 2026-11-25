@@ -10379,6 +10379,7 @@ void PPPOS_Start()
 }
 #endif
 
+void lu6jmfPendingUpdate(); // webservice.cpp (2.1.8)
 void taskNetwork(void *pvParameters)
 {
     int c = 0;
@@ -10428,6 +10429,7 @@ void taskNetwork(void *pvParameters)
         //     NTP_Timeout = millis() + 2000;
         // }
         wifiConnection();
+        lu6jmfPendingUpdate(); // 2.1.8: install a requested update now, while memory is still free
 
         wifiMulti.setStrictMode(true); // Default is true.  Library will disconnect and forget currently connected AP if it's not in the AP list.
         wifiMulti.setAllowOpenAP(false); // Default is false.  True adds open APs to the AP list.
@@ -10710,18 +10712,10 @@ void taskNetwork(void *pvParameters)
                                     {
                                         handleIncomingAPRS(String(line_buf));
                                     }
-                                    char *dashPtr = (lineLen > 1) ? (char *)memchr(line_buf + 1, '-', lineLen - 1) : NULL;
-                                    int start_dstssid = dashPtr ? (int)(dashPtr - line_buf) : -1;
-                                    if (start_dstssid < 0)
-                                    {
-                                        char *spacePtr = (lineLen > 1) ? (char *)memchr(line_buf + 1, ' ', lineLen - 1) : NULL;
-                                        start_dstssid = spacePtr ? (int)(spacePtr - line_buf) : -1;
-                                    }
-                                    char ssid = 0;
-                                    if (start_dstssid > 0 && (size_t)(start_dstssid + 1) < lineLen)
-                                        ssid = line_buf[start_dstssid + 1];
-
-                                    if (ssid > 47 && ssid < 58)
+                                    // LU6JMF 2.1.8: the old test only accepted lines where the first '-' was followed by
+                                    // a digit, so stations without SSID (e.g. LU1ABC>...) were often never listed/gated.
+                                    // Only APRS-IS server comment lines ('#') are skipped now.
+                                    if (line_buf[0] != '#')
                                     {
                                         memcpy(raw, line_buf, lineLen);
                                         raw[rawSize] = 0;
@@ -10761,19 +10755,34 @@ void taskNetwork(void *pvParameters)
                                         {
                                             if (type & config.inet2rfFilter)
                                             {
+                                                // LU6JMF 2.1.8: third-party format per the aprs-is.net IGate rules:
+                                                //   IGATECALL>TOCALL,RFONLY:}FROMCALL>TOCALL,TCPIP,IGATECALL*:data
+                                                // the APRS-IS path (TCPIP*,qAC,server...) is removed - q constructs must never go on RF.
                                                 static char tnc2_buf[900];
-                                                int prefixLen;
+                                                char myCall[16];
                                                 if (config.aprs_ssid == 0)
-                                                    prefixLen = snprintf(tnc2_buf, sizeof(tnc2_buf), "%s>APJMF1,RFONLY:}", config.aprs_mycall);
+                                                    snprintf(myCall, sizeof(myCall), "%s", config.aprs_mycall);
                                                 else
-                                                    prefixLen = snprintf(tnc2_buf, sizeof(tnc2_buf), "%s-%d>APJMF1,RFONLY:}", config.aprs_mycall, config.aprs_ssid);
+                                                    snprintf(myCall, sizeof(myCall), "%s-%d", config.aprs_mycall, config.aprs_ssid);
+                                                const char *hdrEnd = line_buf + start_val; // ':' that ends the header
+                                                const char *dstStart = gtPtr ? gtPtr + 1 : hdrEnd;
+                                                if (dstStart > hdrEnd)
+                                                    dstStart = hdrEnd;
+                                                const char *dstEnd = (const char *)memchr(dstStart, ',', (size_t)(hdrEnd - dstStart));
+                                                if (!dstEnd)
+                                                    dstEnd = hdrEnd;
+                                                int prefixLen = snprintf(tnc2_buf, sizeof(tnc2_buf), "%s>APJMF1,RFONLY:}%s>%.*s,TCPIP,%s*:",
+                                                                         myCall, src_call, (int)(dstEnd - dstStart), dstStart, myCall);
                                                 if (prefixLen < 0)
                                                     prefixLen = 0;
                                                 if ((size_t)prefixLen >= sizeof(tnc2_buf))
                                                     prefixLen = sizeof(tnc2_buf) - 1;
                                                 size_t remain = sizeof(tnc2_buf) - (size_t)prefixLen - 1;
-                                                size_t copyLen = (lineLen < remain) ? lineLen : remain;
-                                                memcpy(tnc2_buf + prefixLen, line_buf, copyLen);
+                                                size_t dataLen = infoLen;
+                                                while (dataLen > 0 && (info_ptr[dataLen - 1] == '\r' || info_ptr[dataLen - 1] == '\n'))
+                                                    dataLen--;
+                                                size_t copyLen = (dataLen < remain) ? dataLen : remain;
+                                                memcpy(tnc2_buf + prefixLen, info_ptr, copyLen);
                                                 size_t totalLen = (size_t)prefixLen + copyLen;
                                                 tnc2_buf[totalLen] = 0;
                                                 pkgTxPushJob(tnc2_buf, totalLen, 0, RF_CHANNEL, LU6JMF_TXJOB_INET2RF, LU6JMF_TXPRIO_NORMAL);

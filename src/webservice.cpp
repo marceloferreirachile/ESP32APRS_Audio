@@ -27,6 +27,10 @@
 #include <esp_task_wdt.h>
 #include <ArduinoJson.h>
 #include <WiFiClientSecure.h>
+#include "lu6_logo.h" // 2.1.8: default header logo
+#include "lu6_favicon.h" // 2.1.8: browser tab icon (project mark)
+#include <esp_ota_ops.h> // 2.1.8: OTA slot size in the update error message
+#include <Preferences.h> // 2.1.8: pending update request survives the restart
 
 extern SemaphoreHandle_t psramMutex;
 extern bool psramLock(TickType_t timeout = portMAX_DELAY);
@@ -250,6 +254,208 @@ static String lu6jmfVpnRegJson(const String &espId, const String &pubKey)
 // 2.1.6: left side of the page header - which board this is: the Host Name (System page), like
 // the original firmware showed on top; while it is still the factory name, the station callsign.
 // Below it the enabled modes and, with the built-in radio module, its frequency.
+// -----------------------------------------------------------------------------
+// LU6JMF - 2.1.8: station logo in the page header.
+//  - default: AR-APRS project mark ("beacon") built into the firmware (lu6_logo.h);
+//  - each operator can set their own: click the logo -> choose any image; the browser
+//    resizes it (max 216 px high, <= 10 KB) and sends it; it is kept in LittleFS as
+//    /logo.img, so firmware updates never remove it; "Use default logo" deletes it.
+// -----------------------------------------------------------------------------
+#define LU6_LOGO_FILE "/logo.img"
+#define LU6_LOGO_TMP "/logo.tmp"
+#define LU6_LOGO_MAX 12288
+static uint32_t lu6LogoVer = 1;
+static bool lu6LogoUpOk = false;
+static String lu6LogoUpErr;
+static File lu6LogoUpFile;
+
+static const char *LU6_LOGO_JS = R"JS(<script>
+function lu6LogoEdit(){var m=document.getElementById('lu6logom');if(m){m.style.display='block';return;}
+m=document.createElement('div');m.id='lu6logom';
+m.style.cssText='position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(0,0,0,.55);z-index:9999';
+m.innerHTML='<div style="background:#fff;color:#222;max-width:380px;margin:70px auto;padding:16px;border-radius:10px;text-align:center;font-family:sans-serif;font-size:14px">'
++'<b>Station logo</b><br><img id="lu6lp" src="/logo.png?'+Date.now()+'" style="height:108px;margin:10px;background:#161616;padding:6px;border-radius:6px"><br>'
++'<input type="file" id="lu6lf" accept="image/*"><br><small>Any image, any size: it is resized automatically.</small><br><span id="lu6ls"></span><br><br>'
++'<button id="lu6lsave" disabled>Save</button> <button id="lu6ldef">Use default logo</button> <button id="lu6lclose">Close</button></div>';
+document.body.appendChild(m);
+document.getElementById('lu6lf').onchange=lu6LogoPick;
+document.getElementById('lu6lsave').onclick=lu6LogoSave;
+document.getElementById('lu6ldef').onclick=lu6LogoReset;
+document.getElementById('lu6lclose').onclick=function(){m.style.display='none';};}
+var lu6LogoBlob=null;
+function lu6LogoPick(e){var f=e.target.files[0];if(!f)return;document.getElementById('lu6lsave').disabled=true;
+var img=new Image();img.onload=function(){lu6Shrink(img,216,0);};img.onerror=function(){document.getElementById('lu6ls').innerHTML='This file is not an image.';};img.src=URL.createObjectURL(f);}
+function lu6Shrink(img,h,step){var w=Math.round(img.width*h/img.height);if(w>2*h){w=2*h;h=Math.round(img.height*w/img.width);}
+var c=document.createElement('canvas');c.width=w;c.height=h;var x=c.getContext('2d');
+var T=[['image/png',1],['image/webp',0.85],['image/jpeg',0.85]][step];
+if(T[0]=='image/jpeg'){x.fillStyle='#161616';x.fillRect(0,0,w,h);}
+x.drawImage(img,0,0,w,h);
+c.toBlob(function(b){if(b&&b.size<=10240&&b.type==T[0]){lu6LogoBlob=b;document.getElementById('lu6lp').src=URL.createObjectURL(b);
+document.getElementById('lu6ls').innerHTML='Ready: '+w+'x'+h+' px, '+(Math.round(b.size/102.4)/10)+' KB';document.getElementById('lu6lsave').disabled=false;}
+else if(step<2)lu6Shrink(img,h,step+1);else if(h>72)lu6Shrink(img,Math.round(h*0.8),0);
+else document.getElementById('lu6ls').innerHTML='This image is too detailed - please try another one.';},T[0],T[1]);}
+function lu6LogoDone(t){document.getElementById('lu6ls').innerHTML=t;var u='/logo.png?'+Date.now();
+document.getElementById('lu6lp').src=u;var l=document.getElementById('lu6logo');if(l)l.src=u;}
+function lu6LogoSave(){if(!lu6LogoBlob)return;var fd=new FormData();fd.append('logo',lu6LogoBlob,'logo');
+document.getElementById('lu6lsave').disabled=true;document.getElementById('lu6ls').innerHTML='Saving...';
+fetch('/logo_upload',{method:'POST',body:fd}).then(function(r){return r.text().then(function(t){lu6LogoDone(r.ok?'Saved. This logo stays after firmware updates.':t);});})
+.catch(function(){document.getElementById('lu6ls').innerHTML='Could not save - please try again.';});}
+function lu6LogoReset(){fetch('/logo_reset',{method:'POST'}).then(function(){lu6LogoDone('Default logo restored.');});}
+</script>)JS";
+
+// Right side of the header: the logo (click to change it).
+static String lu6jmfHeaderLogo()
+{
+	// left side of the 82 px header, top aligned with the header edge
+	String s = "<div style=\"position:absolute;left:12px;top:-17px;\"><img id=\"lu6logo\" src=\"/logo.png?v=";
+	s += lu6LogoVer;
+	s += "\" alt=\"logo\" title=\"Click to change the logo\" onclick=\"lu6LogoEdit()\" style=\"height:60px;width:auto;max-width:120px;cursor:pointer;display:block;\"></div>";
+	s += LU6_LOGO_JS;
+	return s;
+}
+
+static const char *lu6LogoMime(File &f)
+{
+	uint8_t m[4] = {0};
+	f.read(m, 4);
+	if (m[0] == 0x89 && m[1] == 'P')
+		return "image/png";
+	if (m[0] == 0xFF && m[1] == 0xD8)
+		return "image/jpeg";
+	if (m[0] == 'R' && m[1] == 'I')
+		return "image/webp";
+	return NULL;
+}
+
+void handle_logo(AsyncWebServerRequest *request)
+{
+	if (LITTLEFS.exists(LU6_LOGO_FILE))
+	{
+		File f = LITTLEFS.open(LU6_LOGO_FILE, "r");
+		const char *mime = f ? lu6LogoMime(f) : NULL;
+		if (f)
+			f.close();
+		if (mime)
+		{
+			AsyncWebServerResponse *r = request->beginResponse(LITTLEFS, LU6_LOGO_FILE, mime);
+			r->addHeader("Cache-Control", "no-cache");
+			request->send(r);
+			return;
+		}
+	}
+	AsyncWebServerResponse *r = request->beginResponse_P(200, "image/png", LU6_LOGO_PNG, LU6_LOGO_PNG_LEN);
+	r->addHeader("Cache-Control", "no-cache");
+	request->send(r);
+}
+
+static void lu6LogoUpload(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final)
+{
+	if (index == 0)
+	{
+		lu6LogoUpOk = false;
+		lu6LogoUpErr = "";
+		if (!request->authenticate(config.http_username, config.http_password))
+		{
+			lu6LogoUpErr = "Not logged in.";
+			return;
+		}
+		size_t total = request->contentLength();
+		size_t freeB = LITTLEFS.totalBytes() - LITTLEFS.usedBytes();
+		if (total > LU6_LOGO_MAX + 1024)
+		{
+			lu6LogoUpErr = "The logo is too big.";
+			return;
+		}
+		if (freeB < total + 4096)
+		{
+			lu6LogoUpErr = "Not enough free space on the board for the logo.";
+			return;
+		}
+		lu6LogoUpFile = LITTLEFS.open(LU6_LOGO_TMP, "w");
+		if (!lu6LogoUpFile)
+		{
+			lu6LogoUpErr = "Could not save the logo.";
+			return;
+		}
+	}
+	if (lu6LogoUpErr.length() || !lu6LogoUpFile)
+		return;
+	if (index + len > LU6_LOGO_MAX)
+	{
+		lu6LogoUpFile.close();
+		LITTLEFS.remove(LU6_LOGO_TMP);
+		lu6LogoUpErr = "The logo is too big.";
+		return;
+	}
+	if (len && lu6LogoUpFile.write(data, len) != len)
+	{
+		lu6LogoUpFile.close();
+		LITTLEFS.remove(LU6_LOGO_TMP);
+		lu6LogoUpErr = "Could not save the logo.";
+		return;
+	}
+	if (final)
+	{
+		lu6LogoUpFile.close();
+		File t = LITTLEFS.open(LU6_LOGO_TMP, "r");
+		const char *mime = t ? lu6LogoMime(t) : NULL;
+		if (t)
+			t.close();
+		if (!mime)
+		{
+			LITTLEFS.remove(LU6_LOGO_TMP);
+			lu6LogoUpErr = "This file is not a PNG, JPEG or WebP image.";
+			return;
+		}
+		LITTLEFS.remove(LU6_LOGO_FILE);
+		if (!LITTLEFS.rename(LU6_LOGO_TMP, LU6_LOGO_FILE))
+		{
+			LITTLEFS.remove(LU6_LOGO_TMP);
+			lu6LogoUpErr = "Could not save the logo.";
+			return;
+		}
+		lu6LogoVer++;
+		lu6LogoUpOk = true;
+	}
+}
+
+void lu6jmfLogoRoutes()
+{
+	// 2.1.8: browser tab icon (project mark) - no login needed, cached by the browser
+	async_server.on("/favicon.svg", HTTP_GET, [](AsyncWebServerRequest *request)
+					{ AsyncWebServerResponse *r = request->beginResponse_P(200, "image/svg+xml", LU6_FAVICON_SVG, LU6_FAVICON_SVG_LEN);
+					  r->addHeader("Cache-Control", "max-age=86400");
+					  request->send(r); });
+	async_server.on("/favicon.png", HTTP_GET, [](AsyncWebServerRequest *request)
+					{ AsyncWebServerResponse *r = request->beginResponse_P(200, "image/png", LU6_FAVICON_PNG, LU6_FAVICON_PNG_LEN);
+					  r->addHeader("Cache-Control", "max-age=86400");
+					  request->send(r); });
+	async_server.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request)
+					{ AsyncWebServerResponse *r = request->beginResponse_P(200, "image/png", LU6_FAVICON_PNG, LU6_FAVICON_PNG_LEN);
+					  r->addHeader("Cache-Control", "max-age=86400");
+					  request->send(r); });
+	async_server.on("/logo.png", HTTP_GET, [](AsyncWebServerRequest *request)
+					{ handle_logo(request); });
+	async_server.on("/logo_upload", HTTP_POST, [](AsyncWebServerRequest *request)
+					{
+		if (!request->authenticate(config.http_username, config.http_password))
+			return request->requestAuthentication();
+		if (lu6LogoUpOk)
+			request->send(200, "text/plain", "ok");
+		else
+			request->send(400, "text/plain", lu6LogoUpErr.length() ? lu6LogoUpErr : String("Could not save the logo.")); },
+					lu6LogoUpload);
+	async_server.on("/logo_reset", HTTP_POST, [](AsyncWebServerRequest *request)
+					{
+		if (!request->authenticate(config.http_username, config.http_password))
+			return request->requestAuthentication();
+		LITTLEFS.remove(LU6_LOGO_FILE);
+		lu6LogoVer++;
+		request->send(200, "text/plain", "ok"); });
+}
+
+String lu6jmfUpdateBanner(); // 2.1.8: defined with the update code (near handle_check_version)
+String lu6jmfUpdateBox();
 static String lu6jmfHeaderInfo()
 {
 	String call = String(config.host_name);
@@ -259,7 +465,8 @@ static String lu6jmfHeaderInfo()
 	call.replace("&", "&amp;");
 	call.replace("<", "&lt;");
 	call.replace(">", "&gt;");
-	String h = "<div style=\"position:absolute;left:14px;top:10px;text-align:left;font-size:11px;line-height:16px;color:#d7d7d7;\">";
+	// 2.1.8: station info moved to the right side (above [LOG OUT]); the logo takes the left side
+	String h = "<div style=\"position:absolute;right:14px;top:-13px;text-align:right;font-size:11px;line-height:15px;color:#d7d7d7;\">";
 	if (call.length())
 		h += "<b style=\"font-size:15px;color:#fff;\">" + call + "</b><br>";
 	else
@@ -281,7 +488,9 @@ static String lu6jmfHeaderInfo()
 			snprintf(f, sizeof(f), "<br>RX %.4f / TX %.4f", config.freq_rx, config.freq_tx);
 		h += f;
 	}
+	h += lu6jmfUpdateBanner(); // 2.1.8: "New version available" on every page
 	h += "</div>";
+	h += lu6jmfHeaderLogo(); // 2.1.8: station logo on the right (click to change)
 	return h;
 }
 
@@ -463,7 +672,10 @@ void setMainPage(AsyncWebServerRequest *request)
 			tpl.replace("<td><img src=\"/symbols/icons/${row.icon}\"", "<td><img src=\"https://vpn.tracktotal.ar/symbols/icons/${row.icon}\"");
 			tpl.replace("http://aprs.nakhonthai.net/symbols/icons/", "/symbols/icons/");
 			tpl.replace("<link rel=\"shortcut icon\" href=\"http://aprs.nakhonthai.net/favicon.ico\" type=\"image/x-icon\" />",
-						"<link rel=\"icon\" href=\"/symbols/icons/35-1.png\" type=\"image/png\" />");
+						"<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\" /><link rel=\"icon\" href=\"/favicon.png\" type=\"image/png\" sizes=\"32x32\" />");
+			// 2.1.8: the shell in LittleFS (2.1.6+) points at the digi icon - use the project mark instead
+			tpl.replace("<link rel=\"icon\" href=\"/symbols/icons/35-1.png\" type=\"image/png\" />",
+						"<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\" /><link rel=\"icon\" href=\"/favicon.png\" type=\"image/png\" sizes=\"32x32\" />");
 
 			snprintf(temp_buffer, sizeof(temp_buffer),
 					 "<h1 style=\"margin-bottom:2px;\">AR-APRS</h1>\n"
@@ -512,7 +724,7 @@ void setMainPage(AsyncWebServerRequest *request)
 	webString->print("<meta name=\"KeyWords\" content=\"ESP32,ESP32C3,AFSK,APRS\" />\n");
 	webString->print("<meta http-equiv=\"Cache-Control\" content=\"no-cache, no-store, must-revalidate\" />\n");
 	webString->print("<meta http-equiv=\"pragma\" content=\"no-cache\" />\n");
-	webString->print("<link rel=\"icon\" href=\"/symbols/icons/35-1.png\" type=\"image/png\" />\n"); // 2.1.6: digi icon from the board itself (was aprs.nakhonthai.net/favicon.ico)
+	webString->print("<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\" /><link rel=\"icon\" href=\"/favicon.png\" type=\"image/png\" sizes=\"32x32\" />\n"); // 2.1.6: digi icon from the board itself (was aprs.nakhonthai.net/favicon.ico)
 	webString->print("<meta http-equiv=\"Expires\" content=\"0\" />\n");
 
 	char temp_buffer[512];
@@ -683,10 +895,13 @@ webString->print("function printLastHeard(data) {\n");
 	webString->print("<td><img src=\"https://vpn.tracktotal.ar/symbols/icons/${row.icon}\" style=\"width:20px;height:20px;\" onerror=\"iconError(this, '${row.icon}', '${(row.callsign||'?').charAt(0)}');\"><span style=\"display:none;width:20px;height:20px;\"></span></td>\n");
 	// Clickable callsign -> aprs.fi - custom mod by LU6JMF (Marcelo, CdU/Entre Rios, Argentina) - Set/2026
 	webString->print("<td><a style=\"text-decoration:underline;\" href=\"https://www.qrz.com/db/${encodeURIComponent(row.callsign.split('-')[0])}\" target=\"_blank\" rel=\"noopener\">${row.callsign}</a> <a href=\"https://aprs.fi/#!z=12&call=a%2F${encodeURIComponent(row.callsign)}&timerange=3600&tail=3600\" target=\"_blank\" rel=\"noopener\" title=\"Ver en aprs.fi\">🗺</a></td>\n");
-	webString->print("<td align=\"left\">${row.path}</td>\n");
+	// 2.1.8: long digi paths (e.g. LW6ENA-4*,WIDE1*,LU7AMC-15*,...) wrap after the commas instead of widening the table
+	webString->print("<td align=\"left\" style=\"white-space:normal;word-break:break-word;\">${String(row.path).replace(/,/g, ',<wbr>')}</td>\n");
 	webString->print("<td>${row.dx !== null ? row.dx : \"-\"}</td>\n");
 	webString->print("<td>${row.packet}</td>\n");
-	webString->print("<td style=\"color:green;\">${row.audio !== '-' ? row.audio + \"dBV\" : \"-\"}</td>\n");
+	// 2.1.8: AUDIO colour follows the VU meter bands (-40/-30 low, -30/-20 low-ish, -20/-10 good, > -10 too high);
+	// the light green of the VU is darkened a bit so the text stays readable.
+	webString->print("<td style=\"color:${row.audio === '-' ? 'green' : (+row.audio < -30 ? '#A08000' : (+row.audio < -20 ? '#6E9E00' : (+row.audio < -10 ? '#008000' : '#C02316')))};\">${row.audio !== '-' ? row.audio + \"dBV\" : \"-\"}</td>\n");
 	webString->print("`;\n");
 	webString->print("tableBody.appendChild(tr);\n");
 	webString->print("});\n");
@@ -976,7 +1191,8 @@ void handle_dashboard(AsyncWebServerRequest *request)
 	}
 	data["tzStr"] = temp_buffer;
 
-	String html = renderTemplate(DASHBOARD_TEMPLATE, data.as<JsonVariant>());
+	String html = lu6jmfUpdateBox(); // 2.1.8: "new version available" box on top
+	html += renderTemplate(DASHBOARD_TEMPLATE, data.as<JsonVariant>());
 	sendHtmlChunked(request, html, "dashboard");
 	lastHeardTimeout = millis() + 500;
 	lastHeard_Flag = true;
@@ -1640,6 +1856,7 @@ String event_chatMessage(bool gethtml)
 	html += "<th>Message</th>\n";
 	html += "<th style=\"width:10pt\">ACK</th>\n";
 	html += "<th style=\"width:20pt\">msgID</th>\n";
+	html += "<th style=\"width:34pt\">Reply</th>\n";
 	html += "</tr>\n";
 
 	pkgMsgSort(msgQueue);
@@ -1705,8 +1922,31 @@ String event_chatMessage(bool gethtml)
 				html += "<td>TF</td>";
 			}
 
-			snprintf(temp_buffer, sizeof(temp_buffer), "<td>%d</td></tr>\n", pkg.msgID);
+			snprintf(temp_buffer, sizeof(temp_buffer), "<td>%d</td>", pkg.msgID);
 			html += temp_buffer;
+			// 2.1.8: Reply column - only on received messages (RX); callsign kept as received (any country)
+			html += "<td>";
+			if (pkg.ack == -1)
+			{
+				char rc[12];
+				uint8_t rn = 0;
+				for (uint8_t k = 0; pkg.callsign[k] && rn < sizeof(rc) - 1; k++)
+				{
+					char ch = pkg.callsign[k];
+					if (isalnum((unsigned char)ch) || ch == '-')
+						rc[rn++] = ch;
+				}
+				rc[rn] = 0;
+				if (rn)
+				{
+					html += "<button type=\"button\" class=\"button\" title=\"Reply to ";
+					html += rc;
+					html += "\" onclick=\"lu6Reply('";
+					html += rc;
+					html += "')\" style=\"padding:1px 8px;font-size:10px;\">Reply</button>";
+				}
+			}
+			html += "</td></tr>\n";
 		}
 	}
 
@@ -3559,6 +3799,7 @@ static const char *MSG_TEMPLATE =
 	"}\n"
 	"});\n"
 	"});\n"
+	"function lu6Reply(c){var t=document.getElementById('toCall');if(!t)return;t.value=c;var m=document.getElementById('msg');m.scrollIntoView({block:'center'});m.focus();}\n"
 	"</script>\n"
 	"<div style=\"text-align:right;color:#999;font-size:7pt;padding:2px 4px;\">{{buildInfo}}</div>\n"
 	"<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"formMSG\" method=\"post\">\n"
@@ -10961,6 +11202,441 @@ void handle_test(AsyncWebServerRequest *request)
 // Remote version file published by copy_firmware.py, checked against the
 // running VERSION/VERSION_BUILD to let the "about" page report new releases.
 #define VERSION_CHECK_URL "https://raw.githubusercontent.com/marceloferreirachile/ESP32APRS_Audio/master/version.json"
+#define LU6_OTA_REPO "marceloferreirachile/ESP32APRS_Audio"
+// 2.1.8: one-click update installs the published build (classic ESP32, no display). Boards
+// built with a display may use it too, but are warned that the display stops working.
+// Other chips / NO_OTA builds only get the notice.
+#if defined(CONFIG_IDF_TARGET_ESP32) && !defined(GUI_LCD) && !defined(NO_OTA)
+#define LU6_OTA_PREFIX "ESP32_NODISP_"
+#else
+#define LU6_OTA_PREFIX ""
+#endif
+#if defined(OLED)
+#define LU6_OTA_LOSES_DISPLAY true
+#else
+#define LU6_OTA_LOSES_DISPLAY false
+#endif
+
+// -----------------------------------------------------------------------------
+// LU6JMF - 2.1.8: automatic update notice + one-click update from GitHub.
+//  - checks version.json 2 min after boot and then once a day (1 h retry on error);
+//  - "newer" = higher version number, or the same number when we run a -dev build;
+//  - the update writes ONLY the firmware slot (configuration in LittleFS is untouched),
+//    checks the size (and MD5 when version.json has it) and the image itself is
+//    verified by Update.end() before the boot slot is switched: a bad download never
+//    replaces the running firmware.
+// -----------------------------------------------------------------------------
+struct Lu6jmfUpdate
+{
+	volatile bool checked;
+	volatile bool avail;
+	char ver[16];
+	char build[16];
+	char date[16];
+	char tag[40];
+	char file[64];
+	char md5[33];
+	uint32_t size;
+	volatile int state; // 0 idle, 1 downloading, 2 finishing, 3 done (rebooting), -1 error
+	volatile int pct;
+	char msg[240];
+	volatile int autoCode;		 // result of the last automatic check (200 = ok, 0 = not run yet)
+	volatile unsigned long autoAt; // millis() of the last automatic check
+};
+static Lu6jmfUpdate lu6Upd = {};
+static TaskHandle_t lu6OtaTaskHandle = NULL;
+
+static long lu6VerNum(const char *v, bool *dev)
+{
+	int a = 0, b = 0, c = 0;
+	sscanf(v, "%d.%d.%d", &a, &b, &c);
+	if (dev)
+		*dev = (strstr(v, "dev") != NULL);
+	return (long)a * 1000000L + (long)b * 1000L + c;
+}
+
+static bool lu6IsNewer(const char *latest, const char *current)
+{
+	if (!latest || !latest[0])
+		return false;
+	bool ld = false, cd = false;
+	long l = lu6VerNum(latest, &ld), c = lu6VerNum(current, &cd);
+	if (l != c)
+		return l > c;
+	return cd && !ld; // same number: the release is newer than our -dev build
+}
+
+static bool lu6OtaOneClick()
+{
+	return LU6_OTA_PREFIX[0] && strncmp(lu6Upd.file, LU6_OTA_PREFIX, strlen(LU6_OTA_PREFIX)) == 0;
+}
+
+// Fetch version.json into lu6Upd. Returns the HTTP code (200 = ok).
+static int lu6FetchVersion()
+{
+	HTTPClient http;
+	http.begin(VERSION_CHECK_URL);
+	http.setTimeout(5000);
+	int httpCode = http.GET();
+	if (httpCode != HTTP_CODE_OK)
+	{
+		http.end();
+		return httpCode;
+	}
+	String payload = http.getString();
+	http.end();
+	JsonDocument doc;
+	if (deserializeJson(doc, payload))
+		return -100;
+	strlcpy(lu6Upd.ver, doc["version"] | "", sizeof(lu6Upd.ver));
+	strlcpy(lu6Upd.build, doc["build"] | "", sizeof(lu6Upd.build));
+	strlcpy(lu6Upd.date, doc["date"] | "", sizeof(lu6Upd.date));
+	strlcpy(lu6Upd.tag, doc["tag"] | "", sizeof(lu6Upd.tag));
+	strlcpy(lu6Upd.file, doc["filename"] | "", sizeof(lu6Upd.file));
+	strlcpy(lu6Upd.md5, doc["md5"] | "", sizeof(lu6Upd.md5));
+	lu6Upd.size = doc["size"] | 0;
+	lu6Upd.avail = lu6IsNewer(lu6Upd.ver, VERSION);
+	lu6Upd.checked = true;
+	return httpCode;
+}
+
+static void lu6UpdCheckTask(void *)
+{
+	vTaskDelay(pdMS_TO_TICKS(60000));
+	for (;;)
+	{
+		uint32_t waitMs = 600000UL; // no WiFi / failed: try again in 10 min
+		if (WiFi.status() == WL_CONNECTED && lu6Upd.state != 1 && lu6Upd.state != 2)
+		{
+			int code = lu6FetchVersion();
+			lu6Upd.autoCode = code;
+			lu6Upd.autoAt = millis();
+			if (code == HTTP_CODE_OK)
+				waitMs = 86400000UL; // ok: next check in 24 h
+		}
+		vTaskDelay(pdMS_TO_TICKS(waitMs));
+	}
+}
+
+void lu6jmfUpdateStart()
+{
+	static bool started = false;
+	if (started)
+		return;
+	started = true;
+	xTaskCreatePinnedToCore(lu6UpdCheckTask, "lu6UpdChk", 12288, NULL, 1, NULL, 0);
+}
+
+// Header line shown on every page while a newer version exists.
+String lu6jmfUpdateBanner()
+{
+	if (!lu6Upd.avail)
+		return String("");
+	String s = "<br><a href=\"#\" onclick=\"$('#contentmain').load('/about');return false;\" style=\"color:#7ddc84;font-weight:bold;\">&#x2B06; New version v";
+	s += lu6Upd.ver;
+	s += " available</a>";
+	return s;
+}
+
+// 2.1.8: highlighted box on top of the DashBoard while a newer version exists.
+String lu6jmfUpdateBox()
+{
+	if (!lu6Upd.avail)
+		return String("");
+	bool oneClick = lu6OtaOneClick();
+	String s = "<div id=\"lu6updbox\" style=\"clear:both;display:block;box-sizing:border-box;width:100%;background:#e8f5e9;border:2px solid #43a047;border-radius:8px;padding:8px 10px;color:#1b3d1f;margin:4px 0 8px 0;text-align:center;font-size:14px;line-height:22px;\">"
+			   "&#x2B06; <b>New version available: v";
+	s += VERSION;
+	s += " &rarr; v";
+	s += lu6Upd.ver;
+	s += "</b>";
+	if (oneClick)
+	{
+		s += "<br><span style=\"color:#2e7d32;\">&#x2714;</span> <b style=\"color:#2e7d32;\">The update is safe.</b> All your settings are kept: callsign, WiFi, filters, beacons and everything else.<br>"
+			 "<span style=\"color:#2e7d32;\">&#x2714;</span> If for any reason it cannot be updated, nothing changes: the board stays on the current version and keeps working.<br>"
+			 "<input type=\"button\" id=\"lu6updbtn\" value=\"Install update now\" onclick=\"lu6DashOta()\" "
+			 "style=\"margin-top:4px;padding:4px 14px;font-weight:bold;background:#43a047;color:#fff;border:1px solid #2e7d32;border-radius:5px;cursor:pointer;\"> "
+			 "<span id=\"lu6updst\">";
+		if (lu6Upd.state == -1 && lu6Upd.msg[0])
+		{
+			s += "<b style=\"color:#8a6100\">For safety the update was not applied: ";
+			s += lu6Upd.msg;
+			s += "</b>";
+		}
+		s += "</span>";
+		if (LU6_OTA_LOSES_DISPLAY)
+			s += "<br><b style=\"color:#c60;\">Note: the published version has no display support - the display stops working after this update.</b>";
+		s += "<script>"
+			 "function lu6DashPoll(){$.ajax({url:'/ota_status',dataType:'json',success:function(r){"
+			 "var t=document.getElementById('lu6updst');if(!t)return;"
+			 "if(r.state==1){t.innerHTML='Downloading the new version: '+r.pct+'% - the station keeps working normally meanwhile.';setTimeout(lu6DashPoll,1000);}"
+			 "else if(r.state==2){t.innerHTML='Checking the new version before using it...';setTimeout(lu6DashPoll,1000);}"
+			 "else if(r.state==3){t.innerHTML=r.msg+' This page reloads by itself in 30 seconds.';setTimeout(function(){location.reload();},30000);}"
+			 "else if(r.state==-1){t.innerHTML='<b style=color:#8a6100>For safety the update was not applied: '+r.msg+'</b>';var bt=document.getElementById('lu6updbtn');bt.disabled=false;bt.value='Try again';bt.style.display='';}"
+			 "else{setTimeout(lu6DashPoll,1000);}"
+			 "},error:function(){setTimeout(lu6DashPoll,2000);}});}"
+			 "function lu6Back(id){var t0=Date.now();document.getElementById(id).innerHTML='<b style=color:#2e7d32>The board is restarting to install the update (about 3 minutes).</b> Your configuration is kept. This page comes back by itself - do not turn the board off.';"
+			 "function w(){$.ajax({url:'/',cache:false,timeout:4000,complete:function(x){if(x.status>0){location.reload();}else if(Date.now()-t0>420000){document.getElementById(id).innerHTML='It is taking longer than expected. Reload this page in a moment.';}else{setTimeout(w,5000);}}});}"
+			 "setTimeout(w,20000);}"
+			 "function lu6DashOta(){"
+			 "var w='Update this board from v" VERSION " to v";
+		s += lu6Upd.ver;
+		s += "?\\n\\n"
+			 "- Your configuration is NOT lost: callsign, WiFi, filters, beacons and all settings stay as they are.\\n"
+			 "- The new version is checked before it is used. If the download fails or the file is not correct, nothing changes and the board keeps running the current version.\\n"
+			 "- The board restarts, installs the update and restarts again (about 3 minutes).';";
+		if (LU6_OTA_LOSES_DISPLAY)
+			s += "w='WARNING: the published version has NO DISPLAY support - after updating, the display of this board stops working (everything else keeps working).\\n\\n'+w;";
+		s += "if(!confirm(w))return;"
+			 "var bt=document.getElementById('lu6updbtn');bt.disabled=true;bt.style.display='none';"
+			 "document.getElementById('lu6updst').innerHTML='Starting...';"
+			 "$.ajax({url:'/ota_github',type:'POST',success:function(){lu6Back('lu6updst');},"
+			 "error:function(x){document.getElementById('lu6updst').innerHTML='<b style=color:#8a6100>For safety the update was not applied: '+x.responseText+'</b>';var bt=document.getElementById('lu6updbtn');bt.disabled=false;bt.value='Try again';bt.style.display='';}});}"
+			 "</script>";
+	}
+	else
+		s += " - install it with Manual Firmware Update on the About page.";
+	s += "</div>";
+	return s;
+}
+
+static void lu6OtaFail(const char *m)
+{
+	strlcpy(lu6Upd.msg, m, sizeof(lu6Upd.msg));
+	lu6Upd.state = -1;
+	log_e("[OTA] %s", m);
+}
+
+static void lu6OtaTask(void *)
+{
+	char url[200];
+	snprintf(url, sizeof(url), "https://github.com/%s/releases/download/%s/%s", LU6_OTA_REPO, lu6Upd.tag, lu6Upd.file);
+	WiFiClientSecure *cli = new WiFiClientSecure;
+	HTTPClient http;
+	uint8_t *buf = (uint8_t *)malloc(2048);
+	int len = 0, done = 0;
+	if (!cli || !buf)
+	{
+		lu6OtaFail("Out of memory. The board keeps running the current version.");
+		goto out;
+	}
+	if (Update.isRunning())
+		Update.abort(); // clear a previous unfinished attempt
+	if (!Update.begin(UPDATE_SIZE_UNKNOWN))
+	{
+		snprintf(lu6Upd.msg, sizeof(lu6Upd.msg), "Could not prepare the update (%s, error %d, heap %u/%u). The board keeps running the current version.",
+				 Update.errorString(), (int)Update.getError(), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+		lu6Upd.state = -1;
+		log_e("[OTA] %s", lu6Upd.msg);
+		goto out;
+	}
+	cli->setInsecure();
+	http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+	http.setTimeout(30000);
+	if (!http.begin(*cli, url))
+	{
+		lu6OtaFail("Could not open the download. The board keeps running the current version.");
+		goto out;
+	}
+	{
+		int code = http.GET();
+		if (code != HTTP_CODE_OK)
+		{
+			char tlsErr[64] = "";
+			cli->lastError(tlsErr, sizeof(tlsErr));
+			snprintf(lu6Upd.msg, sizeof(lu6Upd.msg), "Download failed (HTTP %d, %s, heap %u/%u). The board keeps running the current version.",
+					 code, tlsErr[0] ? tlsErr : "no TLS error", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+			lu6Upd.state = -1;
+			goto out;
+		}
+	}
+	len = http.getSize();
+	if (len <= 0 || (lu6Upd.size && (uint32_t)len != lu6Upd.size))
+	{
+		lu6OtaFail("Unexpected file size. The board keeps running the current version.");
+		goto out;
+	}
+	if ((size_t)len > Update.size())
+	{
+		snprintf(lu6Upd.msg, sizeof(lu6Upd.msg), "The new version is too big for this board (%d > %u). The board keeps running the current version.", len, (unsigned)Update.size());
+		lu6Upd.state = -1;
+		log_e("[OTA] %s", lu6Upd.msg);
+		goto out;
+	}
+	if (strlen(lu6Upd.md5) == 32)
+		Update.setMD5(lu6Upd.md5);
+	{
+		WiFiClient *st = http.getStreamPtr();
+		unsigned long lastData = millis();
+		while (done < len)
+		{
+			size_t av = st->available();
+			if (av)
+			{
+				int r = st->readBytes(buf, av > 2048 ? 2048 : av);
+				if (r <= 0 || Update.write(buf, r) != (size_t)r)
+					break;
+				done += r;
+				lu6Upd.pct = (int)((int64_t)done * 100 / len);
+				lastData = millis();
+			}
+			else
+			{
+				if (!http.connected() || millis() - lastData > 30000)
+					break;
+				vTaskDelay(pdMS_TO_TICKS(5));
+			}
+		}
+	}
+	if (done != len)
+	{
+		Update.abort();
+		lu6OtaFail("Download interrupted. The board keeps running the current version.");
+		goto out;
+	}
+	lu6Upd.state = 2;
+	if (!Update.end(true))
+	{
+		snprintf(lu6Upd.msg, sizeof(lu6Upd.msg), "File check failed (%s). The board keeps running the current version.", Update.errorString());
+		lu6Upd.state = -1;
+		goto out;
+	}
+	strlcpy(lu6Upd.msg, "All good: the new version is installed and checked. The board is restarting (about 1 minute), your configuration is kept.", sizeof(lu6Upd.msg));
+	lu6Upd.state = 3;
+	{
+		Preferences q;
+		if (q.begin("lu6ota", false))
+		{
+			q.clear();
+			q.end();
+		}
+	}
+	http.end();
+	delay(2000);
+	ESP.restart();
+out:
+	if (Update.isRunning())
+		Update.abort(); // nothing was switched: the board keeps the current version
+	http.end();
+	if (cli)
+		delete cli;
+	if (buf)
+		free(buf);
+	lu6OtaTaskHandle = NULL;
+	vTaskDelete(NULL);
+}
+
+static void lu6OtaRestartTask(void *)
+{
+	vTaskDelay(pdMS_TO_TICKS(1500));
+	ESP.restart();
+}
+
+// 2.1.8: the update is installed right after a restart, before the station services start.
+// With the station running for hours the memory is too fragmented for the secure download
+// (seen: "SSL - Memory allocation failed" with 73 KB free but only 32 KB in one piece).
+void handle_ota_github(AsyncWebServerRequest *request)
+{
+	if (!request->authenticate(config.http_username, config.http_password))
+		return request->requestAuthentication();
+	if (!lu6Upd.avail || !lu6OtaOneClick())
+	{
+		request->send(409, "text/plain", "No one-click update available for this board.");
+		return;
+	}
+	if (lu6OtaTaskHandle != NULL || lu6Upd.state == 1 || lu6Upd.state == 2 || lu6Upd.state == 4)
+	{
+		request->send(409, "text/plain", "An update is already running.");
+		return;
+	}
+	Preferences p;
+	if (!p.begin("lu6ota", false))
+	{
+		request->send(500, "text/plain", "Could not save the update request. Nothing was changed.");
+		return;
+	}
+	p.putString("tag", lu6Upd.tag);
+	p.putString("file", lu6Upd.file);
+	p.putString("md5", lu6Upd.md5);
+	p.putString("ver", lu6Upd.ver);
+	p.putUInt("size", lu6Upd.size);
+	p.remove("msg");
+	p.end();
+	lu6Upd.state = 4;
+	strlcpy(lu6Upd.msg, "Restarting to install the update...", sizeof(lu6Upd.msg));
+	request->send(200, "text/plain", "restarting");
+	xTaskCreatePinnedToCore(lu6OtaRestartTask, "lu6Rst", 3072, NULL, 1, NULL, 0);
+}
+
+// Called by taskNetwork right after WiFi connects, before the web server and APRS-IS start.
+// One attempt only: the request is erased before trying, so a failure never loops.
+void lu6jmfPendingUpdate()
+{
+	Preferences p;
+	if (!p.begin("lu6ota", false))
+		return;
+	String msg = p.getString("msg", "");
+	String tag = p.getString("tag", "");
+	if (msg.length())
+	{
+		// result of an attempt that ended with a restart (e.g. power loss during the download)
+		strlcpy(lu6Upd.msg, msg.c_str(), sizeof(lu6Upd.msg));
+		lu6Upd.state = -1;
+		p.remove("msg");
+	}
+	if (tag.length() == 0)
+	{
+		p.end();
+		return;
+	}
+	strlcpy(lu6Upd.tag, tag.c_str(), sizeof(lu6Upd.tag));
+	strlcpy(lu6Upd.file, p.getString("file", "").c_str(), sizeof(lu6Upd.file));
+	strlcpy(lu6Upd.md5, p.getString("md5", "").c_str(), sizeof(lu6Upd.md5));
+	strlcpy(lu6Upd.ver, p.getString("ver", "").c_str(), sizeof(lu6Upd.ver));
+	lu6Upd.size = p.getUInt("size", 0);
+	lu6Upd.avail = true;
+	p.remove("tag");
+	p.remove("file");
+	p.remove("md5");
+	p.remove("ver");
+	p.remove("size");
+	p.putString("msg", "The update was interrupted (the board restarted during the download). Nothing was changed: the board keeps running the current version.");
+	p.end();
+	for (int i = 0; i < 60 && WiFi.status() != WL_CONNECTED; i++) // up to 30 s for the WiFi
+		vTaskDelay(pdMS_TO_TICKS(500));
+	if (WiFi.status() != WL_CONNECTED)
+	{
+		lu6OtaFail("No internet connection after the restart. The board keeps running the current version.");
+	}
+	else
+	{
+		log_i("[OTA] installing %s/%s before starting the station", lu6Upd.tag, lu6Upd.file);
+		lu6Upd.state = 1;
+		lu6Upd.pct = 0;
+		xTaskCreatePinnedToCore(lu6OtaTask, "lu6Ota", 12288, NULL, 1, &lu6OtaTaskHandle, 0);
+		while (lu6OtaTaskHandle != NULL)
+			vTaskDelay(pdMS_TO_TICKS(200));
+	}
+	// only reached when it failed (success restarts into the new version): show it live
+	if (p.begin("lu6ota", false))
+	{
+		p.remove("msg");
+		p.end();
+	}
+}
+
+void handle_ota_status(AsyncWebServerRequest *request)
+{
+	if (!request->authenticate(config.http_username, config.http_password))
+		return request->requestAuthentication();
+	JsonDocument d;
+	d["state"] = lu6Upd.state;
+	d["pct"] = lu6Upd.pct;
+	d["msg"] = lu6Upd.msg;
+	String s;
+	serializeJson(d, s);
+	request->send(200, "application/json", s);
+}
 
 void handle_check_version(AsyncWebServerRequest *request)
 {
@@ -10969,47 +11645,31 @@ void handle_check_version(AsyncWebServerRequest *request)
 		return request->requestAuthentication();
 	}
 
-	HTTPClient http;
-	http.begin(VERSION_CHECK_URL);
-	http.setTimeout(5000);
-	int httpCode = http.GET();
-
+	int httpCode = lu6FetchVersion();
 	if (httpCode != HTTP_CODE_OK)
 	{
-		http.end();
 		char errBuf[100];
 		snprintf(errBuf, sizeof(errBuf), "{\"error\":\"HTTP GET failed, code=%d\"}", httpCode);
 		request->send(500, "application/json", errBuf);
 		return;
 	}
 
-	String payload = http.getString();
-	http.end();
-
-	JsonDocument doc;
-	DeserializationError err = deserializeJson(doc, payload);
-	if (err)
-	{
-		request->send(500, "application/json", "{\"error\":\"Invalid version data\"}");
-		return;
-	}
-
-	const char *latestVersion = doc["version"] | "";
-	const char *latestBuild = doc["build"] | "";
-	const char *latestDate = doc["date"] | "";
-	const char *latestTag = doc["tag"] | "";
-	const char *latestFilename = doc["filename"] | "";
-
-	bool updateAvailable = (strcmp(latestVersion, VERSION) != 0) || (strcmp(latestBuild, VERSION_BUILD) != 0);
-
-	char resp[400];
-	snprintf(resp, sizeof(resp),
-			 "{\"current_version\":\"%s\",\"current_build\":\"%s\","
-			 "\"latest_version\":\"%s\",\"latest_build\":\"%s\",\"latest_date\":\"%s\","
-			 "\"latest_tag\":\"%s\",\"latest_filename\":\"%s\",\"update_available\":%s}",
-			 VERSION, VERSION_BUILD, latestVersion, latestBuild, latestDate,
-			 latestTag, latestFilename, updateAvailable ? "true" : "false");
-	request->send(200, "application/json", resp);
+	JsonDocument r;
+	r["current_version"] = VERSION;
+	r["current_build"] = VERSION_BUILD;
+	r["latest_version"] = lu6Upd.ver;
+	r["latest_build"] = lu6Upd.build;
+	r["latest_date"] = lu6Upd.date;
+	r["latest_tag"] = lu6Upd.tag;
+	r["latest_filename"] = lu6Upd.file;
+	r["update_available"] = (bool)lu6Upd.avail;
+	r["one_click"] = lu6Upd.avail && lu6OtaOneClick();
+	r["loses_display"] = LU6_OTA_LOSES_DISPLAY;
+	r["auto_code"] = lu6Upd.autoCode;
+	r["auto_min_ago"] = lu6Upd.autoAt ? (long)((millis() - lu6Upd.autoAt) / 60000UL) : -1;
+	String s;
+	serializeJson(r, s);
+	request->send(200, "application/json", s);
 }
 
 // LU6JMF - Marcelo Ferreira:
@@ -11139,9 +11799,27 @@ static const char *ABOUT_TEMPLATE =
 	"<tr><td align=\"right\"><b>Firmware File:</b></td><td align=\"left\"><a id=\"fw_file_link\" href=\"{{otaUrl}}\" target=\"_blank\">{{otaFile}}</a></td></tr>\n"
 	"<tr><td align=\"right\"><b>Current Version:</b></td><td align=\"left\">V{{firmwareVersion}}</td></tr>\n"
 	"<tr><td align=\"right\"><b>Status:</b></td><td><span id='ota_prg'>Ready</span></td></tr>\n"
-	"<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\"><input type='button' class=\"btn btn-danger\" id=\"check_ver_btn\" value='Check New Version'></div></td></tr>\n"
+	"<tr><td colspan=\"2\" align=\"right\"><div class=\"col-sm-3 col-xs-4\"><input type='button' id=\"check_ver_btn\" style=\"background:#ffc107;color:#222;border:1px solid #c69500;border-radius:5px;padding:4px 12px;font-weight:bold;\" value='Check New Version'></div></td></tr>\n"
 	"</table><br />\n"
 	"<script>"
+	"function lu6OtaPoll(){$.ajax({url:'/ota_status',dataType:'json',success:function(s){"
+	"var p=document.getElementById('ota_prg');"
+	"if(s.state==1){p.innerHTML='Downloading the new version: '+s.pct+'% - the station keeps working normally meanwhile.';setTimeout(lu6OtaPoll,1000);}"
+	"else if(s.state==2){p.innerHTML='Checking the new version before using it...';setTimeout(lu6OtaPoll,1000);}"
+	"else if(s.state==3){p.innerHTML=s.msg+' This page reloads by itself in 30 seconds.';setTimeout(function(){location.reload();},30000);}"
+	"else if(s.state==-1){p.innerHTML='<b style=color:#8a6100>For safety the update was not applied: '+s.msg+'</b>';document.getElementById('check_ver_btn').disabled=false;}"
+	"else{setTimeout(lu6OtaPoll,1000);}"
+	"},error:function(){setTimeout(lu6OtaPoll,2000);}});}"
+	"function lu6Back(id){var t0=Date.now();document.getElementById(id).innerHTML='<b style=color:#2e7d32>The board is restarting to install the update (about 3 minutes).</b> Your configuration is kept. This page comes back by itself - do not turn the board off.';"
+	"function w(){$.ajax({url:'/',cache:false,timeout:4000,complete:function(x){if(x.status>0){location.reload();}else if(Date.now()-t0>420000){document.getElementById(id).innerHTML='It is taking longer than expected. Reload this page in a moment.';}else{setTimeout(w,5000);}}});}"
+	"setTimeout(w,20000);}"
+	"function lu6OtaGo(){"
+	"var w='Install the new version now?\\n\\n- The update is safe: all your settings are kept.\\n- If it cannot be updated, nothing changes and the board stays on the current version.\\n- The board restarts, installs the update and restarts again (about 3 minutes).';"
+	"if(window.lu6NoDisp)w='WARNING: the published version has NO DISPLAY support - after updating, the display of this board stops working (everything else keeps working).\\n\\n'+w;"
+	"if(!confirm(w))return;"
+	"document.getElementById('check_ver_btn').disabled=true;"
+	"$.ajax({url:'/ota_github',type:'POST',success:function(){lu6Back('ota_prg');},"
+	"error:function(x){document.getElementById('ota_prg').innerHTML='<b style=color:#8a6100>For safety the update was not applied: '+x.responseText+'</b>';document.getElementById('check_ver_btn').disabled=false;}});}"
 	"document.getElementById('check_ver_btn').addEventListener('click', function(){"
 	"document.getElementById('check_ver_btn').disabled = true;"
 	"document.getElementById('ota_prg').innerHTML = 'Checking...';"
@@ -11156,10 +11834,19 @@ static const char *ABOUT_TEMPLATE =
 	"var fwLink = document.getElementById('fw_file_link');"
 	"fwLink.href = newUrl;"
 	"fwLink.innerHTML = d.latest_filename;"
-	"document.getElementById('ota_prg').innerHTML = 'New version available: V' + d.latest_version + d.latest_build + '. Download link above, install via Manual Firmware Update.';"
+	"if (d.one_click) {"
+	"document.getElementById('ota_prg').innerHTML = 'New version available: V' + d.latest_version + '-' + d.latest_build + '. <input type=button id=ota_go style=\\'background:#43a047;color:#fff;border:1px solid #2e7d32;border-radius:5px;padding:4px 12px;font-weight:bold;\\' value=\\'Install update now (keeps configuration)\\'>';"
+	"window.lu6NoDisp = d.loses_display;"
+	"if (d.loses_display) document.getElementById('ota_prg').innerHTML += '<br><b style=color:#c60>Note: the published version has no display support - the display stops working after this update.</b>';"
+	"document.getElementById('ota_go').addEventListener('click', lu6OtaGo);"
+	"} else {"
+	"document.getElementById('ota_prg').innerHTML = 'New version available: V' + d.latest_version + '-' + d.latest_build + '. Download link above, install via Manual Firmware Update.';"
+	"}"
 	"} else {"
 	"document.getElementById('ota_prg').innerHTML = 'You are using the latest version.';"
 	"}"
+	"var ai = (d.auto_min_ago < 0) ? 'not run yet' : (d.auto_min_ago + ' min ago (' + (d.auto_code == 200 ? 'OK' : 'error ' + d.auto_code) + ')');"
+	"document.getElementById('ota_prg').innerHTML += '<br><small>Automatic check: ' + ai + '</small>';"
 	"},"
 	"error: function(a, b, c) {"
 	"document.getElementById('check_ver_btn').disabled = false;"
@@ -12955,6 +13642,9 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
 // }
 
 bool webServiceBegin = true;
+static bool lu6ManualOk = false;  // 2.1.8: manual firmware upload result
+static char lu6ManualErr[160] = "";
+
 void webService()
 {
 	if (webServiceBegin)
@@ -13082,8 +13772,11 @@ void webService()
 	async_server.on(
 		"/update", HTTP_POST, [](AsyncWebServerRequest *request)
 		{
-  		bool espShouldReboot = !Update.hasError();
-  		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", espShouldReboot ? "<h1><strong>Update DONE</strong></h1><br><a href='/'>Return Home</a>" : "<h1><strong>Update FAILED</strong></h1><br><a href='/updt'>Retry?</a>");
+  		// 2.1.8: report what really happened (Update.begin() can fail without setting an error code)
+  		bool espShouldReboot = lu6ManualOk && !Update.hasError();
+  		String r = espShouldReboot ? String("<h1><strong>Update DONE</strong></h1><br><a href='/'>Return Home</a>")
+  		                           : String("<h1><strong>Update FAILED</strong></h1><p>") + lu6ManualErr + "</p><p>Nothing was changed: the board keeps running the current version. Tip: restart the board and send the file again right after it comes back.</p><a href='/'>Return Home</a>";
+  		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", r);
   		response->addHeader("Connection", "close");
   		request->send(response); },
 		[](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final)
@@ -13091,9 +13784,14 @@ void webService()
 			if (!index)
 			{
 				log_d("Update Start: %s\n", filename.c_str());
+				lu6ManualOk = false;
+				lu6ManualErr[0] = 0;
+				if (Update.isRunning())
+					Update.abort();
 				if (!Update.begin((ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000))
 				{
 					Update.printError(Serial);
+					snprintf(lu6ManualErr, sizeof(lu6ManualErr), "Could not prepare the update (%s, heap %u/%u).", Update.errorString(), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
 				}
 				else
 				{
@@ -13111,24 +13809,31 @@ void webService()
 					//  vTaskSuspend(taskSensorHandle);
 				}
 			}
-			if (!Update.hasError())
+			if (Update.isRunning() && !Update.hasError())
 			{
 				if (Update.write(data, len) != len)
 				{
 					Update.printError(Serial);
+					if (!lu6ManualErr[0])
+						snprintf(lu6ManualErr, sizeof(lu6ManualErr), "Write failed (%s).", Update.errorString());
 				}
 			}
 			if (final)
 			{
-				if (Update.end(true))
+				if (Update.isRunning() && Update.end(true))
 				{
 					log_d("Update Success: %uByte\n", index + len);
+					lu6ManualOk = true;
 					delay(1000);
 					esp_restart();
 				}
 				else
 				{
 					Update.printError(Serial);
+					if (!lu6ManualErr[0])
+						snprintf(lu6ManualErr, sizeof(lu6ManualErr), "File check failed (%s).", Update.errorString());
+					if (Update.isRunning())
+						Update.abort();
 				}
 			}
 		});
@@ -13201,7 +13906,12 @@ void webService()
 		});
 
 async_server.on("/check_version", HTTP_GET, [](AsyncWebServerRequest *request)
-					{ handle_check_version(request); });		
+					{ handle_check_version(request); });
+	// 2.1.8: one-click update from GitHub + its progress
+	async_server.on("/ota_github", HTTP_POST, [](AsyncWebServerRequest *request)
+					{ handle_ota_github(request); });
+	async_server.on("/ota_status", HTTP_GET, [](AsyncWebServerRequest *request)
+					{ handle_ota_status(request); });		
 
 	lastheard_events.onConnect([](AsyncEventSourceClient *client)
 							   {
@@ -13227,6 +13937,8 @@ async_server.on("/check_version", HTTP_GET, [](AsyncWebServerRequest *request)
 	async_server.addHandler(&message_events);
 
 	async_server.onNotFound(notFound);
+	lu6jmfLogoRoutes();  // 2.1.8: /logo.png, /logo_upload, /logo_reset
+	lu6jmfUpdateStart(); // 2.1.8: background update check (2 min after boot, then daily)
 	async_server.begin();
 	async_websocket.addHandler(&ws);
 	async_websocket.addHandler(&ws_gnss);

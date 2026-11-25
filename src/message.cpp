@@ -621,7 +621,20 @@ int pkgMsgUpdate(const char *call, const char *raw, uint16_t msg_id, int8_t ack,
 // ===== ส่งข้อความ APRS =====
 void sendAPRSMessage(const String &toCall, const String &message, bool encrypt, bool noRetry, uint8_t jobType)
 {
+    // 2.1.8: the counter used to restart at 1 after every reboot, so a new message could reuse the
+    // number of an earlier one and the other radio dropped it as a repeat. Start at a different
+    // number on each boot (clock minutes, or random if the clock is not set yet); keep 1..999.
+    if (msgID == 0)
+    {
+        time_t nowT = time(NULL);
+        if (nowT > 1700000000)
+            msgID = (uint16_t)((nowT / 60) % 999);
+        else
+            msgID = (uint16_t)(esp_random() % 999);
+    }
     ++msgID;
+    if (msgID > 999)
+        msgID = 1;
     if (toCall == "")
         return;
     if (message == "")

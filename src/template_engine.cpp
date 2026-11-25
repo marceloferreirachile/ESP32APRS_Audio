@@ -148,17 +148,17 @@ namespace
 			int tagStart = tpl.indexOf("{{", i);
 			if (tagStart == -1 || tagStart >= to)
 			{
-				out += tpl.substring(i, to);
+				out.concat(tpl.c_str() + (i), (unsigned int)((to) - (i))); // 2.1.8: no temporary String (a big substring could fail to allocate and silently drop that part of the page)
 				break;
 			}
-			out += tpl.substring(i, tagStart);
+			out.concat(tpl.c_str() + (i), (unsigned int)((tagStart) - (i))); // 2.1.8: no temporary String (a big substring could fail to allocate and silently drop that part of the page)
 
 			int tagEnd = tpl.indexOf("}}", tagStart + 2);
 			if (tagEnd == -1 || tagEnd >= to)
 			{
 				// tag sem fechamento - emite o resto literal e para, em vez
 				// de travar.
-				out += tpl.substring(tagStart, to);
+				out.concat(tpl.c_str() + (tagStart), (unsigned int)((to) - (tagStart))); // 2.1.8: no temporary String (a big substring could fail to allocate and silently drop that part of the page)
 				break;
 			}
 
