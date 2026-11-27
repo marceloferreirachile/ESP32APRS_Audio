@@ -404,6 +404,9 @@ typedef struct Config_Struct
 	// OLED display timeout), unrelated to the dead sleep feature.
 	uint16_t pwr_stanby_delay = 30; //sec
 	bool disp_flip;
+	uint8_t disp_type; // 2.1.9: OLED screen 0 = automatic, 1 = 0.96" (SSD1306), 2 = 1.3" (SH1106)
+	uint8_t disp_rotate; // 2.1.9: change the screen by itself every N seconds (0 = off, only the button)
+	int8_t disp_btn;     // 2.1.9: menu button GPIO (0 = BOOT button, -1 = no menu button)
 	uint8_t disp_brightness;
 
 	uint16_t log=0;

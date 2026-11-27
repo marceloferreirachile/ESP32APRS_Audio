@@ -3,6 +3,45 @@
 #include <parse_aprs.h>
 #include <string.h>
 #include <pbuf.h>
+#include <stdlib.h>
+
+// LU6JMF 2.1.9: integer-only scanf (siscanf, already in the firmware for the time zone code) and a small
+// "degrees + decimal minutes" reader instead of sscanf with %f: the float sscanf alone pulled ~10 KB of
+// the C library into the firmware. Same results.
+extern "C" int siscanf(const char *, const char *, ...);
+// same as sscanf(p, "%<degDigits>d%f,%c,", deg, min, hemi): returns how many of the 3 values were read
+static int lu6ScanDegMin(const char *p, int degDigits, int *deg, float *min, char *hemi)
+{
+	while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '\v' || *p == '\f')
+		p++;
+	char tmp[8];
+	int n = 0;
+	if ((*p == '-' || *p == '+') && n < degDigits)
+		tmp[n++] = *p++;
+	int digits = 0;
+	while (n < degDigits && *p >= '0' && *p <= '9')
+	{
+		tmp[n++] = *p++;
+		digits++;
+	}
+	if (digits == 0)
+		return 0;
+	tmp[n] = 0;
+	*deg = atoi(tmp);
+	char *end;
+	float f = strtof(p, &end);
+	if (end == p)
+		return 1;
+	*min = f;
+	p = end;
+	if (*p != ',')
+		return 2;
+	p++;
+	if (*p == 0)
+		return 2;
+	*hemi = *p;
+	return 3;
+}
 
 #define debug 0
 
@@ -707,11 +746,11 @@ int ParseAPRS::parse_aprs_nmea(struct pbuf_t *pb, const char *body, const char *
 	// hlog(LOG_DEBUG, "NMEA parsing: %.*s", (int)(body_end - body), body);
 	// hlog(LOG_DEBUG, "     lat=%.10s   lng=%.10s", latp, lngp);
 
-	i = sscanf(latp, "%2d%f,%c,", &la, &lat, &lac);
+	i = lu6ScanDegMin(latp, 2, &la, &lat, &lac); // was sscanf(latp, "%2d%f,%c,", ...)
 	if (i != 3)
 		return 0; // parse failure
 
-	i = sscanf(lngp, "%3d%f,%c,", &lo, &lng, &loc);
+	i = lu6ScanDegMin(lngp, 3, &lo, &lng, &loc); // was sscanf(lngp, "%3d%f,%c,", ...)
 	if (i != 3)
 		return 0; // parse failure
 
@@ -1027,7 +1066,7 @@ int ParseAPRS::parse_aprs_mice(struct pbuf_t *pb, const unsigned char *body, con
 	// convert to degrees, minutes and decimal degrees,
 	//  and then to a float lat
 
-	if (sscanf(dstcall, "%2u%2u%2u",
+	if (siscanf(dstcall, "%2u%2u%2u",
 			   &lat_deg, &lat_min, &lat_min_frag) != 3)
 	{
 		log_d("\tsscanf failed");
@@ -1331,7 +1370,7 @@ int ParseAPRS::parse_aprs_uncompressed(struct pbuf_t *pb, const char *body, cons
 
 	// fprintf(stderr, "\tafter filling amb: %s\n", posbuf);
 	/* 3210.70N/13132.15E# */
-	if (sscanf(posbuf, "%2u%2u.%2u%c%c%3u%2u.%2u%c%c",
+	if (siscanf(posbuf, "%2u%2u.%2u%c%c%3u%2u.%2u%c%c",
 			   &lat_deg, &lat_min, &lat_min_frag, &lat_hemi, &sym_table,
 			   &lng_deg, &lng_min, &lng_min_frag, &lng_hemi, &sym_code) != 10)
 	{

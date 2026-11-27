@@ -5,6 +5,263 @@
 
 extern Configuration config;
 
+// LU6JMF 2.1.9: the plain "read / write one config field" AT commands (AT+NAME? / AT+NAME=value)
+// are a table instead of ~190 copies of the same code (same answers as before: value, "OK",
+// bools only =1 / =0, text without quotes). Saves flash; every other command is unchanged below.
+enum : uint8_t { AT_B, AT_S, AT_U8, AT_I8, AT_U16, AT_I16, AT_U32, AT_I32, AT_F };
+struct AtField { const char *name; uint8_t type; void *ptr; uint16_t size; };
+static const AtField AT_FIELDS[] = {
+    {"TIMEZONE", AT_F, &config.timeZone, sizeof(config.timeZone)},
+    {"SYNCTIME", AT_B, &config.synctime, sizeof(config.synctime)},
+    {"TITLE", AT_B, &config.title, sizeof(config.title)},
+    {"WIFI_MODE", AT_U8, &config.wifi_mode, sizeof(config.wifi_mode)},
+    {"WIFI_POWER", AT_I8, &config.wifi_power, sizeof(config.wifi_power)},
+    {"WIFI_AP_CH", AT_U8, &config.wifi_ap_ch, sizeof(config.wifi_ap_ch)},
+    {"WIFI_AP_SSID", AT_S, &config.wifi_ap_ssid, sizeof(config.wifi_ap_ssid)},
+    {"WIFI_AP_PASS", AT_S, &config.wifi_ap_pass, sizeof(config.wifi_ap_pass)},
+    {"BT_SLAVE", AT_B, &config.bt_slave, sizeof(config.bt_slave)},
+    {"BT_MASTER", AT_B, &config.bt_master, sizeof(config.bt_master)},
+    {"BT_MODE", AT_U8, &config.bt_mode, sizeof(config.bt_mode)},
+    {"BT_UUID", AT_S, &config.bt_uuid, sizeof(config.bt_uuid)},
+    {"BT_UUID_RX", AT_S, &config.bt_uuid_rx, sizeof(config.bt_uuid_rx)},
+    {"BT_UUID_TX", AT_S, &config.bt_uuid_tx, sizeof(config.bt_uuid_tx)},
+    {"BT_NAME", AT_S, &config.bt_name, sizeof(config.bt_name)},
+    {"BT_PIN", AT_U32, &config.bt_pin, sizeof(config.bt_pin)},
+    {"BT_POWER", AT_U8, &config.bt_power, sizeof(config.bt_power)},
+    {"RF_EN", AT_B, &config.rf_en, sizeof(config.rf_en)},
+    {"RF_TYPE", AT_U8, &config.rf_type, sizeof(config.rf_type)},
+    {"FREQ_RX", AT_F, &config.freq_rx, sizeof(config.freq_rx)},
+    {"FREQ_TX", AT_F, &config.freq_tx, sizeof(config.freq_tx)},
+    {"OFFSET_RX", AT_I32, &config.offset_rx, sizeof(config.offset_rx)},
+    {"OFFSET_TX", AT_I32, &config.offset_tx, sizeof(config.offset_tx)},
+    {"TONE_RX", AT_I32, &config.tone_rx, sizeof(config.tone_rx)},
+    {"TONE_TX", AT_I32, &config.tone_tx, sizeof(config.tone_tx)},
+    {"BAND", AT_U8, &config.band, sizeof(config.band)},
+    {"SQL_LEVEL", AT_U8, &config.sql_level, sizeof(config.sql_level)},
+    {"RF_POWER", AT_B, &config.rf_power, sizeof(config.rf_power)},
+    {"VOLUME", AT_U8, &config.volume, sizeof(config.volume)},
+    {"MIC", AT_U8, &config.mic, sizeof(config.mic)},
+    {"IGATE_EN", AT_B, &config.igate_en, sizeof(config.igate_en)},
+    {"RF2INET", AT_B, &config.rf2inet, sizeof(config.rf2inet)},
+    {"INET2RF", AT_B, &config.inet2rf, sizeof(config.inet2rf)},
+    {"IGATE_LOC2RF", AT_B, &config.igate_loc2rf, sizeof(config.igate_loc2rf)},
+    {"IGATE_LOC2INET", AT_B, &config.igate_loc2inet, sizeof(config.igate_loc2inet)},
+    {"RF2INETFILTER", AT_U16, &config.rf2inetFilter, sizeof(config.rf2inetFilter)},
+    {"INET2RFFILTER", AT_U16, &config.inet2rfFilter, sizeof(config.inet2rfFilter)},
+    {"APRS_SSID", AT_U8, &config.aprs_ssid, sizeof(config.aprs_ssid)},
+    {"APRS_PORT", AT_U16, &config.aprs_port, sizeof(config.aprs_port)},
+    {"APRS_MYCALL", AT_S, &config.aprs_mycall, sizeof(config.aprs_mycall)},
+    {"APRS_HOST", AT_S, &config.aprs_host, sizeof(config.aprs_host)},
+    {"APRS_PASSCODE", AT_S, &config.aprs_passcode, sizeof(config.aprs_passcode)},
+    {"APRS_MONICALL", AT_S, &config.aprs_moniCall, sizeof(config.aprs_moniCall)},
+    {"APRS_FILTER", AT_S, &config.aprs_filter, sizeof(config.aprs_filter)},
+    {"IGATE_BCN", AT_B, &config.igate_bcn, sizeof(config.igate_bcn)},
+    {"IGATE_GPS", AT_B, &config.igate_gps, sizeof(config.igate_gps)},
+    {"IGATE_TIMESTAMP", AT_B, &config.igate_timestamp, sizeof(config.igate_timestamp)},
+    {"IGATE_LAT", AT_F, &config.igate_lat, sizeof(config.igate_lat)},
+    {"IGATE_LON", AT_F, &config.igate_lon, sizeof(config.igate_lon)},
+    {"IGATE_ALT", AT_F, &config.igate_alt, sizeof(config.igate_alt)},
+    {"IGATE_INTERVAL", AT_U16, &config.igate_interval, sizeof(config.igate_interval)},
+    {"IGATE_OBJECT", AT_S, &config.igate_object, sizeof(config.igate_object)},
+    {"IGATE_PHG", AT_S, &config.igate_phg, sizeof(config.igate_phg)},
+    {"IGATE_PATH", AT_U8, &config.igate_path, sizeof(config.igate_path)},
+    {"IGATE_COMMENT", AT_S, &config.igate_comment, sizeof(config.igate_comment)},
+    {"IGATE_STS_INTERVAL", AT_U16, &config.igate_sts_interval, sizeof(config.igate_sts_interval)},
+    {"IGATE_STATUS", AT_S, &config.igate_status, sizeof(config.igate_status)},
+    {"DIGI_EN", AT_B, &config.digi_en, sizeof(config.digi_en)},
+    {"DIGI_AUTO", AT_B, &config.digi_auto, sizeof(config.digi_auto)},
+    {"DIGI_LOC2RF", AT_B, &config.digi_loc2rf, sizeof(config.digi_loc2rf)},
+    {"DIGI_LOC2INET", AT_B, &config.digi_loc2inet, sizeof(config.digi_loc2inet)},
+    {"DIGI_TIMESTAMP", AT_B, &config.digi_timestamp, sizeof(config.digi_timestamp)},
+    {"DIGI_SSID", AT_U8, &config.digi_ssid, sizeof(config.digi_ssid)},
+    {"DIGI_MYCALL", AT_S, &config.digi_mycall, sizeof(config.digi_mycall)},
+    {"DIGI_PATH", AT_U8, &config.digi_path, sizeof(config.digi_path)},
+    {"DIGI_DELAY", AT_U16, &config.digi_delay, sizeof(config.digi_delay)},
+    {"DIGIFILTER", AT_U16, &config.digiFilter, sizeof(config.digiFilter)},
+    {"DIGI_BCN", AT_B, &config.digi_bcn, sizeof(config.digi_bcn)},
+    {"DIGI_GPS", AT_B, &config.digi_gps, sizeof(config.digi_gps)},
+    {"DIGI_LAT", AT_F, &config.digi_lat, sizeof(config.digi_lat)},
+    {"DIGI_LON", AT_F, &config.digi_lon, sizeof(config.digi_lon)},
+    {"DIGI_ALT", AT_F, &config.digi_alt, sizeof(config.digi_alt)},
+    {"DIGI_INTERVAL", AT_U16, &config.digi_interval, sizeof(config.digi_interval)},
+    {"DIGI_PHG", AT_S, &config.digi_phg, sizeof(config.digi_phg)},
+    {"DIGI_COMMENT", AT_S, &config.digi_comment, sizeof(config.digi_comment)},
+    {"DIGI_STS_INTERVAL", AT_U16, &config.digi_sts_interval, sizeof(config.digi_sts_interval)},
+    {"DIGI_STATUS", AT_S, &config.digi_status, sizeof(config.digi_status)},
+    {"TRK_EN", AT_B, &config.trk_en, sizeof(config.trk_en)},
+    {"TRK_LOC2RF", AT_B, &config.trk_loc2rf, sizeof(config.trk_loc2rf)},
+    {"TRK_LOC2INET", AT_B, &config.trk_loc2inet, sizeof(config.trk_loc2inet)},
+    {"TRK_TIMESTAMP", AT_B, &config.trk_timestamp, sizeof(config.trk_timestamp)},
+    {"TRK_SSID", AT_U8, &config.trk_ssid, sizeof(config.trk_ssid)},
+    {"TRK_MYCALL", AT_S, &config.trk_mycall, sizeof(config.trk_mycall)},
+    {"TRK_PATH", AT_U8, &config.trk_path, sizeof(config.trk_path)},
+    {"TRK_GPS", AT_B, &config.trk_gps, sizeof(config.trk_gps)},
+    {"TRK_LAT", AT_F, &config.trk_lat, sizeof(config.trk_lat)},
+    {"TRK_LON", AT_F, &config.trk_lon, sizeof(config.trk_lon)},
+    {"TRK_ALT", AT_F, &config.trk_alt, sizeof(config.trk_alt)},
+    {"TRK_COMMENT", AT_S, &config.trk_comment, sizeof(config.trk_comment)},
+    {"TRK_STS_INTERVAL", AT_U16, &config.trk_sts_interval, sizeof(config.trk_sts_interval)},
+    {"TRK_STATUS", AT_S, &config.trk_status, sizeof(config.trk_status)},
+    {"WX_EN", AT_B, &config.wx_en, sizeof(config.wx_en)},
+    {"WX_2RF", AT_B, &config.wx_2rf, sizeof(config.wx_2rf)},
+    {"WX_2INET", AT_B, &config.wx_2inet, sizeof(config.wx_2inet)},
+    {"WX_TIMESTAMP", AT_B, &config.wx_timestamp, sizeof(config.wx_timestamp)},
+    {"WX_SSID", AT_U8, &config.wx_ssid, sizeof(config.wx_ssid)},
+    {"WX_MYCALL", AT_S, &config.wx_mycall, sizeof(config.wx_mycall)},
+    {"WX_PATH", AT_U8, &config.wx_path, sizeof(config.wx_path)},
+    {"WX_GPS", AT_B, &config.wx_gps, sizeof(config.wx_gps)},
+    {"WX_LAT", AT_F, &config.wx_lat, sizeof(config.wx_lat)},
+    {"WX_LON", AT_F, &config.wx_lon, sizeof(config.wx_lon)},
+    {"WX_ALT", AT_F, &config.wx_alt, sizeof(config.wx_alt)},
+    {"WX_INTERVAL", AT_U16, &config.wx_interval, sizeof(config.wx_interval)},
+    {"WX_FLAGE", AT_U32, &config.wx_flage, sizeof(config.wx_flage)},
+    {"WX_OBJECT", AT_S, &config.wx_object, sizeof(config.wx_object)},
+    {"WX_COMMENT", AT_S, &config.wx_comment, sizeof(config.wx_comment)},
+    {"TLM0_EN", AT_B, &config.tlm0_en, sizeof(config.tlm0_en)},
+    {"TLM0_2RF", AT_B, &config.tlm0_2rf, sizeof(config.tlm0_2rf)},
+    {"TLM0_2INET", AT_B, &config.tlm0_2inet, sizeof(config.tlm0_2inet)},
+    {"TLM0_SSID", AT_U8, &config.tlm0_ssid, sizeof(config.tlm0_ssid)},
+    {"TLM0_MYCALL", AT_S, &config.tlm0_mycall, sizeof(config.tlm0_mycall)},
+    {"TLM0_PATH", AT_U8, &config.tlm0_path, sizeof(config.tlm0_path)},
+    {"TLM0_DATA_INTERVAL", AT_U16, &config.tlm0_data_interval, sizeof(config.tlm0_data_interval)},
+    {"TLM0_INFO_INTERVAL", AT_U16, &config.tlm0_info_interval, sizeof(config.tlm0_info_interval)},
+    {"TLM0_BITS_ACTIVE", AT_U8, &config.tlm0_BITS_Active, sizeof(config.tlm0_BITS_Active)},
+    {"TLM0_COMMENT", AT_S, &config.tlm0_comment, sizeof(config.tlm0_comment)},
+    {"TLM1_EN", AT_B, &config.tlm1_en, sizeof(config.tlm1_en)},
+    {"TLM1_2RF", AT_B, &config.tlm1_2rf, sizeof(config.tlm1_2rf)},
+    {"TLM1_2INET", AT_B, &config.tlm1_2inet, sizeof(config.tlm1_2inet)},
+    {"TLM1_SSID", AT_U8, &config.tlm1_ssid, sizeof(config.tlm1_ssid)},
+    {"TLM1_MYCALL", AT_S, &config.tlm1_mycall, sizeof(config.tlm1_mycall)},
+    {"TLM1_PATH", AT_U8, &config.tlm1_path, sizeof(config.tlm1_path)},
+    {"TLM1_DATA_INTERVAL", AT_U16, &config.tlm1_data_interval, sizeof(config.tlm1_data_interval)},
+    {"TLM1_INFO_INTERVAL", AT_U16, &config.tlm1_info_interval, sizeof(config.tlm1_info_interval)},
+    {"TLM1_BITS_ACTIVE", AT_U8, &config.tlm1_BITS_Active, sizeof(config.tlm1_BITS_Active)},
+    {"TLM1_COMMENT", AT_S, &config.tlm1_comment, sizeof(config.tlm1_comment)},
+    {"OLED_ENABLE", AT_B, &config.oled_enable, sizeof(config.oled_enable)},
+    {"OLED_TIMEOUT", AT_I32, &config.oled_timeout, sizeof(config.oled_timeout)},
+    {"DIM", AT_U8, &config.dim, sizeof(config.dim)},
+    {"CONTRAST", AT_U8, &config.contrast, sizeof(config.contrast)},
+    {"STARTUP", AT_U8, &config.startup, sizeof(config.startup)},
+    {"DISPFILTER", AT_U16, &config.dispFilter, sizeof(config.dispFilter)},
+    {"DISPRF", AT_B, &config.dispRF, sizeof(config.dispRF)},
+    {"DISPINET", AT_B, &config.dispINET, sizeof(config.dispINET)},
+    {"AUDIO_HPF", AT_B, &config.audio_hpf, sizeof(config.audio_hpf)},
+    {"AUDIO_LPF", AT_B, &config.audio_lpf, sizeof(config.audio_lpf)},
+    {"PREAMBLE", AT_U8, &config.preamble, sizeof(config.preamble)},
+    {"MODEM_TYPE", AT_U8, &config.modem_type, sizeof(config.modem_type)},
+    {"FX25_MODE", AT_U8, &config.fx25_mode, sizeof(config.fx25_mode)},
+    {"TX_TIMESLOT", AT_U16, &config.tx_timeslot, sizeof(config.tx_timeslot)},
+    {"NTP_HOST", AT_S, &config.ntp_host, sizeof(config.ntp_host)},
+    {"VPN", AT_B, &config.vpn, sizeof(config.vpn)},
+    {"MODEM", AT_B, &config.modem, sizeof(config.modem)},
+    {"WG_PORT", AT_U16, &config.wg_port, sizeof(config.wg_port)},
+    {"WG_PEER_ADDRESS", AT_S, &config.wg_peer_address, sizeof(config.wg_peer_address)},
+    {"WG_LOCAL_ADDRESS", AT_S, &config.wg_local_address, sizeof(config.wg_local_address)},
+    {"WG_NETMASK_ADDRESS", AT_S, &config.wg_netmask_address, sizeof(config.wg_netmask_address)},
+    {"WG_GW_ADDRESS", AT_S, &config.wg_gw_address, sizeof(config.wg_gw_address)},
+    {"WG_PUBLIC_KEY", AT_S, &config.wg_public_key, sizeof(config.wg_public_key)},
+    {"WG_PRIVATE_KEY", AT_S, &config.wg_private_key, sizeof(config.wg_private_key)},
+    {"HTTP_USERNAME", AT_S, &config.http_username, sizeof(config.http_username)},
+    {"HTTP_PASSWORD", AT_S, &config.http_password, sizeof(config.http_password)},
+    {"GNSS_ENABLE", AT_B, &config.gnss_enable, sizeof(config.gnss_enable)},
+    {"GNSS_TCP_PORT", AT_U16, &config.gnss_tcp_port, sizeof(config.gnss_tcp_port)},
+    {"GNSS_TCP_HOST", AT_S, &config.gnss_tcp_host, sizeof(config.gnss_tcp_host)},
+    {"GNSS_AT_COMMAND", AT_S, &config.gnss_at_command, sizeof(config.gnss_at_command)},
+    {"ADC_DC_OFFSET", AT_U16, &config.adc_dc_offset, sizeof(config.adc_dc_offset)},
+    {"I2C_ENABLE", AT_B, &config.i2c_enable, sizeof(config.i2c_enable)},
+    {"I2C1_ENABLE", AT_B, &config.i2c1_enable, sizeof(config.i2c1_enable)},
+    {"DISP_FLIP", AT_B, &config.disp_flip, sizeof(config.disp_flip)},
+    {"DISP_BRIGHTNESS", AT_U8, &config.disp_brightness, sizeof(config.disp_brightness)},
+    {"PPP_APN", AT_S, &config.ppp_apn, sizeof(config.ppp_apn)},
+    {"PPP_PIN", AT_S, &config.ppp_pin, sizeof(config.ppp_pin)},
+#ifdef MQTT
+    {"EN_MQTT", AT_B, &config.en_mqtt, sizeof(config.en_mqtt)},
+    {"MQTT_HOST", AT_S, &config.mqtt_host, sizeof(config.mqtt_host)},
+    {"MQTT_TOPIC", AT_S, &config.mqtt_topic, sizeof(config.mqtt_topic)},
+    {"MQTT_SUBSCRIBE", AT_S, &config.mqtt_subscribe, sizeof(config.mqtt_subscribe)},
+    {"MQTT_USER", AT_S, &config.mqtt_user, sizeof(config.mqtt_user)},
+    {"MQTT_PASS", AT_S, &config.mqtt_pass, sizeof(config.mqtt_pass)},
+    {"MQTT_PORT", AT_U16, &config.mqtt_port, sizeof(config.mqtt_port)},
+    {"MQTT_TOPIC_FLAG", AT_U16, &config.mqtt_topic_flag, sizeof(config.mqtt_topic_flag)},
+    {"MQTT_SUBSCRIBE_FLAG", AT_U16, &config.mqtt_subscribe_flag, sizeof(config.mqtt_subscribe_flag)},
+#endif
+    {"TRK_MICE_TYPE", AT_U8, &config.trk_mice_type, sizeof(config.trk_mice_type)},
+    {"TRK_TLM_INTERVAL", AT_U8, &config.trk_tlm_interval, sizeof(config.trk_tlm_interval)},
+    {"DIGI_TLM_INTERVAL", AT_U8, &config.digi_tlm_interval, sizeof(config.digi_tlm_interval)},
+    {"IGATE_TLM_INTERVAL", AT_U8, &config.igate_tlm_interval, sizeof(config.igate_tlm_interval)},
+    {"WX_TLM_INTERVAL", AT_U8, &config.wx_tlm_interval, sizeof(config.wx_tlm_interval)},
+    {"HOST_NAME", AT_S, &config.host_name, sizeof(config.host_name)},
+    {"RESET_TIMEOUT", AT_U16, &config.reset_timeout, sizeof(config.reset_timeout)},
+    {"MSG_ENABLE", AT_B, &config.msg_enable, sizeof(config.msg_enable)},
+    {"MSG_MYCALL", AT_S, &config.msg_mycall, sizeof(config.msg_mycall)},
+    {"MSG_PATH", AT_U8, &config.msg_path, sizeof(config.msg_path)},
+    {"MSG_RF", AT_B, &config.msg_rf, sizeof(config.msg_rf)},
+    {"MSG_INET", AT_B, &config.msg_inet, sizeof(config.msg_inet)},
+    {"MSG_ENCRYPT", AT_B, &config.msg_encrypt, sizeof(config.msg_encrypt)},
+    {"MSG_KEY", AT_S, &config.msg_key, sizeof(config.msg_key)},
+    {"MSG_RETRY", AT_U8, &config.msg_retry, sizeof(config.msg_retry)},
+    {"MSG_INTERVAL", AT_U16, &config.msg_interval, sizeof(config.msg_interval)},
+};
+
+static bool atFieldCommand(const String &cmd, String &reply)
+{
+    if (!cmd.startsWith("AT+"))
+        return false;
+    const char *c = cmd.c_str() + 3;
+    size_t rest = cmd.length() - 3;
+    for (const AtField &e : AT_FIELDS)
+    {
+        size_t nl = strlen(e.name);
+        if (rest <= nl || strncmp(c, e.name, nl) != 0)
+            continue;
+        char op = c[nl];
+        if (op == '?' && rest == nl + 1)
+        {
+            switch (e.type)
+            {
+            case AT_B: reply = String(*(bool *)e.ptr ? "1" : "0"); break;
+            case AT_S: reply = String((const char *)e.ptr); break;
+            case AT_U8: reply = String(*(uint8_t *)e.ptr); break;
+            case AT_I8: reply = String((int)*(int8_t *)e.ptr); break;
+            case AT_U16: reply = String(*(uint16_t *)e.ptr); break;
+            case AT_I16: reply = String(*(int16_t *)e.ptr); break;
+            case AT_U32: reply = String(*(uint32_t *)e.ptr); break;
+            case AT_I32: reply = String(*(int32_t *)e.ptr); break;
+            case AT_F: reply = String(*(float *)e.ptr, 6); break;
+            }
+            return true;
+        }
+        if (op != '=')
+            continue;
+        String v = cmd.substring(3 + nl + 1);
+        switch (e.type)
+        {
+        case AT_B:
+            if (v == "1")
+                *(bool *)e.ptr = true;
+            else if (v == "0")
+                *(bool *)e.ptr = false;
+            else
+                return false; // as before: other values fall through to the rest of the commands
+            break;
+        case AT_S:
+            v.replace("\"", "");
+            strncpy((char *)e.ptr, v.c_str(), e.size);
+            break;
+        case AT_U8: *(uint8_t *)e.ptr = v.toInt(); break;
+        case AT_I8: *(int8_t *)e.ptr = v.toInt(); break;
+        case AT_U16: *(uint16_t *)e.ptr = v.toInt(); break;
+        case AT_I16: *(int16_t *)e.ptr = v.toInt(); break;
+        case AT_U32: *(uint32_t *)e.ptr = v.toInt(); break;
+        case AT_I32: *(int32_t *)e.ptr = v.toInt(); break;
+        case AT_F: *(float *)e.ptr = v.toFloat(); break;
+        }
+        reply = "OK";
+        return true;
+    }
+    return false;
+}
+
 String handleATCommand(String cmd)
 {
     cmd.trim();
@@ -12,6 +269,12 @@ String handleATCommand(String cmd)
         return "";
     if (cmd == "AT")
         return "OK";
+
+    {
+        String reply;
+        if (atFieldCommand(cmd, reply)) // 2.1.9: table of the plain field commands
+            return reply;
+    }
 
     if (cmd == "AT+RESET" || cmd == "AT+RESTART")
     {
@@ -177,56 +440,6 @@ String handleATCommand(String cmd)
 
     // Generate AT-Command from script python
 
-    if (cmd == "AT+TIMEZONE?")
-        return String(config.timeZone, 6);
-    else if (cmd.startsWith("AT+TIMEZONE="))
-    {
-        config.timeZone = cmd.substring(12).toFloat();
-        return "OK";
-    }
-
-    if (cmd == "AT+SYNCTIME?")
-        return String(config.synctime ? "1" : "0");
-    else if (cmd == "AT+SYNCTIME=1")
-    {
-        config.synctime = true;
-        return "OK";
-    }
-    else if (cmd == "AT+SYNCTIME=0")
-    {
-        config.synctime = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+TITLE?")
-        return String(config.title ? "1" : "0");
-    else if (cmd == "AT+TITLE=1")
-    {
-        config.title = true;
-        return "OK";
-    }
-    else if (cmd == "AT+TITLE=0")
-    {
-        config.title = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+WIFI_MODE?")
-        return String(config.wifi_mode);
-    else if (cmd.startsWith("AT+WIFI_MODE="))
-    {
-        config.wifi_mode = cmd.substring(13).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+WIFI_POWER?")
-        return String(config.wifi_power);
-    else if (cmd.startsWith("AT+WIFI_POWER="))
-    {
-        config.wifi_power = cmd.substring(14).toInt();
-        return "OK";
-    }
-
     // ---- WiFi STA 0 ----
     if (cmd == "AT+WIFI0EN?")
         return String(config.wifi_sta[0].enable ? "1" : "0");
@@ -387,456 +600,6 @@ String handleATCommand(String cmd)
         return "OK";
     }
 
-    if (cmd == "AT+WIFI_AP_CH?")
-        return String(config.wifi_ap_ch);
-    else if (cmd.startsWith("AT+WIFI_AP_CH="))
-    {
-        config.wifi_ap_ch = cmd.substring(14).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+WIFI_AP_SSID?")
-        return String(config.wifi_ap_ssid);
-    else if (cmd.startsWith("AT+WIFI_AP_SSID="))
-    {
-        cmd.remove(0, 16);
-        cmd.replace("\"", "");
-        strncpy(config.wifi_ap_ssid, cmd.c_str(), sizeof(config.wifi_ap_ssid));
-        return "OK";
-    }
-
-    if (cmd == "AT+WIFI_AP_PASS?")
-        return String(config.wifi_ap_pass);
-    else if (cmd.startsWith("AT+WIFI_AP_PASS="))
-    {
-        cmd.remove(0, 16);
-        cmd.replace("\"", "");
-        strncpy(config.wifi_ap_pass, cmd.c_str(), sizeof(config.wifi_ap_pass));
-        return "OK";
-    }
-
-    if (cmd == "AT+BT_SLAVE?")
-        return String(config.bt_slave ? "1" : "0");
-    else if (cmd == "AT+BT_SLAVE=1")
-    {
-        config.bt_slave = true;
-        return "OK";
-    }
-    else if (cmd == "AT+BT_SLAVE=0")
-    {
-        config.bt_slave = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+BT_MASTER?")
-        return String(config.bt_master ? "1" : "0");
-    else if (cmd == "AT+BT_MASTER=1")
-    {
-        config.bt_master = true;
-        return "OK";
-    }
-    else if (cmd == "AT+BT_MASTER=0")
-    {
-        config.bt_master = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+BT_MODE?")
-        return String(config.bt_mode);
-    else if (cmd.startsWith("AT+BT_MODE="))
-    {
-        config.bt_mode = cmd.substring(11).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+BT_UUID?")
-        return String(config.bt_uuid);
-    else if (cmd.startsWith("AT+BT_UUID="))
-    {
-        cmd.remove(0, 11);
-        cmd.replace("\"", "");
-        strncpy(config.bt_uuid, cmd.c_str(), sizeof(config.bt_uuid));
-        return "OK";
-    }
-
-    if (cmd == "AT+BT_UUID_RX?")
-        return String(config.bt_uuid_rx);
-    else if (cmd.startsWith("AT+BT_UUID_RX="))
-    {
-        cmd.remove(0, 14);
-        cmd.replace("\"", "");
-        strncpy(config.bt_uuid_rx, cmd.c_str(), sizeof(config.bt_uuid_rx));
-        return "OK";
-    }
-
-    if (cmd == "AT+BT_UUID_TX?")
-        return String(config.bt_uuid_tx);
-    else if (cmd.startsWith("AT+BT_UUID_TX="))
-    {
-        cmd.remove(0, 14);
-        cmd.replace("\"", "");
-        strncpy(config.bt_uuid_tx, cmd.c_str(), sizeof(config.bt_uuid_tx));
-        return "OK";
-    }
-
-    if (cmd == "AT+BT_NAME?")
-        return String(config.bt_name);
-    else if (cmd.startsWith("AT+BT_NAME="))
-    {
-        cmd.remove(0, 11);
-        cmd.replace("\"", "");
-        strncpy(config.bt_name, cmd.c_str(), sizeof(config.bt_name));
-        return "OK";
-    }
-
-    if (cmd == "AT+BT_PIN?")
-        return String(config.bt_pin);
-    else if (cmd.startsWith("AT+BT_PIN="))
-    {
-        config.bt_pin = cmd.substring(10).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+BT_POWER?")
-        return String(config.bt_power);
-    else if (cmd.startsWith("AT+BT_POWER="))
-    {
-        config.bt_power = cmd.substring(12).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+RF_EN?")
-        return String(config.rf_en ? "1" : "0");
-    else if (cmd == "AT+RF_EN=1")
-    {
-        config.rf_en = true;
-        return "OK";
-    }
-    else if (cmd == "AT+RF_EN=0")
-    {
-        config.rf_en = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+RF_TYPE?")
-        return String(config.rf_type);
-    else if (cmd.startsWith("AT+RF_TYPE="))
-    {
-        config.rf_type = cmd.substring(11).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+FREQ_RX?")
-        return String(config.freq_rx, 6);
-    else if (cmd.startsWith("AT+FREQ_RX="))
-    {
-        config.freq_rx = cmd.substring(11).toFloat();
-        return "OK";
-    }
-
-    if (cmd == "AT+FREQ_TX?")
-        return String(config.freq_tx, 6);
-    else if (cmd.startsWith("AT+FREQ_TX="))
-    {
-        config.freq_tx = cmd.substring(11).toFloat();
-        return "OK";
-    }
-
-    if (cmd == "AT+OFFSET_RX?")
-        return String(config.offset_rx);
-    else if (cmd.startsWith("AT+OFFSET_RX="))
-    {
-        config.offset_rx = cmd.substring(13).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+OFFSET_TX?")
-        return String(config.offset_tx);
-    else if (cmd.startsWith("AT+OFFSET_TX="))
-    {
-        config.offset_tx = cmd.substring(13).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TONE_RX?")
-        return String(config.tone_rx);
-    else if (cmd.startsWith("AT+TONE_RX="))
-    {
-        config.tone_rx = cmd.substring(11).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TONE_TX?")
-        return String(config.tone_tx);
-    else if (cmd.startsWith("AT+TONE_TX="))
-    {
-        config.tone_tx = cmd.substring(11).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+BAND?")
-        return String(config.band);
-    else if (cmd.startsWith("AT+BAND="))
-    {
-        config.band = cmd.substring(8).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+SQL_LEVEL?")
-        return String(config.sql_level);
-    else if (cmd.startsWith("AT+SQL_LEVEL="))
-    {
-        config.sql_level = cmd.substring(13).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+RF_POWER?")
-        return String(config.rf_power ? "1" : "0");
-    else if (cmd == "AT+RF_POWER=1")
-    {
-        config.rf_power = true;
-        return "OK";
-    }
-    else if (cmd == "AT+RF_POWER=0")
-    {
-        config.rf_power = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+VOLUME?")
-        return String(config.volume);
-    else if (cmd.startsWith("AT+VOLUME="))
-    {
-        config.volume = cmd.substring(10).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+MIC?")
-        return String(config.mic);
-    else if (cmd.startsWith("AT+MIC="))
-    {
-        config.mic = cmd.substring(7).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+IGATE_EN?")
-        return String(config.igate_en ? "1" : "0");
-    else if (cmd == "AT+IGATE_EN=1")
-    {
-        config.igate_en = true;
-        return "OK";
-    }
-    else if (cmd == "AT+IGATE_EN=0")
-    {
-        config.igate_en = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+RF2INET?")
-        return String(config.rf2inet ? "1" : "0");
-    else if (cmd == "AT+RF2INET=1")
-    {
-        config.rf2inet = true;
-        return "OK";
-    }
-    else if (cmd == "AT+RF2INET=0")
-    {
-        config.rf2inet = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+INET2RF?")
-        return String(config.inet2rf ? "1" : "0");
-    else if (cmd == "AT+INET2RF=1")
-    {
-        config.inet2rf = true;
-        return "OK";
-    }
-    else if (cmd == "AT+INET2RF=0")
-    {
-        config.inet2rf = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+IGATE_LOC2RF?")
-        return String(config.igate_loc2rf ? "1" : "0");
-    else if (cmd == "AT+IGATE_LOC2RF=1")
-    {
-        config.igate_loc2rf = true;
-        return "OK";
-    }
-    else if (cmd == "AT+IGATE_LOC2RF=0")
-    {
-        config.igate_loc2rf = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+IGATE_LOC2INET?")
-        return String(config.igate_loc2inet ? "1" : "0");
-    else if (cmd == "AT+IGATE_LOC2INET=1")
-    {
-        config.igate_loc2inet = true;
-        return "OK";
-    }
-    else if (cmd == "AT+IGATE_LOC2INET=0")
-    {
-        config.igate_loc2inet = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+RF2INETFILTER?")
-        return String(config.rf2inetFilter);
-    else if (cmd.startsWith("AT+RF2INETFILTER="))
-    {
-        config.rf2inetFilter = cmd.substring(17).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+INET2RFFILTER?")
-        return String(config.inet2rfFilter);
-    else if (cmd.startsWith("AT+INET2RFFILTER="))
-    {
-        config.inet2rfFilter = cmd.substring(17).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+APRS_SSID?")
-        return String(config.aprs_ssid);
-    else if (cmd.startsWith("AT+APRS_SSID="))
-    {
-        config.aprs_ssid = cmd.substring(13).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+APRS_PORT?")
-        return String(config.aprs_port);
-    else if (cmd.startsWith("AT+APRS_PORT="))
-    {
-        config.aprs_port = cmd.substring(13).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+APRS_MYCALL?")
-        return String(config.aprs_mycall);
-    else if (cmd.startsWith("AT+APRS_MYCALL="))
-    {
-        cmd.remove(0, 15);
-        cmd.replace("\"", "");
-        strncpy(config.aprs_mycall, cmd.c_str(), sizeof(config.aprs_mycall));
-        return "OK";
-    }
-
-    if (cmd == "AT+APRS_HOST?")
-        return String(config.aprs_host);
-    else if (cmd.startsWith("AT+APRS_HOST="))
-    {
-        cmd.remove(0, 13);
-        cmd.replace("\"", "");
-        strncpy(config.aprs_host, cmd.c_str(), sizeof(config.aprs_host));
-        return "OK";
-    }
-
-    if (cmd == "AT+APRS_PASSCODE?")
-        return String(config.aprs_passcode);
-    else if (cmd.startsWith("AT+APRS_PASSCODE="))
-    {
-        cmd.remove(0, 17);
-        cmd.replace("\"", "");
-        strncpy(config.aprs_passcode, cmd.c_str(), sizeof(config.aprs_passcode));
-        return "OK";
-    }
-
-    if (cmd == "AT+APRS_MONICALL?")
-        return String(config.aprs_moniCall);
-    else if (cmd.startsWith("AT+APRS_MONICALL="))
-    {
-        cmd.remove(0, 17);
-        cmd.replace("\"", "");
-        strncpy(config.aprs_moniCall, cmd.c_str(), sizeof(config.aprs_moniCall));
-        return "OK";
-    }
-
-    if (cmd == "AT+APRS_FILTER?")
-        return String(config.aprs_filter);
-    else if (cmd.startsWith("AT+APRS_FILTER="))
-    {
-        cmd.remove(0, 15);
-        cmd.replace("\"", "");
-        strncpy(config.aprs_filter, cmd.c_str(), sizeof(config.aprs_filter));
-        return "OK";
-    }
-
-    if (cmd == "AT+IGATE_BCN?")
-        return String(config.igate_bcn ? "1" : "0");
-    else if (cmd == "AT+IGATE_BCN=1")
-    {
-        config.igate_bcn = true;
-        return "OK";
-    }
-    else if (cmd == "AT+IGATE_BCN=0")
-    {
-        config.igate_bcn = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+IGATE_GPS?")
-        return String(config.igate_gps ? "1" : "0");
-    else if (cmd == "AT+IGATE_GPS=1")
-    {
-        config.igate_gps = true;
-        return "OK";
-    }
-    else if (cmd == "AT+IGATE_GPS=0")
-    {
-        config.igate_gps = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+IGATE_TIMESTAMP?")
-        return String(config.igate_timestamp ? "1" : "0");
-    else if (cmd == "AT+IGATE_TIMESTAMP=1")
-    {
-        config.igate_timestamp = true;
-        return "OK";
-    }
-    else if (cmd == "AT+IGATE_TIMESTAMP=0")
-    {
-        config.igate_timestamp = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+IGATE_LAT?")
-        return String(config.igate_lat, 6);
-    else if (cmd.startsWith("AT+IGATE_LAT="))
-    {
-        config.igate_lat = cmd.substring(13).toFloat();
-        return "OK";
-    }
-
-    if (cmd == "AT+IGATE_LON?")
-        return String(config.igate_lon, 6);
-    else if (cmd.startsWith("AT+IGATE_LON="))
-    {
-        config.igate_lon = cmd.substring(13).toFloat();
-        return "OK";
-    }
-
-    if (cmd == "AT+IGATE_ALT?")
-        return String(config.igate_alt, 6);
-    else if (cmd.startsWith("AT+IGATE_ALT="))
-    {
-        config.igate_alt = cmd.substring(13).toFloat();
-        return "OK";
-    }
-
-    if (cmd == "AT+IGATE_INTERVAL?")
-        return String(config.igate_interval);
-    else if (cmd.startsWith("AT+IGATE_INTERVAL="))
-    {
-        config.igate_interval = cmd.substring(18).toInt();
-        return "OK";
-    }
-
     if (cmd == "AT+IGATE_SYMBOL?")
         return String(config.igate_symbol);
     else if (cmd.startsWith("AT+IGATE_SYMBOL="))
@@ -847,227 +610,6 @@ String handleATCommand(String cmd)
         return "OK";
     }
 
-    if (cmd == "AT+IGATE_OBJECT?")
-        return String(config.igate_object);
-    else if (cmd.startsWith("AT+IGATE_OBJECT="))
-    {
-        cmd.remove(0, 16);
-        cmd.replace("\"", "");
-        strncpy(config.igate_object, cmd.c_str(), sizeof(config.igate_object));
-        return "OK";
-    }
-
-    if (cmd == "AT+IGATE_PHG?")
-        return String(config.igate_phg);
-    else if (cmd.startsWith("AT+IGATE_PHG="))
-    {
-        cmd.remove(0, 13);
-        cmd.replace("\"", "");
-        strncpy(config.igate_phg, cmd.c_str(), sizeof(config.igate_phg));
-        return "OK";
-    }
-
-    if (cmd == "AT+IGATE_PATH?")
-        return String(config.igate_path);
-    else if (cmd.startsWith("AT+IGATE_PATH="))
-    {
-        config.igate_path = cmd.substring(14).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+IGATE_COMMENT?")
-        return String(config.igate_comment);
-    else if (cmd.startsWith("AT+IGATE_COMMENT="))
-    {
-        cmd.remove(0, 17);
-        cmd.replace("\"", "");
-        strncpy(config.igate_comment, cmd.c_str(), sizeof(config.igate_comment));
-        return "OK";
-    }
-
-    if (cmd == "AT+IGATE_STS_INTERVAL?")
-        return String(config.igate_sts_interval);
-    else if (cmd.startsWith("AT+IGATE_STS_INTERVAL="))
-    {
-        config.igate_sts_interval = cmd.substring(22).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+IGATE_STATUS?")
-        return String(config.igate_status);
-    else if (cmd.startsWith("AT+IGATE_STATUS="))
-    {
-        cmd.remove(0, 16);
-        cmd.replace("\"", "");
-        strncpy(config.igate_status, cmd.c_str(), sizeof(config.igate_status));
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_EN?")
-        return String(config.digi_en ? "1" : "0");
-    else if (cmd == "AT+DIGI_EN=1")
-    {
-        config.digi_en = true;
-        return "OK";
-    }
-    else if (cmd == "AT+DIGI_EN=0")
-    {
-        config.digi_en = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_AUTO?")
-        return String(config.digi_auto ? "1" : "0");
-    else if (cmd == "AT+DIGI_AUTO=1")
-    {
-        config.digi_auto = true;
-        return "OK";
-    }
-    else if (cmd == "AT+DIGI_AUTO=0")
-    {
-        config.digi_auto = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_LOC2RF?")
-        return String(config.digi_loc2rf ? "1" : "0");
-    else if (cmd == "AT+DIGI_LOC2RF=1")
-    {
-        config.digi_loc2rf = true;
-        return "OK";
-    }
-    else if (cmd == "AT+DIGI_LOC2RF=0")
-    {
-        config.digi_loc2rf = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_LOC2INET?")
-        return String(config.digi_loc2inet ? "1" : "0");
-    else if (cmd == "AT+DIGI_LOC2INET=1")
-    {
-        config.digi_loc2inet = true;
-        return "OK";
-    }
-    else if (cmd == "AT+DIGI_LOC2INET=0")
-    {
-        config.digi_loc2inet = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_TIMESTAMP?")
-        return String(config.digi_timestamp ? "1" : "0");
-    else if (cmd == "AT+DIGI_TIMESTAMP=1")
-    {
-        config.digi_timestamp = true;
-        return "OK";
-    }
-    else if (cmd == "AT+DIGI_TIMESTAMP=0")
-    {
-        config.digi_timestamp = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_SSID?")
-        return String(config.digi_ssid);
-    else if (cmd.startsWith("AT+DIGI_SSID="))
-    {
-        config.digi_ssid = cmd.substring(13).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_MYCALL?")
-        return String(config.digi_mycall);
-    else if (cmd.startsWith("AT+DIGI_MYCALL="))
-    {
-        cmd.remove(0, 15);
-        cmd.replace("\"", "");
-        strncpy(config.digi_mycall, cmd.c_str(), sizeof(config.digi_mycall));
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_PATH?")
-        return String(config.digi_path);
-    else if (cmd.startsWith("AT+DIGI_PATH="))
-    {
-        config.digi_path = cmd.substring(13).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_DELAY?")
-        return String(config.digi_delay);
-    else if (cmd.startsWith("AT+DIGI_DELAY="))
-    {
-        config.digi_delay = cmd.substring(14).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGIFILTER?")
-        return String(config.digiFilter);
-    else if (cmd.startsWith("AT+DIGIFILTER="))
-    {
-        config.digiFilter = cmd.substring(14).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_BCN?")
-        return String(config.digi_bcn ? "1" : "0");
-    else if (cmd == "AT+DIGI_BCN=1")
-    {
-        config.digi_bcn = true;
-        return "OK";
-    }
-    else if (cmd == "AT+DIGI_BCN=0")
-    {
-        config.digi_bcn = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_GPS?")
-        return String(config.digi_gps ? "1" : "0");
-    else if (cmd == "AT+DIGI_GPS=1")
-    {
-        config.digi_gps = true;
-        return "OK";
-    }
-    else if (cmd == "AT+DIGI_GPS=0")
-    {
-        config.digi_gps = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_LAT?")
-        return String(config.digi_lat, 6);
-    else if (cmd.startsWith("AT+DIGI_LAT="))
-    {
-        config.digi_lat = cmd.substring(12).toFloat();
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_LON?")
-        return String(config.digi_lon, 6);
-    else if (cmd.startsWith("AT+DIGI_LON="))
-    {
-        config.digi_lon = cmd.substring(12).toFloat();
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_ALT?")
-        return String(config.digi_alt, 6);
-    else if (cmd.startsWith("AT+DIGI_ALT="))
-    {
-        config.digi_alt = cmd.substring(12).toFloat();
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_INTERVAL?")
-        return String(config.digi_interval);
-    else if (cmd.startsWith("AT+DIGI_INTERVAL="))
-    {
-        config.digi_interval = cmd.substring(17).toInt();
-        return "OK";
-    }
-
     if (cmd == "AT+DIGI_SYMBOL?")
         return String(config.digi_symbol);
     else if (cmd.startsWith("AT+DIGI_SYMBOL="))
@@ -1075,159 +617,6 @@ String handleATCommand(String cmd)
         cmd.remove(0, 15);
         cmd.replace("\"", "");
         strncpy(config.digi_symbol, cmd.c_str(), sizeof(config.digi_symbol));
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_PHG?")
-        return String(config.digi_phg);
-    else if (cmd.startsWith("AT+DIGI_PHG="))
-    {
-        cmd.remove(0, 12);
-        cmd.replace("\"", "");
-        strncpy(config.digi_phg, cmd.c_str(), sizeof(config.digi_phg));
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_COMMENT?")
-        return String(config.digi_comment);
-    else if (cmd.startsWith("AT+DIGI_COMMENT="))
-    {
-        cmd.remove(0, 16);
-        cmd.replace("\"", "");
-        strncpy(config.digi_comment, cmd.c_str(), sizeof(config.digi_comment));
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_STS_INTERVAL?")
-        return String(config.digi_sts_interval);
-    else if (cmd.startsWith("AT+DIGI_STS_INTERVAL="))
-    {
-        config.digi_sts_interval = cmd.substring(21).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_STATUS?")
-        return String(config.digi_status);
-    else if (cmd.startsWith("AT+DIGI_STATUS="))
-    {
-        cmd.remove(0, 15);
-        cmd.replace("\"", "");
-        strncpy(config.digi_status, cmd.c_str(), sizeof(config.digi_status));
-        return "OK";
-    }
-
-    if (cmd == "AT+TRK_EN?")
-        return String(config.trk_en ? "1" : "0");
-    else if (cmd == "AT+TRK_EN=1")
-    {
-        config.trk_en = true;
-        return "OK";
-    }
-    else if (cmd == "AT+TRK_EN=0")
-    {
-        config.trk_en = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+TRK_LOC2RF?")
-        return String(config.trk_loc2rf ? "1" : "0");
-    else if (cmd == "AT+TRK_LOC2RF=1")
-    {
-        config.trk_loc2rf = true;
-        return "OK";
-    }
-    else if (cmd == "AT+TRK_LOC2RF=0")
-    {
-        config.trk_loc2rf = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+TRK_LOC2INET?")
-        return String(config.trk_loc2inet ? "1" : "0");
-    else if (cmd == "AT+TRK_LOC2INET=1")
-    {
-        config.trk_loc2inet = true;
-        return "OK";
-    }
-    else if (cmd == "AT+TRK_LOC2INET=0")
-    {
-        config.trk_loc2inet = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+TRK_TIMESTAMP?")
-        return String(config.trk_timestamp ? "1" : "0");
-    else if (cmd == "AT+TRK_TIMESTAMP=1")
-    {
-        config.trk_timestamp = true;
-        return "OK";
-    }
-    else if (cmd == "AT+TRK_TIMESTAMP=0")
-    {
-        config.trk_timestamp = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+TRK_SSID?")
-        return String(config.trk_ssid);
-    else if (cmd.startsWith("AT+TRK_SSID="))
-    {
-        config.trk_ssid = cmd.substring(12).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TRK_MYCALL?")
-        return String(config.trk_mycall);
-    else if (cmd.startsWith("AT+TRK_MYCALL="))
-    {
-        cmd.remove(0, 14);
-        cmd.replace("\"", "");
-        strncpy(config.trk_mycall, cmd.c_str(), sizeof(config.trk_mycall));
-        return "OK";
-    }
-
-    if (cmd == "AT+TRK_PATH?")
-        return String(config.trk_path);
-    else if (cmd.startsWith("AT+TRK_PATH="))
-    {
-        config.trk_path = cmd.substring(12).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TRK_GPS?")
-        return String(config.trk_gps ? "1" : "0");
-    else if (cmd == "AT+TRK_GPS=1")
-    {
-        config.trk_gps = true;
-        return "OK";
-    }
-    else if (cmd == "AT+TRK_GPS=0")
-    {
-        config.trk_gps = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+TRK_LAT?")
-        return String(config.trk_lat, 6);
-    else if (cmd.startsWith("AT+TRK_LAT="))
-    {
-        config.trk_lat = cmd.substring(11).toFloat();
-        return "OK";
-    }
-
-    if (cmd == "AT+TRK_LON?")
-        return String(config.trk_lon, 6);
-    else if (cmd.startsWith("AT+TRK_LON="))
-    {
-        config.trk_lon = cmd.substring(11).toFloat();
-        return "OK";
-    }
-
-    if (cmd == "AT+TRK_ALT?")
-        return String(config.trk_alt, 6);
-    else if (cmd.startsWith("AT+TRK_ALT="))
-    {
-        config.trk_alt = cmd.substring(11).toFloat();
         return "OK";
     }
 
@@ -1408,16 +797,6 @@ String handleATCommand(String cmd)
         return "OK";
     }
 
-    if (cmd == "AT+TRK_COMMENT?")
-        return String(config.trk_comment);
-    else if (cmd.startsWith("AT+TRK_COMMENT="))
-    {
-        cmd.remove(0, 15);
-        cmd.replace("\"", "");
-        strncpy(config.trk_comment, cmd.c_str(), sizeof(config.trk_comment));
-        return "OK";
-    }
-
     if (cmd == "AT+TRK_ITEM?")
         return String(config.trk_item);
     else if (cmd.startsWith("AT+TRK_ITEM="))
@@ -1425,274 +804,6 @@ String handleATCommand(String cmd)
         cmd.remove(0, 12);
         cmd.replace("\"", "");
         strncpy(config.trk_item, cmd.c_str(), sizeof(config.trk_item));
-        return "OK";
-    }
-
-    if (cmd == "AT+TRK_STS_INTERVAL?")
-        return String(config.trk_sts_interval);
-    else if (cmd.startsWith("AT+TRK_STS_INTERVAL="))
-    {
-        config.trk_sts_interval = cmd.substring(20).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TRK_STATUS?")
-        return String(config.trk_status);
-    else if (cmd.startsWith("AT+TRK_STATUS="))
-    {
-        cmd.remove(0, 14);
-        cmd.replace("\"", "");
-        strncpy(config.trk_status, cmd.c_str(), sizeof(config.trk_status));
-        return "OK";
-    }
-
-    if (cmd == "AT+WX_EN?")
-        return String(config.wx_en ? "1" : "0");
-    else if (cmd == "AT+WX_EN=1")
-    {
-        config.wx_en = true;
-        return "OK";
-    }
-    else if (cmd == "AT+WX_EN=0")
-    {
-        config.wx_en = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+WX_2RF?")
-        return String(config.wx_2rf ? "1" : "0");
-    else if (cmd == "AT+WX_2RF=1")
-    {
-        config.wx_2rf = true;
-        return "OK";
-    }
-    else if (cmd == "AT+WX_2RF=0")
-    {
-        config.wx_2rf = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+WX_2INET?")
-        return String(config.wx_2inet ? "1" : "0");
-    else if (cmd == "AT+WX_2INET=1")
-    {
-        config.wx_2inet = true;
-        return "OK";
-    }
-    else if (cmd == "AT+WX_2INET=0")
-    {
-        config.wx_2inet = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+WX_TIMESTAMP?")
-        return String(config.wx_timestamp ? "1" : "0");
-    else if (cmd == "AT+WX_TIMESTAMP=1")
-    {
-        config.wx_timestamp = true;
-        return "OK";
-    }
-    else if (cmd == "AT+WX_TIMESTAMP=0")
-    {
-        config.wx_timestamp = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+WX_SSID?")
-        return String(config.wx_ssid);
-    else if (cmd.startsWith("AT+WX_SSID="))
-    {
-        config.wx_ssid = cmd.substring(11).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+WX_MYCALL?")
-        return String(config.wx_mycall);
-    else if (cmd.startsWith("AT+WX_MYCALL="))
-    {
-        cmd.remove(0, 13);
-        cmd.replace("\"", "");
-        strncpy(config.wx_mycall, cmd.c_str(), sizeof(config.wx_mycall));
-        return "OK";
-    }
-
-    if (cmd == "AT+WX_PATH?")
-        return String(config.wx_path);
-    else if (cmd.startsWith("AT+WX_PATH="))
-    {
-        config.wx_path = cmd.substring(11).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+WX_GPS?")
-        return String(config.wx_gps ? "1" : "0");
-    else if (cmd == "AT+WX_GPS=1")
-    {
-        config.wx_gps = true;
-        return "OK";
-    }
-    else if (cmd == "AT+WX_GPS=0")
-    {
-        config.wx_gps = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+WX_LAT?")
-        return String(config.wx_lat, 6);
-    else if (cmd.startsWith("AT+WX_LAT="))
-    {
-        config.wx_lat = cmd.substring(10).toFloat();
-        return "OK";
-    }
-
-    if (cmd == "AT+WX_LON?")
-        return String(config.wx_lon, 6);
-    else if (cmd.startsWith("AT+WX_LON="))
-    {
-        config.wx_lon = cmd.substring(10).toFloat();
-        return "OK";
-    }
-
-    if (cmd == "AT+WX_ALT?")
-        return String(config.wx_alt, 6);
-    else if (cmd.startsWith("AT+WX_ALT="))
-    {
-        config.wx_alt = cmd.substring(10).toFloat();
-        return "OK";
-    }
-
-    if (cmd == "AT+WX_INTERVAL?")
-        return String(config.wx_interval);
-    else if (cmd.startsWith("AT+WX_INTERVAL="))
-    {
-        config.wx_interval = cmd.substring(15).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+WX_FLAGE?")
-        return String(config.wx_flage);
-    else if (cmd.startsWith("AT+WX_FLAGE="))
-    {
-        config.wx_flage = cmd.substring(12).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+WX_OBJECT?")
-        return String(config.wx_object);
-    else if (cmd.startsWith("AT+WX_OBJECT="))
-    {
-        cmd.remove(0, 13);
-        cmd.replace("\"", "");
-        strncpy(config.wx_object, cmd.c_str(), sizeof(config.wx_object));
-        return "OK";
-    }
-
-    if (cmd == "AT+WX_COMMENT?")
-        return String(config.wx_comment);
-    else if (cmd.startsWith("AT+WX_COMMENT="))
-    {
-        cmd.remove(0, 14);
-        cmd.replace("\"", "");
-        strncpy(config.wx_comment, cmd.c_str(), sizeof(config.wx_comment));
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM0_EN?")
-        return String(config.tlm0_en ? "1" : "0");
-    else if (cmd == "AT+TLM0_EN=1")
-    {
-        config.tlm0_en = true;
-        return "OK";
-    }
-    else if (cmd == "AT+TLM0_EN=0")
-    {
-        config.tlm0_en = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM0_2RF?")
-        return String(config.tlm0_2rf ? "1" : "0");
-    else if (cmd == "AT+TLM0_2RF=1")
-    {
-        config.tlm0_2rf = true;
-        return "OK";
-    }
-    else if (cmd == "AT+TLM0_2RF=0")
-    {
-        config.tlm0_2rf = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM0_2INET?")
-        return String(config.tlm0_2inet ? "1" : "0");
-    else if (cmd == "AT+TLM0_2INET=1")
-    {
-        config.tlm0_2inet = true;
-        return "OK";
-    }
-    else if (cmd == "AT+TLM0_2INET=0")
-    {
-        config.tlm0_2inet = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM0_SSID?")
-        return String(config.tlm0_ssid);
-    else if (cmd.startsWith("AT+TLM0_SSID="))
-    {
-        config.tlm0_ssid = cmd.substring(13).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM0_MYCALL?")
-        return String(config.tlm0_mycall);
-    else if (cmd.startsWith("AT+TLM0_MYCALL="))
-    {
-        cmd.remove(0, 15);
-        cmd.replace("\"", "");
-        strncpy(config.tlm0_mycall, cmd.c_str(), sizeof(config.tlm0_mycall));
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM0_PATH?")
-        return String(config.tlm0_path);
-    else if (cmd.startsWith("AT+TLM0_PATH="))
-    {
-        config.tlm0_path = cmd.substring(13).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM0_DATA_INTERVAL?")
-        return String(config.tlm0_data_interval);
-    else if (cmd.startsWith("AT+TLM0_DATA_INTERVAL="))
-    {
-        config.tlm0_data_interval = cmd.substring(22).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM0_INFO_INTERVAL?")
-        return String(config.tlm0_info_interval);
-    else if (cmd.startsWith("AT+TLM0_INFO_INTERVAL="))
-    {
-        config.tlm0_info_interval = cmd.substring(22).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM0_BITS_ACTIVE?")
-        return String(config.tlm0_BITS_Active);
-    else if (cmd.startsWith("AT+TLM0_BITS_ACTIVE="))
-    {
-        config.tlm0_BITS_Active = cmd.substring(20).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM0_COMMENT?")
-        return String(config.tlm0_comment);
-    else if (cmd.startsWith("AT+TLM0_COMMENT="))
-    {
-        cmd.remove(0, 16);
-        cmd.replace("\"", "");
-        strncpy(config.tlm0_comment, cmd.c_str(), sizeof(config.tlm0_comment));
         return "OK";
     }
 
@@ -1704,105 +815,6 @@ String handleATCommand(String cmd)
     //     return "OK";
     // }
 
-    if (cmd == "AT+TLM1_EN?")
-        return String(config.tlm1_en ? "1" : "0");
-    else if (cmd == "AT+TLM1_EN=1")
-    {
-        config.tlm1_en = true;
-        return "OK";
-    }
-    else if (cmd == "AT+TLM1_EN=0")
-    {
-        config.tlm1_en = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM1_2RF?")
-        return String(config.tlm1_2rf ? "1" : "0");
-    else if (cmd == "AT+TLM1_2RF=1")
-    {
-        config.tlm1_2rf = true;
-        return "OK";
-    }
-    else if (cmd == "AT+TLM1_2RF=0")
-    {
-        config.tlm1_2rf = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM1_2INET?")
-        return String(config.tlm1_2inet ? "1" : "0");
-    else if (cmd == "AT+TLM1_2INET=1")
-    {
-        config.tlm1_2inet = true;
-        return "OK";
-    }
-    else if (cmd == "AT+TLM1_2INET=0")
-    {
-        config.tlm1_2inet = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM1_SSID?")
-        return String(config.tlm1_ssid);
-    else if (cmd.startsWith("AT+TLM1_SSID="))
-    {
-        config.tlm1_ssid = cmd.substring(13).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM1_MYCALL?")
-        return String(config.tlm1_mycall);
-    else if (cmd.startsWith("AT+TLM1_MYCALL="))
-    {
-        cmd.remove(0, 15);
-        cmd.replace("\"", "");
-        strncpy(config.tlm1_mycall, cmd.c_str(), sizeof(config.tlm1_mycall));
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM1_PATH?")
-        return String(config.tlm1_path);
-    else if (cmd.startsWith("AT+TLM1_PATH="))
-    {
-        config.tlm1_path = cmd.substring(13).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM1_DATA_INTERVAL?")
-        return String(config.tlm1_data_interval);
-    else if (cmd.startsWith("AT+TLM1_DATA_INTERVAL="))
-    {
-        config.tlm1_data_interval = cmd.substring(22).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM1_INFO_INTERVAL?")
-        return String(config.tlm1_info_interval);
-    else if (cmd.startsWith("AT+TLM1_INFO_INTERVAL="))
-    {
-        config.tlm1_info_interval = cmd.substring(22).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM1_BITS_ACTIVE?")
-        return String(config.tlm1_BITS_Active);
-    else if (cmd.startsWith("AT+TLM1_BITS_ACTIVE="))
-    {
-        config.tlm1_BITS_Active = cmd.substring(20).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TLM1_COMMENT?")
-        return String(config.tlm1_comment);
-    else if (cmd.startsWith("AT+TLM1_COMMENT="))
-    {
-        cmd.remove(0, 16);
-        cmd.replace("\"", "");
-        strncpy(config.tlm1_comment, cmd.c_str(), sizeof(config.tlm1_comment));
-        return "OK";
-    }
-
     // if (cmd == "AT+TML1_DATA_CHANNEL?")
     //     return String(config.tml1_data_channel);
     // else if (cmd.startsWith("AT+TML1_DATA_CHANNEL="))
@@ -1810,51 +822,6 @@ String handleATCommand(String cmd)
     //     config.tml1_data_channel = cmd.substring(21).toInt();
     //     return "OK";
     // }
-
-    if (cmd == "AT+OLED_ENABLE?")
-        return String(config.oled_enable ? "1" : "0");
-    else if (cmd == "AT+OLED_ENABLE=1")
-    {
-        config.oled_enable = true;
-        return "OK";
-    }
-    else if (cmd == "AT+OLED_ENABLE=0")
-    {
-        config.oled_enable = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+OLED_TIMEOUT?")
-        return String(config.oled_timeout);
-    else if (cmd.startsWith("AT+OLED_TIMEOUT="))
-    {
-        config.oled_timeout = cmd.substring(16).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+DIM?")
-        return String(config.dim);
-    else if (cmd.startsWith("AT+DIM="))
-    {
-        config.dim = cmd.substring(7).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+CONTRAST?")
-        return String(config.contrast);
-    else if (cmd.startsWith("AT+CONTRAST="))
-    {
-        config.contrast = cmd.substring(12).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+STARTUP?")
-        return String(config.startup);
-    else if (cmd.startsWith("AT+STARTUP="))
-    {
-        config.startup = cmd.substring(11).toInt();
-        return "OK";
-    }
 
     if (cmd == "AT+H_UP?")
         return String(config.h_up ? "1" : "0");
@@ -1895,235 +862,6 @@ String handleATCommand(String cmd)
         return "OK";
     }
 
-    if (cmd == "AT+DISPFILTER?")
-        return String(config.dispFilter);
-    else if (cmd.startsWith("AT+DISPFILTER="))
-    {
-        config.dispFilter = cmd.substring(14).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+DISPRF?")
-        return String(config.dispRF ? "1" : "0");
-    else if (cmd == "AT+DISPRF=1")
-    {
-        config.dispRF = true;
-        return "OK";
-    }
-    else if (cmd == "AT+DISPRF=0")
-    {
-        config.dispRF = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+DISPINET?")
-        return String(config.dispINET ? "1" : "0");
-    else if (cmd == "AT+DISPINET=1")
-    {
-        config.dispINET = true;
-        return "OK";
-    }
-    else if (cmd == "AT+DISPINET=0")
-    {
-        config.dispINET = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+AUDIO_HPF?")
-        return String(config.audio_hpf ? "1" : "0");
-    else if (cmd == "AT+AUDIO_HPF=1")
-    {
-        config.audio_hpf = true;
-        return "OK";
-    }
-    else if (cmd == "AT+AUDIO_HPF=0")
-    {
-        config.audio_hpf = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+AUDIO_LPF?")
-        return String(config.audio_lpf ? "1" : "0");
-    else if (cmd == "AT+AUDIO_LPF=1")
-    {
-        config.audio_lpf = true;
-        return "OK";
-    }
-    else if (cmd == "AT+AUDIO_LPF=0")
-    {
-        config.audio_lpf = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+PREAMBLE?")
-        return String(config.preamble);
-    else if (cmd.startsWith("AT+PREAMBLE="))
-    {
-        config.preamble = cmd.substring(12).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+MODEM_TYPE?")
-        return String(config.modem_type);
-    else if (cmd.startsWith("AT+MODEM_TYPE="))
-    {
-        config.modem_type = cmd.substring(14).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+FX25_MODE?")
-        return String(config.fx25_mode);
-    else if (cmd.startsWith("AT+FX25_MODE="))
-    {
-        config.fx25_mode = cmd.substring(13).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TX_TIMESLOT?")
-        return String(config.tx_timeslot);
-    else if (cmd.startsWith("AT+TX_TIMESLOT="))
-    {
-        config.tx_timeslot = cmd.substring(15).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+NTP_HOST?")
-        return String(config.ntp_host);
-    else if (cmd.startsWith("AT+NTP_HOST="))
-    {
-        cmd.remove(0, 12);
-        cmd.replace("\"", "");
-        strncpy(config.ntp_host, cmd.c_str(), sizeof(config.ntp_host));
-        return "OK";
-    }
-
-    if (cmd == "AT+VPN?")
-        return String(config.vpn ? "1" : "0");
-    else if (cmd == "AT+VPN=1")
-    {
-        config.vpn = true;
-        return "OK";
-    }
-    else if (cmd == "AT+VPN=0")
-    {
-        config.vpn = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+MODEM?")
-        return String(config.modem ? "1" : "0");
-    else if (cmd == "AT+MODEM=1")
-    {
-        config.modem = true;
-        return "OK";
-    }
-    else if (cmd == "AT+MODEM=0")
-    {
-        config.modem = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+WG_PORT?")
-        return String(config.wg_port);
-    else if (cmd.startsWith("AT+WG_PORT="))
-    {
-        config.wg_port = cmd.substring(11).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+WG_PEER_ADDRESS?")
-        return String(config.wg_peer_address);
-    else if (cmd.startsWith("AT+WG_PEER_ADDRESS="))
-    {
-        cmd.remove(0, 19);
-        cmd.replace("\"", "");
-        strncpy(config.wg_peer_address, cmd.c_str(), sizeof(config.wg_peer_address));
-        return "OK";
-    }
-
-    if (cmd == "AT+WG_LOCAL_ADDRESS?")
-        return String(config.wg_local_address);
-    else if (cmd.startsWith("AT+WG_LOCAL_ADDRESS="))
-    {
-        cmd.remove(0, 20);
-        cmd.replace("\"", "");
-        strncpy(config.wg_local_address, cmd.c_str(), sizeof(config.wg_local_address));
-        return "OK";
-    }
-
-    if (cmd == "AT+WG_NETMASK_ADDRESS?")
-        return String(config.wg_netmask_address);
-    else if (cmd.startsWith("AT+WG_NETMASK_ADDRESS="))
-    {
-        cmd.remove(0, 22);
-        cmd.replace("\"", "");
-        strncpy(config.wg_netmask_address, cmd.c_str(), sizeof(config.wg_netmask_address));
-        return "OK";
-    }
-
-    if (cmd == "AT+WG_GW_ADDRESS?")
-        return String(config.wg_gw_address);
-    else if (cmd.startsWith("AT+WG_GW_ADDRESS="))
-    {
-        cmd.remove(0, 17);
-        cmd.replace("\"", "");
-        strncpy(config.wg_gw_address, cmd.c_str(), sizeof(config.wg_gw_address));
-        return "OK";
-    }
-
-    if (cmd == "AT+WG_PUBLIC_KEY?")
-        return String(config.wg_public_key);
-    else if (cmd.startsWith("AT+WG_PUBLIC_KEY="))
-    {
-        cmd.remove(0, 17);
-        cmd.replace("\"", "");
-        strncpy(config.wg_public_key, cmd.c_str(), sizeof(config.wg_public_key));
-        return "OK";
-    }
-
-    if (cmd == "AT+WG_PRIVATE_KEY?")
-        return String(config.wg_private_key);
-    else if (cmd.startsWith("AT+WG_PRIVATE_KEY="))
-    {
-        cmd.remove(0, 18);
-        cmd.replace("\"", "");
-        strncpy(config.wg_private_key, cmd.c_str(), sizeof(config.wg_private_key));
-        return "OK";
-    }
-
-    if (cmd == "AT+HTTP_USERNAME?")
-        return String(config.http_username);
-    else if (cmd.startsWith("AT+HTTP_USERNAME="))
-    {
-        cmd.remove(0, 17);
-        cmd.replace("\"", "");
-        strncpy(config.http_username, cmd.c_str(), sizeof(config.http_username));
-        return "OK";
-    }
-
-    if (cmd == "AT+HTTP_PASSWORD?")
-        return String(config.http_password);
-    else if (cmd.startsWith("AT+HTTP_PASSWORD="))
-    {
-        cmd.remove(0, 17);
-        cmd.replace("\"", "");
-        strncpy(config.http_password, cmd.c_str(), sizeof(config.http_password));
-        return "OK";
-    }
-
-    if (cmd == "AT+GNSS_ENABLE?")
-        return String(config.gnss_enable ? "1" : "0");
-    else if (cmd == "AT+GNSS_ENABLE=1")
-    {
-        config.gnss_enable = true;
-        return "OK";
-    }
-    else if (cmd == "AT+GNSS_ENABLE=0")
-    {
-        config.gnss_enable = false;
-        return "OK";
-    }
-
     if (cmd == "AT+GNSS_PPS_GPIO?")
         return String(config.gnss_pps_gpio);
     else if (cmd.startsWith("AT+GNSS_PPS_GPIO="))
@@ -2137,34 +875,6 @@ String handleATCommand(String cmd)
     else if (cmd.startsWith("AT+GNSS_CHANNEL="))
     {
         config.gnss_channel = cmd.substring(16).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+GNSS_TCP_PORT?")
-        return String(config.gnss_tcp_port);
-    else if (cmd.startsWith("AT+GNSS_TCP_PORT="))
-    {
-        config.gnss_tcp_port = cmd.substring(17).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+GNSS_TCP_HOST?")
-        return String(config.gnss_tcp_host);
-    else if (cmd.startsWith("AT+GNSS_TCP_HOST="))
-    {
-        cmd.remove(0, 17);
-        cmd.replace("\"", "");
-        strncpy(config.gnss_tcp_host, cmd.c_str(), sizeof(config.gnss_tcp_host));
-        return "OK";
-    }
-
-    if (cmd == "AT+GNSS_AT_COMMAND?")
-        return String(config.gnss_at_command);
-    else if (cmd.startsWith("AT+GNSS_AT_COMMAND="))
-    {
-        cmd.remove(0, 19);
-        cmd.replace("\"", "");
-        strncpy(config.gnss_at_command, cmd.c_str(), sizeof(config.gnss_at_command));
         return "OK";
     }
 
@@ -2308,27 +1018,6 @@ String handleATCommand(String cmd)
         return "OK";
     }
 
-    if (cmd == "AT+ADC_DC_OFFSET?")
-        return String(config.adc_dc_offset);
-    else if (cmd.startsWith("AT+ADC_DC_OFFSET="))
-    {
-        config.adc_dc_offset = cmd.substring(17).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+I2C_ENABLE?")
-        return String(config.i2c_enable ? "1" : "0");
-    else if (cmd == "AT+I2C_ENABLE=1")
-    {
-        config.i2c_enable = true;
-        return "OK";
-    }
-    else if (cmd == "AT+I2C_ENABLE=0")
-    {
-        config.i2c_enable = false;
-        return "OK";
-    }
-
     if (cmd == "AT+I2C_SDA_PIN?")
         return String(config.i2c_sda_pin);
     else if (cmd.startsWith("AT+I2C_SDA_PIN="))
@@ -2358,19 +1047,6 @@ String handleATCommand(String cmd)
     else if (cmd.startsWith("AT+I2C_FREQ="))
     {
         config.i2c_freq = cmd.substring(12).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+I2C1_ENABLE?")
-        return String(config.i2c1_enable ? "1" : "0");
-    else if (cmd == "AT+I2C1_ENABLE=1")
-    {
-        config.i2c1_enable = true;
-        return "OK";
-    }
-    else if (cmd == "AT+I2C1_ENABLE=0")
-    {
-        config.i2c1_enable = false;
         return "OK";
     }
 
@@ -2640,27 +1316,6 @@ String handleATCommand(String cmd)
         return "OK";
     }
 
-    if (cmd == "AT+DISP_FLIP?")
-        return String(config.disp_flip ? "1" : "0");
-    else if (cmd == "AT+DISP_FLIP=1")
-    {
-        config.disp_flip = true;
-        return "OK";
-    }
-    else if (cmd == "AT+DISP_FLIP=0")
-    {
-        config.disp_flip = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+DISP_BRIGHTNESS?")
-        return String(config.disp_brightness);
-    else if (cmd.startsWith("AT+DISP_BRIGHTNESS="))
-    {
-        config.disp_brightness = cmd.substring(19).toInt();
-        return "OK";
-    }
-
     if (cmd == "AT+LOG?")
         return String(config.log);
     else if (cmd.startsWith("AT+LOG="))
@@ -2827,26 +1482,6 @@ String handleATCommand(String cmd)
         return "OK";
     }
 
-    if (cmd == "AT+PPP_APN?")
-        return String(config.ppp_apn);
-    else if (cmd.startsWith("AT+PPP_APN="))
-    {
-        cmd.remove(0, 11);
-        cmd.replace("\"", "");
-        strncpy(config.ppp_apn, cmd.c_str(), sizeof(config.ppp_apn));
-        return "OK";
-    }
-
-    if (cmd == "AT+PPP_PIN?")
-        return String(config.ppp_pin);
-    else if (cmd.startsWith("AT+PPP_PIN="))
-    {
-        cmd.remove(0, 11);
-        cmd.replace("\"", "");
-        strncpy(config.ppp_pin, cmd.c_str(), sizeof(config.ppp_pin));
-        return "OK";
-    }
-
     if (cmd == "AT+PPP_RST_GPIO?")
         return String(config.ppp_rst_gpio);
     else if (cmd.startsWith("AT+PPP_RST_GPIO="))
@@ -2983,247 +1618,6 @@ String handleATCommand(String cmd)
     }
 
 #ifdef MQTT
-    if (cmd == "AT+EN_MQTT?")
-        return String(config.en_mqtt ? "1" : "0");
-    else if (cmd == "AT+EN_MQTT=1")
-    {
-        config.en_mqtt = true;
-        return "OK";
-    }
-    else if (cmd == "AT+EN_MQTT=0")
-    {
-        config.en_mqtt = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+MQTT_HOST?")
-        return String(config.mqtt_host);
-    else if (cmd.startsWith("AT+MQTT_HOST="))
-    {
-        cmd.remove(0, 13);
-        cmd.replace("\"", "");
-        strncpy(config.mqtt_host, cmd.c_str(), sizeof(config.mqtt_host));
-        return "OK";
-    }
-
-    if (cmd == "AT+MQTT_TOPIC?")
-        return String(config.mqtt_topic);
-    else if (cmd.startsWith("AT+MQTT_TOPIC="))
-    {
-        cmd.remove(0, 14);
-        cmd.replace("\"", "");
-        strncpy(config.mqtt_topic, cmd.c_str(), sizeof(config.mqtt_topic));
-        return "OK";
-    }
-
-    if (cmd == "AT+MQTT_SUBSCRIBE?")
-        return String(config.mqtt_subscribe);
-    else if (cmd.startsWith("AT+MQTT_SUBSCRIBE="))
-    {
-        cmd.remove(0, 18);
-        cmd.replace("\"", "");
-        strncpy(config.mqtt_subscribe, cmd.c_str(), sizeof(config.mqtt_subscribe));
-        return "OK";
-    }
-
-    if (cmd == "AT+MQTT_USER?")
-        return String(config.mqtt_user);
-    else if (cmd.startsWith("AT+MQTT_USER="))
-    {
-        cmd.remove(0, 13);
-        cmd.replace("\"", "");
-        strncpy(config.mqtt_user, cmd.c_str(), sizeof(config.mqtt_user));
-        return "OK";
-    }
-
-    if (cmd == "AT+MQTT_PASS?")
-        return String(config.mqtt_pass);
-    else if (cmd.startsWith("AT+MQTT_PASS="))
-    {
-        cmd.remove(0, 13);
-        cmd.replace("\"", "");
-        strncpy(config.mqtt_pass, cmd.c_str(), sizeof(config.mqtt_pass));
-        return "OK";
-    }
-
-    if (cmd == "AT+MQTT_PORT?")
-        return String(config.mqtt_port);
-    else if (cmd.startsWith("AT+MQTT_PORT="))
-    {
-        config.mqtt_port = cmd.substring(13).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+MQTT_TOPIC_FLAG?")
-        return String(config.mqtt_topic_flag);
-    else if (cmd.startsWith("AT+MQTT_TOPIC_FLAG="))
-    {
-        config.mqtt_topic_flag = cmd.substring(19).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+MQTT_SUBSCRIBE_FLAG?")
-        return String(config.mqtt_subscribe_flag);
-    else if (cmd.startsWith("AT+MQTT_SUBSCRIBE_FLAG="))
-    {
-        config.mqtt_subscribe_flag = cmd.substring(23).toInt();
-        return "OK";
-    }
-
 #endif
-    if (cmd == "AT+TRK_MICE_TYPE?")
-        return String(config.trk_mice_type);
-    else if (cmd.startsWith("AT+TRK_MICE_TYPE="))
-    {
-        config.trk_mice_type = cmd.substring(17).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+TRK_TLM_INTERVAL?")
-        return String(config.trk_tlm_interval);
-    else if (cmd.startsWith("AT+TRK_TLM_INTERVAL="))
-    {
-        config.trk_tlm_interval = cmd.substring(20).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+DIGI_TLM_INTERVAL?")
-        return String(config.digi_tlm_interval);
-    else if (cmd.startsWith("AT+DIGI_TLM_INTERVAL="))
-    {
-        config.digi_tlm_interval = cmd.substring(21).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+IGATE_TLM_INTERVAL?")
-        return String(config.igate_tlm_interval);
-    else if (cmd.startsWith("AT+IGATE_TLM_INTERVAL="))
-    {
-        config.igate_tlm_interval = cmd.substring(22).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+WX_TLM_INTERVAL?")
-        return String(config.wx_tlm_interval);
-    else if (cmd.startsWith("AT+WX_TLM_INTERVAL="))
-    {
-        config.wx_tlm_interval = cmd.substring(19).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+HOST_NAME?")
-        return String(config.host_name);
-    else if (cmd.startsWith("AT+HOST_NAME="))
-    {
-        cmd.remove(0, 13);
-        cmd.replace("\"", "");
-        strncpy(config.host_name, cmd.c_str(), sizeof(config.host_name));
-        return "OK";
-    }
-
-    if (cmd == "AT+RESET_TIMEOUT?")
-        return String(config.reset_timeout);
-    else if (cmd.startsWith("AT+RESET_TIMEOUT="))
-    {
-        config.reset_timeout = cmd.substring(17).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+MSG_ENABLE?")
-        return String(config.msg_enable ? "1" : "0");
-    else if (cmd == "AT+MSG_ENABLE=1")
-    {
-        config.msg_enable = true;
-        return "OK";
-    }
-    else if (cmd == "AT+MSG_ENABLE=0")
-    {
-        config.msg_enable = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+MSG_MYCALL?")
-        return String(config.msg_mycall);
-    else if (cmd.startsWith("AT+MSG_MYCALL="))
-    {
-        cmd.remove(0, 14);
-        cmd.replace("\"", "");
-        strncpy(config.msg_mycall, cmd.c_str(), sizeof(config.msg_mycall));
-        return "OK";
-    }
-
-    if (cmd == "AT+MSG_PATH?")
-        return String(config.msg_path);
-    else if (cmd.startsWith("AT+MSG_PATH="))
-    {
-        config.msg_path = cmd.substring(12).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+MSG_RF?")
-        return String(config.msg_rf ? "1" : "0");
-    else if (cmd == "AT+MSG_RF=1")
-    {
-        config.msg_rf = true;
-        return "OK";
-    }
-    else if (cmd == "AT+MSG_RF=0")
-    {
-        config.msg_rf = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+MSG_INET?")
-        return String(config.msg_inet ? "1" : "0");
-    else if (cmd == "AT+MSG_INET=1")
-    {
-        config.msg_inet = true;
-        return "OK";
-    }
-    else if (cmd == "AT+MSG_INET=0")
-    {
-        config.msg_inet = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+MSG_ENCRYPT?")
-        return String(config.msg_encrypt ? "1" : "0");
-    else if (cmd == "AT+MSG_ENCRYPT=1")
-    {
-        config.msg_encrypt = true;
-        return "OK";
-    }
-    else if (cmd == "AT+MSG_ENCRYPT=0")
-    {
-        config.msg_encrypt = false;
-        return "OK";
-    }
-
-    if (cmd == "AT+MSG_KEY?")
-        return String(config.msg_key);
-    else if (cmd.startsWith("AT+MSG_KEY="))
-    {
-        cmd.remove(0, 11);
-        cmd.replace("\"", "");
-        strncpy(config.msg_key, cmd.c_str(), sizeof(config.msg_key));
-        return "OK";
-    }
-
-    if (cmd == "AT+MSG_RETRY?")
-        return String(config.msg_retry);
-    else if (cmd.startsWith("AT+MSG_RETRY="))
-    {
-        config.msg_retry = cmd.substring(13).toInt();
-        return "OK";
-    }
-
-    if (cmd == "AT+MSG_INTERVAL?")
-        return String(config.msg_interval);
-    else if (cmd.startsWith("AT+MSG_INTERVAL="))
-    {
-        config.msg_interval = cmd.substring(16).toInt();
-        return "OK";
-    }
-
     return "ERR";
 }

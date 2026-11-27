@@ -85,6 +85,30 @@ namespace
 		return v.as<String>();
 	}
 
+	// 2.1.9: the engine works directly on the template text (const char*) and writes every part of
+	// the page into ONE output String. Before, a page template kept in flash was first copied into a
+	// String (a 14 KB copy for System) and every {{#if}}/{{#each}} block was built in its own String and
+	// then appended: with a fragmented heap one of those allocations could fail and that part of the
+	// page silently disappeared (seen: "Display Setting" missing from the System page). Same output.
+
+	// position of pat in tpl[from, to) or -1
+	int findIn(const char *tpl, int from, int to, const char *pat)
+	{
+		size_t pl = strlen(pat);
+		for (int k = from; k + (int)pl <= to; k++)
+			if (tpl[k] == pat[0] && memcmp(tpl + k, pat, pl) == 0)
+				return k;
+		return -1;
+	}
+
+	String tagText(const char *tpl, int a, int b)
+	{
+		String t;
+		t.concat(tpl + a, (unsigned int)(b - a));
+		t.trim();
+		return t;
+	}
+
 	// Varre a partir de "from" (logo depois do "}}" da tag de abertura) e acha
 	// a extensao do bloco: onde o corpo termina (antes do {{/if}} ou
 	// {{/each}} correspondente, respeitando blocos aninhados), onde comeca e
@@ -92,7 +116,7 @@ namespace
 	// continua depois da tag de fechamento. Se o template estiver malformado
 	// (tag sem fechamento em algum lugar), degrada fechando o bloco no fim
 	// do texto disponivel em vez de travar.
-	void findBlockExtent(const String &tpl, int from, int to,
+	void findBlockExtent(const char *tpl, int len, int from, int to,
 						  int &blockBodyEnd, int &elseTagStart, int &elseTagEnd, int &afterCloseTag)
 	{
 		elseTagStart = -1;
@@ -101,15 +125,14 @@ namespace
 		int i = from;
 		while (i < to)
 		{
-			int tagStart = tpl.indexOf("{{", i);
+			int tagStart = findIn(tpl, i, len, "{{");
 			if (tagStart == -1 || tagStart >= to)
 				break;
-			int tagEnd = tpl.indexOf("}}", tagStart + 2);
+			int tagEnd = findIn(tpl, tagStart + 2, len, "}}");
 			if (tagEnd == -1 || tagEnd >= to)
 				break;
 
-			String tagContent = tpl.substring(tagStart + 2, tagEnd);
-			tagContent.trim();
+			String tagContent = tagText(tpl, tagStart + 2, tagEnd);
 
 			if (tagContent.startsWith("#if ") || tagContent.startsWith("#each "))
 			{
@@ -138,32 +161,29 @@ namespace
 		afterCloseTag = to;
 	}
 
-	String renderBlock(const String &tpl, int from, int to, std::vector<JsonVariant> &scopes)
+	void renderBlock(String &out, const char *tpl, int len, int from, int to, std::vector<JsonVariant> &scopes)
 	{
-		String out;
-		out.reserve(to - from);
 		int i = from;
 		while (i < to)
 		{
-			int tagStart = tpl.indexOf("{{", i);
+			int tagStart = findIn(tpl, i, len, "{{");
 			if (tagStart == -1 || tagStart >= to)
 			{
-				out.concat(tpl.c_str() + (i), (unsigned int)((to) - (i))); // 2.1.8: no temporary String (a big substring could fail to allocate and silently drop that part of the page)
+				out.concat(tpl + i, (unsigned int)(to - i));
 				break;
 			}
-			out.concat(tpl.c_str() + (i), (unsigned int)((tagStart) - (i))); // 2.1.8: no temporary String (a big substring could fail to allocate and silently drop that part of the page)
+			out.concat(tpl + i, (unsigned int)(tagStart - i));
 
-			int tagEnd = tpl.indexOf("}}", tagStart + 2);
+			int tagEnd = findIn(tpl, tagStart + 2, len, "}}");
 			if (tagEnd == -1 || tagEnd >= to)
 			{
 				// tag sem fechamento - emite o resto literal e para, em vez
 				// de travar.
-				out.concat(tpl.c_str() + (tagStart), (unsigned int)((to) - (tagStart))); // 2.1.8: no temporary String (a big substring could fail to allocate and silently drop that part of the page)
+				out.concat(tpl + tagStart, (unsigned int)(to - tagStart));
 				break;
 			}
 
-			String tagContent = tpl.substring(tagStart + 2, tagEnd);
-			tagContent.trim();
+			String tagContent = tagText(tpl, tagStart + 2, tagEnd);
 
 			if (tagContent.startsWith("#if "))
 			{
@@ -171,17 +191,17 @@ namespace
 				cond.trim();
 
 				int blockBodyEnd, elseTagStart, elseTagEnd, afterCloseTag;
-				findBlockExtent(tpl, tagEnd + 2, to, blockBodyEnd, elseTagStart, elseTagEnd, afterCloseTag);
+				findBlockExtent(tpl, len, tagEnd + 2, to, blockBodyEnd, elseTagStart, elseTagEnd, afterCloseTag);
 
 				bool truthy = isTruthy(resolvePath(cond, scopes));
 				if (truthy)
 				{
 					int thenEnd = (elseTagStart != -1) ? elseTagStart : blockBodyEnd;
-					out += renderBlock(tpl, tagEnd + 2, thenEnd, scopes);
+					renderBlock(out, tpl, len, tagEnd + 2, thenEnd, scopes);
 				}
 				else if (elseTagStart != -1)
 				{
-					out += renderBlock(tpl, elseTagEnd, blockBodyEnd, scopes);
+					renderBlock(out, tpl, len, elseTagEnd, blockBodyEnd, scopes);
 				}
 				i = afterCloseTag;
 			}
@@ -191,7 +211,7 @@ namespace
 				arrPath.trim();
 
 				int blockBodyEnd, elseTagStart, elseTagEnd, afterCloseTag;
-				findBlockExtent(tpl, tagEnd + 2, to, blockBodyEnd, elseTagStart, elseTagEnd, afterCloseTag);
+				findBlockExtent(tpl, len, tagEnd + 2, to, blockBodyEnd, elseTagStart, elseTagEnd, afterCloseTag);
 
 				JsonVariant arr = resolvePath(arrPath, scopes);
 				int bodyEnd = (elseTagStart != -1) ? elseTagStart : blockBodyEnd;
@@ -200,13 +220,13 @@ namespace
 					for (JsonVariant item : arr.as<JsonArray>())
 					{
 						scopes.push_back(item);
-						out += renderBlock(tpl, tagEnd + 2, bodyEnd, scopes);
+						renderBlock(out, tpl, len, tagEnd + 2, bodyEnd, scopes);
 						scopes.pop_back();
 					}
 				}
 				else if (elseTagStart != -1)
 				{
-					out += renderBlock(tpl, elseTagEnd, blockBodyEnd, scopes);
+					renderBlock(out, tpl, len, elseTagEnd, blockBodyEnd, scopes);
 				}
 				i = afterCloseTag;
 			}
@@ -222,13 +242,21 @@ namespace
 				i = tagEnd + 2;
 			}
 		}
-		return out;
 	}
 } // namespace
 
-String renderTemplate(const String &tpl, JsonVariant data)
+String renderTemplate(const char *tpl, JsonVariant data)
 {
 	std::vector<JsonVariant> scopes;
 	scopes.push_back(data);
-	return renderBlock(tpl, 0, tpl.length(), scopes);
+	int len = (int)strlen(tpl);
+	String out;
+	out.reserve(len + len / 4); // the page is about the template size plus the values
+	renderBlock(out, tpl, len, 0, len, scopes);
+	return out;
+}
+
+String renderTemplate(const String &tpl, JsonVariant data)
+{
+	return renderTemplate(tpl.c_str(), data);
 }

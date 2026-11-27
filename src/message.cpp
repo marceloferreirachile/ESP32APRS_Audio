@@ -1,7 +1,7 @@
 
 
+#include <Preferences.h> // LU6JMF 2.1.9: SOS contact
 #include <Arduino.h>
-#include <handleATCommand.h>
 #include "message.h"
 #include <parse_aprs.h>
 #include "webservice.h"
@@ -133,6 +133,48 @@ extern pkgListType *pkgList;
 extern WiFiClient aprsClient;
 extern volatile bool lu6jmfQueryBeacon;
 extern bool sendAPRSObject(uint8_t idx, const char *name, double lat, double lon, const char *symbol, const String &comment);
+
+// LU6JMF 2.1.9 (as AR-LORA 1.4.1): SOS by APRS message, for a tracker that is out of reach (hidden in a car, a box...).
+// Text "SOS" (or "SOS ON") activates, "SOS OFF" / "SOS CANCEL" cancels. Accepted only from the
+// owner's callsign (same base call as the station, any SSID) or from the SOS contact.
+extern bool lu6SosActive;
+extern bool lu6SosSet(bool on);
+static String lu6BaseCall(String c)
+{
+    c.trim();
+    c.toUpperCase();
+    int d = c.indexOf('-');
+    return d > 0 ? c.substring(0, d) : c;
+}
+String lu6SosCommand(const String &fromCall, const String &textIn)
+{
+    String t = textIn;
+    t.trim();
+    t.toUpperCase();
+    bool on = (t == "SOS" || t == "SOS ON");
+    bool off = (t == "SOS OFF" || t == "SOS CANCEL");
+    if (!on && !off)
+        return "";
+    String from = lu6BaseCall(fromCall);
+    String contact = "";
+    {
+        Preferences p;
+        if (p.begin("lu6sos", true))
+        {
+            contact = p.getString("to", "");
+            p.end();
+        }
+    }
+    bool allowed = from.length() > 0 &&
+                   (from == lu6BaseCall(String(config.msg_mycall)) || from == lu6BaseCall(String(config.trk_mycall)) ||
+                    from == lu6BaseCall(String(config.aprs_mycall)) || (contact.length() && from == lu6BaseCall(contact)));
+    if (!allowed)
+        return "SOS: not allowed from this callsign";
+    if (on)
+        return lu6SosSet(true) ? "SOS ACTIVE - emergency beacon every 1 min" : "SOS: enable the Tracker first";
+    lu6SosSet(false);
+    return "SOS cancelled - all OK";
+}
 
 String handleAPRSQuery(const String &queryTextIn, const String &tnc2Line)
 {
@@ -1045,19 +1087,15 @@ void handleIncomingAPRS(const String &line)
                     sendAPRSAck(fromCall, msgNo);
                     // LU6JMF - Marcelo Ferreira: APRS Query feature (?APRSV/?IGATE/?DX),
                     // checked before AT-commands since queries always start with '?'.
-                    String queryResponse = handleAPRSQuery(decrypted, line);
+                    String queryResponse = lu6SosCommand(fromCall, decrypted); // LU6JMF 2.1.9
+                    if (queryResponse == "")
+                        queryResponse = handleAPRSQuery(decrypted, line);
                     if (queryResponse != "")
                     {
                         // 2.1.5: query replies now use the normal retry policy (msg_retry /
                         // msg_interval) so a reply lost after the ACK is re-sent until the
                         // asker ACKs it. Before 2.1.4 it was noRetry=true (sent once only).
                         lu6jmfQueryReply(fromCall, queryResponse);
-                    }
-                    else if (config.at_cmd_msg)
-                    {
-                        String response = handleATCommand(decrypted);
-                        if (response != "")
-                            sendAPRSMessage(fromCall, response, config.msg_encrypt);
                     }
                 }
                 event_chatMessage(false);
@@ -1072,7 +1110,9 @@ void handleIncomingAPRS(const String &line)
                      !isAck && !config.msg_encrypt && message.length() > 0)
             {
                 pkgMsgUpdate(fromCall.c_str(), message.c_str(), 0, -1, true); // RX Message, no number
-                String queryResponse = handleAPRSQuery(message, line);
+                String queryResponse = lu6SosCommand(fromCall, message); // LU6JMF 2.1.9
+                if (queryResponse == "")
+                    queryResponse = handleAPRSQuery(message, line);
                 if (queryResponse != "")
                     lu6jmfQueryReply(fromCall, queryResponse);
                 event_chatMessage(false);

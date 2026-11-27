@@ -47,13 +47,13 @@
 #include <WiFiUdp.h>
 
 #include <WiFiClientSecure.h>
+#include <Preferences.h> // LU6JMF 2.1.9: SOS state survives a restart
 
 #include <SoftwareSerial.h>
 // SoftwareSerial ss(-1, -1);
 
 #include <ModbusMaster.h>
 
-#include "handleATCommand.h"
 
 #include "sensor.h"
 
@@ -136,7 +136,17 @@ TwoWire Wire1 = TwoWire(1);
 #endif
 
 // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
-#ifdef SH1106
+#ifdef LU6_OLED
+#if defined(CONFIG_IDF_TARGET_ESP32)
+#undef BOOT_PIN
+#define BOOT_PIN 0 // classic ESP32: the BOOT button is GPIO0
+#endif
+// LU6JMF 2.1.9: one driver for the 0.96" (SSD1306) and 1.3" (SH1106) screens, type chosen in the config
+#include "lu6_oled.h"
+#define OLED_RESET -1
+#define SCREEN_ADDRESS 0x3C
+Lu6Oled display;
+#elif defined(SH1106)
 #include <Adafruit_SH1106.h>
 #define OLED_RESET -1
 #define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
@@ -730,6 +740,77 @@ number of pulses, and pulses per revolution */
 // }
 
 char EVENT_TX_POSITION = 0;
+// LU6JMF 2.1.9 (same as AR-LORA 1.4.1): SOS / emergency for the tracker. APRS convention:
+//  - Mic-E status "Emergency" (all three message bits 0), the official emergency symbol \!
+//    and "EMERGENCY - SOS" in the comment; repeated every minute on RF and APRS-IS while active;
+//  - optional APRS message to a trusted callsign (TRACKER page, "SOS message to");
+//  - cancel: one normal beacon with "SOS cancelled" + message to the same callsign.
+// Activated from the DashBoard button or by APRS message (SOS / SOS OFF) from the station's own
+// callsign (any SSID) or the SOS contact. Kept in NVS so an emergency continues after a restart.
+bool lu6SosActive = false;
+volatile bool lu6SosCancelBcn = false;
+volatile uint8_t lu6SosEvent = 0; // 1 = just activated, 2 = just cancelled (handled in taskAPRS)
+static uint32_t lu6SosNextMs = 0;
+#define LU6_SOS_INTERVAL_MS 60000UL
+static void lu6SosSave(bool on)
+{
+    Preferences p;
+    if (p.begin("lu6sos", false))
+    {
+        p.putBool("on", on);
+        p.end();
+    }
+}
+static void lu6SosLoad()
+{
+    Preferences p;
+    if (p.begin("lu6sos", true))
+    {
+        lu6SosActive = p.getBool("on", false);
+        p.end();
+    }
+    if (lu6SosActive)
+        lu6SosEvent = 1; // still in emergency after the restart: beacon again right away
+}
+static String lu6SosTo()
+{
+    String to = "";
+    Preferences p;
+    if (p.begin("lu6sos", true))
+    {
+        to = p.getString("to", "");
+        p.end();
+    }
+    to.trim();
+    return to;
+}
+// activate / cancel from anywhere (web page, APRS message); false when the Tracker is disabled
+bool lu6SosSet(bool on)
+{
+    if (on && !config.trk_en)
+        return false;
+    if (on == lu6SosActive)
+        return true;
+    lu6SosActive = on;
+    lu6SosSave(on);
+    if (!on)
+        lu6SosCancelBcn = true;
+    lu6SosEvent = on ? 1 : 2;
+    Serial.printf("[SOS] %s\n", on ? "ACTIVATED" : "cancelled");
+    return true;
+}
+// comment of the tracker beacon while SOS is active / right after cancelling it
+static String lu6SosComment(const String &normal)
+{
+    if (lu6SosActive)
+        return String("EMERGENCY - SOS");
+    if (lu6SosCancelBcn)
+    {
+        lu6SosCancelBcn = false;
+        return String("SOS cancelled - all OK");
+    }
+    return normal;
+}
 unsigned char SB_SPEED = 0, SB_SPEED_OLD = 0;
 int16_t SB_HEADING = 0;
 uint16_t tx_interval = 0, igate_tx_interval, digi_tx_interval; // How often we transmit, in seconds
@@ -1930,6 +2011,9 @@ config.oled_enable = true;
     // Display
     config.disp_brightness = 250;
     config.disp_flip = false;
+    config.disp_type = 0; // 2.1.9: screen type automatic
+    config.disp_rotate = 10; // 2.1.9: screens change by themselves every 10 s
+    config.disp_btn = 0;     // 2.1.9: menu button on GPIO0 (BOOT)
     config.dispDelay = 3; // Popup display 3 sec
     config.dispRF = true;
     config.dispINET = false;
@@ -4691,6 +4775,7 @@ void setup()
         if (!loadConfiguration("/default.cfg", config))
             defaultConfig();
     }
+    lu6SosLoad(); // LU6JMF 2.1.9
 
     // 2.1.6: leftovers of HS5TQA's VPN on a board where the VPN is OFF -> switch the page to our
     // server and clear the old keys/addresses, so "New Register" starts clean. A board that has
@@ -4738,13 +4823,40 @@ void setup()
     }
 
 #ifdef OLED
+#ifdef LU6_OLED
+    // 2.1.9: the single ESP32 firmware looks for a screen at every start-up. The FIRST time a screen is
+    // found on this board it is switched on by itself (a board that ran without a screen had the display
+    // off in its configuration); after that the "OLED/TFT Enable" setting is respected.
+    display.setType(config.disp_type);
+    display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS, OLED_RESET > -1, false); // no screen: it sends nothing
+    display.setRotation(config.disp_flip ? 2 : 0); // 2.1.9: "Flip Rotate" turns the picture 180 degrees
+    if (config.disp_btn > 0 && config.disp_btn < 40)
+        pinMode(config.disp_btn, INPUT_PULLUP); // 2.1.9: menu button on another pin
+    if (display.present())
+    {
+        Preferences pOled;
+        pOled.begin("lu6oled", false);
+        if (!pOled.getBool("seen", false))
+        {
+            pOled.putBool("seen", true);
+            if (!config.oled_enable)
+            {
+                config.oled_enable = true;
+                saveConfiguration("/default.cfg", config);
+            }
+        }
+        pOled.end();
+    }
+#endif
     if (config.oled_enable)
     {
         i2c_busy = true;
         //Wire.begin(config.i2c_sda_pin, config.i2c_sck_pin, config.i2c_freq);
 // by default, we'll generate the high voltage from the 3.3v line internally! (neat!)
 // display.begin(SSD1306_SWITCHCAPVCC, 0x3C, false); // initialize with the I2C addr 0x3C (for the 128x64)
-#ifdef SH1106
+#ifdef LU6_OLED
+        // screen already started above
+#elif defined(SH1106)
         display.begin(SH1106_SWITCHCAPVCC, SCREEN_ADDRESS, OLED_RESET > -1);
 #else
         display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS, OLED_RESET > -1, false);
@@ -4756,8 +4868,9 @@ void setup()
 
         display.setTextSize(1);
         display.setFont(&FreeSansBold9pt7b);
+        // 2.1.9: AR-APRS boot screen (same layout as AR-LORA): brand top-left, "AUDIO" box, short version
         display.setCursor(0, 15);
-        display.print("APRS");
+        display.print("AR-APRS");
         display.setCursor(60, 32);
         display.print("AUDIO");
         display.drawYBitmap(0, 16, LOGO, 48, 48, WHITE);
@@ -4766,10 +4879,10 @@ void setup()
         display.setFont();
         display.setTextColor(WHITE);
 
-        display.setCursor(60, 40);
-        display.printf("FW Ver %s%s", VERSION, VERSION_BUILD);
-        display.setCursor(65, 5);
-        display.print("Copy@2022");
+        display.setCursor(55, 40);
+        display.printf("V%s", VERSION);
+        display.setCursor(86, 5);
+        display.print("LU6JMF");
         display.display();
         LED_Status(255, 0, 0);
         delay(1000);
@@ -5460,13 +5573,7 @@ void mqtt_callback(char *topic, byte *payload, unsigned int length)
     log_d("MQTT Message arrived on topic [%s] with length %d", topic, length);
     if (payload_ptr[0] == 'A' && payload_ptr[1] == 'T')
     {
-        if (config.at_cmd_mqtt)
-        {
-            log_d("AT-Command received: %s", payload_ptr);
-            String ret = handleATCommand(String((char *)payload_ptr));
-            log_d("AT-Command response: %s", ret.c_str());
-            clientMQTT.publish(config.mqtt_topic, ret.c_str());
-        }
+        // 2.1.9: AT commands removed - an "AT..." payload is ignored (never sent on RF)
     }
     else
     {
@@ -5716,11 +5823,32 @@ String trk_gps_postion(String comment)
         aprs_table = config.trk_symbol[0];
         aprs_symbol = config.trk_symbol[1];
     }
+    if (lu6SosActive)
+    { // LU6JMF 2.1.9: official APRS emergency symbol
+        aprs_table = '\\';
+        aprs_symbol = '!';
+    }
 
-    if (gps.location.isValid()) // && (gps.hdop.hdop() < 10.0))
+    // LU6JMF 2.1.9: during an SOS without a GPS fix, use the last known position (or the fixed one)
+    bool lu6SosNoFix = lu6SosActive && !gps.location.isValid() &&
+                       ((LastLat != 0 && LastLng != 0) || (config.trk_lat != 0 && config.trk_lon != 0));
+    if (gps.location.isValid() || lu6SosNoFix) // && (gps.hdop.hdop() < 10.0))
     {
-        nowLat = gps.location.lat();
-        nowLng = gps.location.lng();
+        if (gps.location.isValid())
+        {
+            nowLat = gps.location.lat();
+            nowLng = gps.location.lng();
+        }
+        else if (LastLat != 0 && LastLng != 0)
+        {
+            nowLat = LastLat;
+            nowLng = LastLng;
+        }
+        else
+        {
+            nowLat = config.trk_lat;
+            nowLng = config.trk_lon;
+        }
 
         uint16_t spdKnot;
         if (LastLng == 0 || LastLat == 0)
@@ -5751,12 +5879,12 @@ String trk_gps_postion(String comment)
         LastLng = nowLng;
         lastTimeStamp = nowTime;
 
-        if (config.trk_compress)
+        if (config.trk_compress || lu6SosActive) // LU6JMF 2.1.9: SOS always goes as Mic-E Emergency
         { // Compress DATA
 
             // String compPosition = compress_position(nowLat, nowLng, gps.altitude.feet(), course, spdKnot, aprs_table, aprs_symbol, (gps.satellites.value() > 3));
             //  ESP_LOGE("GPS", "Compress=%s", aprs_position);
-            if ((strlen(config.trk_item) >= 3) || (config.trk_timestamp) || (config.trk_mice_type == 8))
+            if (!lu6SosActive && ((strlen(config.trk_item) >= 3) || (config.trk_timestamp) || (config.trk_mice_type == 8)))
             {
                 String compPosition = compress_position(nowLat, nowLng, gps.altitude.feet(), course, spdKnot, aprs_table, aprs_symbol, (gps.satellites.value() > 3));
                 char object[10];
@@ -5779,7 +5907,7 @@ String trk_gps_postion(String comment)
             else
             {
                 char destCallsign[8];
-                String compPosition = compressMicE(destCallsign, nowLat, nowLng, (uint16_t)course, spdKnot, config.trk_mice_type, NULL, 0, NULL, NULL, (int32_t)gps.altitude.meters(), aprs_table, aprs_symbol);
+                String compPosition = compressMicE(destCallsign, nowLat, nowLng, (uint16_t)course, spdKnot, lu6SosActive ? 0 : config.trk_mice_type, NULL, 0, NULL, NULL, (int32_t)gps.altitude.meters(), aprs_table, aprs_symbol);
                 String tnc2Raw = "";
                 char *strtmp = (char *)calloc(300, sizeof(char));
                 if (strtmp)
@@ -5804,7 +5932,7 @@ String trk_gps_postion(String comment)
                 }
                 tnc2Raw += ":";
                 tnc2Raw += String(compPosition);
-                tnc2Raw += comment + String(config.trk_comment);
+                tnc2Raw += lu6SosComment(comment + String(config.trk_comment));
                 return tnc2Raw;
             }
         }
@@ -5892,7 +6020,7 @@ String trk_gps_postion(String comment)
     }
     tnc2Raw += ":";
     tnc2Raw += String(rawTNC);
-    tnc2Raw += comment + String(config.trk_comment);
+    tnc2Raw += lu6SosComment(comment + String(config.trk_comment));
     return tnc2Raw;
 }
 
@@ -5901,12 +6029,12 @@ String trk_fix_position(String comment)
     char loc[100];
     String tnc2Raw = "";
     memset(loc, 0, sizeof(loc));
-    if (config.trk_compress)
+    if (config.trk_compress || lu6SosActive) // LU6JMF 2.1.9: SOS always goes as Mic-E Emergency
     { // Compress DATA
 
         //String compPosition = compress_position(config.trk_lat, config.trk_lon, (int)(config.trk_alt * 3.28F), 0, 0, config.trk_symbol[0], config.trk_symbol[1], true);
         // ESP_LOGE("GPS", "Compress=%s", aprs_position);
-        if ((strlen(config.trk_item) >= 3) || (config.trk_timestamp) || (config.trk_mice_type == 8))
+        if (!lu6SosActive && ((strlen(config.trk_item) >= 3) || (config.trk_timestamp) || (config.trk_mice_type == 8)))
             {
                 String compPosition = compress_position(config.trk_lat, config.trk_lon, (int)(config.trk_alt * 3.28F), 0, 0, config.trk_symbol[0], config.trk_symbol[1], true);
                 char object[10];
@@ -5929,7 +6057,7 @@ String trk_fix_position(String comment)
             else
             {
                 char destCallsign[8];
-                String compPosition = compressMicE(destCallsign, config.trk_lat, config.trk_lon, 0, 0, config.trk_mice_type, NULL, 0, NULL, NULL, (int32_t)gps.altitude.meters(), config.trk_symbol[0], config.trk_symbol[1]);
+                String compPosition = compressMicE(destCallsign, config.trk_lat, config.trk_lon, 0, 0, lu6SosActive ? 0 : config.trk_mice_type, NULL, 0, NULL, NULL, (int32_t)gps.altitude.meters(), lu6SosActive ? '\\' : config.trk_symbol[0], lu6SosActive ? '!' : config.trk_symbol[1]);
                 String tnc2Raw = "";
                 char *strtmp = (char *)calloc(300, sizeof(char));
                 if (strtmp)
@@ -5954,7 +6082,7 @@ String trk_fix_position(String comment)
                 }
                 tnc2Raw += ":";
                 tnc2Raw += String(compPosition);
-                tnc2Raw += comment + String(config.trk_comment);
+                tnc2Raw += lu6SosComment(comment + String(config.trk_comment));
                 return tnc2Raw;
             }
     }
@@ -6033,7 +6161,7 @@ String trk_fix_position(String comment)
     }
     tnc2Raw += ":";
     tnc2Raw += String(loc);
-    tnc2Raw += comment + String(config.trk_comment);
+    tnc2Raw += lu6SosComment(comment + String(config.trk_comment));
     return tnc2Raw;
 }
 
@@ -6405,6 +6533,8 @@ int packet2Raw(String &tnc2, AX25Msg &Packet)
 
 long sendTimer = 0;
 int btn_count = 0;
+static uint32_t lu6RotAt = 0; // 2.1.9: next automatic screen change
+static bool lu6RotHold = false; // 2.1.9: a press stopped the automatic change on this screen (5 min)
 long timeCheck = 0;
 
 unsigned long timeTask;
@@ -6498,103 +6628,114 @@ void loop()
     //     }
     // }
     #ifdef OLED
-    if (digitalRead(BOOT_PIN) == LOW)
+    // 2.1.9: the button counts only after it was seen released (a button held, or a pin that reads
+    // LOW all the time, no longer freezes the screen on "GPS SWAP")
+    static bool btnArmed = false;
+    // 2.1.9: menu button pin from the configuration (default GPIO0 = BOOT; -1 = no menu button)
+    const int btnPin = config.disp_btn;
+    if (btnPin < 0)
     {
-        btn_count++;
-        if (btn_count > 200) // Push BOOT >2sec
-        {
-            btn_count = 0;
-            if (curTab == 0)
-            {
-                showDisp = true;
-                timeSec = timeHalfSec = millis();
-                if (gps_mode)
-                    gps_mode = false;
-                else
-                    gps_mode = true;
-                msgBox("GPS SWAP");
-                while (digitalRead(BOOT_PIN) == LOW)
-                {
-                    delay(100);
-                }
-            }
-            else if (curTab == 4) // System display
-            {
-                msgBox("POWER OFF");
-                while (digitalRead(BOOT_PIN) == LOW)
-                {
-                    delay(100);
-                }
-                // PowerOff();
-                esp_deep_sleep_start();
-            }
-            else if (curTab == 6) // Wifi display
-            {
-                if (manualWiFi)
-                {
-                    manualWiFi = false;
-                    msgBox("WiFi OFF");
-                    vTaskSuspend(taskNetworkHandle);
-                    WiFi.disconnect(true); // Disconnect from the network
-                    WiFi.persistent(false);
-                    WiFi.mode(WIFI_OFF); // Switch WiFi off
-                }
-                else
-                {
-                    manualWiFi = true;
-                    msgBox("WiFi ON");
-                    vTaskResume(taskNetworkHandle);
-                }
-                while (digitalRead(BOOT_PIN) == LOW)
-                {
-                    delay(100);
-                }
-            }
-            else if (curTab == 1) // Status display
-            {
-                msgBox("MANUAL TX");
-                while (digitalRead(BOOT_PIN) == LOW)
-                {
-                    delay(100);
-                }
-                EVENT_TX_POSITION = 6;
-                tx_interval = config.trk_interval;
-            }
-        }
-        else
-        {
-        }
+        btnArmed = false;
+        btn_count = 0;
+    }
+    else if (!btnArmed)
+    {
+        if (digitalRead(btnPin) == HIGH)
+            btnArmed = true;
+        btn_count = 0;
+    }
+    else if (digitalRead(btnPin) == LOW)
+    {
+        // 2.1.9: only count while pressed; what the press does is decided when it is released
+        if (btn_count < 1000)
+            btn_count++;
     }
     else
     {
         if (btn_count > 0)
         {
             log_d("btn_count=%d", btn_count);
-            if (btn_count > 25) // Push BOOT 10sec to Factory Default
+            if (btn_count < 3)
             {
-                // digitalWrite(LED_RX, LOW);
-                // digitalWrite(LED_TX, LOW);
-                // defaultConfig();
-                // log_d("SYSTEM REBOOT NOW!");
-                // esp_restart();
+                // 2.1.9: shorter than 30 ms = contact bounce / noise, not a press
+            }
+            else if (btn_count > 500)
+            {
+                // 2.1.9: LOW for more than 5 s is not a person pressing: on many boards powered from a
+                // computer's USB the auto-program circuit keeps GPIO0 low while a serial program is open.
+                // Ignored, so nothing happens by itself.
+            }
+            else if (btn_count >= 200) // held 2 to 5 s, then released: the action of the screen
+            {
+                if (curTab == 0)
+                {
+                    showDisp = true;
+                    timeSec = timeHalfSec = millis();
+                    gps_mode = !gps_mode;
+                    msgBox("GPS SWAP");
+                }
+                // 2.1.9: holding the button on the System screen no longer powers the board off and on
+                // the WiFi screen no longer switches the WiFi off (a station could go off by accident)
+                else if (curTab == 1) // Status display
+                {
+                    msgBox("MANUAL TX");
+                    EVENT_TX_POSITION = 6;
+                    tx_interval = config.trk_interval;
+                }
+            }
+            else if (btn_count > 100) // 2.1.9: a normal press up to 1 s changes the screen; 1-2 s does nothing
+            {
             }
             else
             {
                 StandByTick = millis() + (config.pwr_stanby_delay * 1000);
                 if (save_mode)
                     save_act = true;
-                showDisp = true;
-                timeSec = timeHalfSec = millis();
-                // if (oledSleepTimeout > 0)
-                //{
-                curTab++;
-                if (curTab > 7)
-                    curTab = 0;
-                //}
+                if (config.disp_rotate > 0 && !lu6RotHold)
+                {
+                    // 2.1.9: screens changing by themselves -> a press keeps THIS screen for 5 minutes
+                    lu6RotHold = true;
+                    lu6RotAt = millis() + 300000UL;
+                    oledSleepTimeout = millis() + 300000UL;
+                    msgBox("HOLD 5 MIN");
+                    timeHalfSec = millis();
+                    timeSec = millis() + 1500; // the screen comes back after the message
+                }
+                else
+                {
+                    // next screen; if it was on hold, the automatic change starts again
+                    lu6RotHold = false;
+                    showDisp = true;
+                    timeSec = timeHalfSec = millis();
+                    // if (oledSleepTimeout > 0)
+                    //{
+                    curTab++;
+                    if (curTab > 7)
+                        curTab = 0;
+                    //}
+                    lu6RotAt = millis() + config.disp_rotate * 1000UL;
+                }
                 log_d("curTab=%d", curTab);
             }
         }
         btn_count = 0;
+    }
+
+    // 2.1.9: automatic screen change (Display Setting "Auto Change"): next screen every N seconds,
+    // works without the button; a popup (received/sent packet) is shown first, then it continues
+    if (config.oled_enable && config.disp_rotate > 0 && dispBuffer.getCount() == 0 && millis() > timeHalfSec)
+    {
+        if (lu6RotAt == 0)
+            lu6RotAt = millis() + config.disp_rotate * 1000UL;
+        else if ((int32_t)(millis() - lu6RotAt) >= 0)
+        {
+            lu6RotHold = false; // after the 5 minutes on hold: automatic again
+            curTab = (curTab + 1) % 8;
+            showDisp = true;
+            timeSec = timeHalfSec = millis();
+            oledSleepTimeout = millis() + (config.oled_timeout * 1000); // keep the screen on while it changes
+            lu6RotAt = millis() + config.disp_rotate * 1000UL;
+        }
     }
 
     // Popup Display
@@ -7808,59 +7949,6 @@ void taskSerial(void *pvParameters)
             //}
         }
 
-        if (config.at_cmd_uart > 0)
-        {
-            if (config.at_cmd_uart == 1)
-            { // UART0
-                if (Serial0.available())
-                {
-                    String cmd = Serial0.readStringUntil('\n');
-                    cmd.trim();
-                    String ret = handleATCommand(String((char *)cmd.c_str()));
-                    if (ret != "")
-                        Serial0.println(ret);
-                    log_d("AT-Command response: %s", ret.c_str());
-                }
-            }
-            else if (config.at_cmd_uart == 2)
-            { // UART1
-                if (Serial1.available())
-                {
-                    String cmd = Serial1.readStringUntil('\n');
-                    cmd.trim();
-                    String ret = handleATCommand(String((char *)cmd.c_str()));
-                    if (ret != "")
-                        Serial1.println(ret);
-                    log_d("AT-Command response: %s", ret.c_str());
-                }
-            }
-#if SOC_UART_NUM > 2
-            else if (config.at_cmd_uart == 3)
-            { // UART2
-                if (Serial2.available())
-                {
-                    String cmd = Serial2.readStringUntil('\n');
-                    cmd.trim();
-                    String ret = handleATCommand(String((char *)cmd.c_str()));
-                    if (ret != "")
-                        Serial2.println(ret);
-                    log_d("AT-Command response: %s", ret.c_str());
-                }
-            }
-#endif
-            else if (config.at_cmd_uart == 4)
-            { // USB-CDC
-                if (Serial.available())
-                {
-                    String cmd = Serial.readStringUntil('\n');
-                    cmd.trim();
-                    String ret = handleATCommand(String((char *)cmd.c_str()));
-                    if (ret != "")
-                        Serial.println(ret);
-                    log_d("AT-Command response: %s", ret.c_str());
-                }
-            }
-        }
     }
 }
 
@@ -7963,6 +8051,24 @@ void taskAPRS(void *pvParameters)
     log_d("Task APRS has been start");
     for (;;)
     {
+
+        // LU6JMF 2.1.9: SOS - beacon right away on activate/cancel, then every minute while active
+        if (lu6SosEvent)
+        {
+            uint8_t ev = lu6SosEvent;
+            lu6SosEvent = 0;
+            lu6SosNextMs = millis() + LU6_SOS_INTERVAL_MS;
+            if (config.trk_en)
+                EVENT_TX_POSITION = 6;
+            String to = lu6SosTo();
+            if (to.length() >= 3)
+                sendAPRSMessage(to, ev == 1 ? String("EMERGENCY - SOS at my position. See my beacon on aprs.fi") : String("SOS cancelled - all OK"), false);
+        }
+        else if (lu6SosActive && config.trk_en && millis() > lu6SosNextMs)
+        {
+            lu6SosNextMs = millis() + LU6_SOS_INTERVAL_MS;
+            EVENT_TX_POSITION = 6;
+        }
 
         // 2.1.6: ?APRSP query - beacon now (iGate, Digi and Tracker, whatever is enabled)
         if (lu6jmfQueryBeacon)
@@ -8218,15 +8324,6 @@ void taskAPRS(void *pvParameters)
                         kiss_serial((uint8_t)NuSerial.read());
                     }
                 }
-                else if (config.bt_mode == 3)
-                { // AT COMMAND
-                    String cmd = NuSerial.readStringUntil('\n');
-                    cmd.trim();
-                    String ret = handleATCommand(String((char *)cmd.c_str()));
-                    if (ret != "")
-                        NuSerial.println(ret);
-                    log_d("AT-Command response: %s", ret.c_str());
-                }
             }
         }
 #else
@@ -8251,15 +8348,6 @@ void taskAPRS(void *pvParameters)
                 {
                     kiss_serial((uint8_t)SerialBT.read());
                 }
-            }
-            else if (config.bt_mode == 3)
-            { // AT COMMAND
-                String cmd = SerialBT.readStringUntil('\n');
-                cmd.trim();
-                String ret = handleATCommand(String((char *)cmd.c_str()));
-                if (ret != "")
-                    SerialBT.println(ret);
-                log_d("AT-Command response: %s", ret.c_str());
             }
         }
 #endif
@@ -8585,6 +8673,9 @@ void taskAPRS(void *pvParameters)
                     SendMode |= RF_CHANNEL;
                 if (config.trk_loc2inet)
                     SendMode |= INET_CHANNEL;
+                // LU6JMF 2.1.9: the SOS (and its cancel beacon) always goes on RF and to APRS-IS
+                if (lu6SosActive || rawData.indexOf("SOS cancelled") >= 0)
+                    SendMode |= RF_CHANNEL | INET_CHANNEL;
                 pkgTxPushJob(rawData.c_str(), rawData.length(), 0, SendMode, LU6JMF_TXJOB_TRACKER, LU6JMF_TXPRIO_NORMAL);
 
                 //                 if (config.trk_loc2rf)

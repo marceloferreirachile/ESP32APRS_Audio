@@ -5,6 +5,7 @@ FIRMWARE_NAMES = {
     "esp32-nodisp":     "ESP32_NODISP",
     "esp32-sh1106":     "ESP32_SH1106",
     "esp32-ssd1306":    "ESP32_SSD1306",
+    "esp32":            "ESP32",
     "esp32-noota":      "ESP32_NOOTA",
     "esp32c3-nodisp":   "ESP32C3_NODISP",
     "esp32c3-noota":    "ESP32C3_NOOTA",

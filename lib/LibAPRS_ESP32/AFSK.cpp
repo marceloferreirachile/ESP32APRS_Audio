@@ -850,10 +850,45 @@ bool AFSK_DacTimerRunning(void)
   return dacTimerRunning;
 }
 
+// 2.1.9 (LU6JMF): the PTT pin is driven with the ESP-IDF GPIO functions. With pinMode()/digitalWrite()
+// of this Arduino core, setting up GPIO32 also turned GPIO0 (BOOT / menu button) into an output held
+// LOW, and the PTT level did not follow: GPIO32 read HIGH while the PTT was off, so getReceive() saw
+// "transmitting" and the receiver was blocked. Measured on the board with the GPIO registers.
+#include "driver/gpio.h"
+#include "soc/gpio_reg.h"
+static int8_t pttReady = -1;
+static void pttDrive(bool openDrain, int level)
+{
+  if (_ptt_pin < 0)
+    return;
+  gpio_num_t p = (gpio_num_t)_ptt_pin;
+  if (pttReady != _ptt_pin)
+  {
+    gpio_reset_pin(p);
+    pttReady = _ptt_pin;
+  }
+  gpio_set_direction(p, openDrain ? GPIO_MODE_INPUT_OUTPUT_OD : GPIO_MODE_INPUT_OUTPUT);
+  gpio_set_level(p, level);
+#if defined(CONFIG_IDF_TARGET_ESP32)
+  // measured: setting up the PTT pin also leaves GPIO0 (BOOT / menu button) as an output held LOW.
+  // GPIO0 is never the PTT here, so give it back as an input with pull-up.
+  if (_ptt_pin != 0 && (REG_READ(GPIO_ENABLE_REG) & 1))
+  {
+    REG_WRITE(GPIO_ENABLE_W1TC_REG, 1);
+    gpio_set_direction(GPIO_NUM_0, GPIO_MODE_INPUT);
+    gpio_pullup_en(GPIO_NUM_0);
+  }
+#endif
+}
+static inline int pttLevel()
+{
+  return _ptt_pin < 0 ? !_ptt_active : gpio_get_level((gpio_num_t)_ptt_pin);
+}
+
 bool getTransmit()
 {
   bool ret = false;
-  if ((digitalRead(_ptt_pin) ^ _ptt_active) == 0) // signal active with ptt_active
+  if ((pttLevel() ^ _ptt_active) == 0) // signal active with ptt_active
     ret = true;
   else
     ret = false;
@@ -870,8 +905,8 @@ void setTransmit(bool val)
 bool getReceive()
 {
   bool ret = true;
-  if ((digitalRead(_ptt_pin) ^ _ptt_active) == 0) // signal active with ptt_active
-    return false;                                 // PTT Protection receive
+  if ((pttLevel() ^ _ptt_active) == 0) // signal active with ptt_active
+    return false;                      // PTT Protection receive
   //if (digitalRead(LED_RX_PIN))                    // Check RX LED receiving.
   //  ret = true;
   return ret;
@@ -898,15 +933,9 @@ void setPtt(bool state)
       _ptt_pin = 32; // GPIO34 is the max pin for ESP32/ESP32S2
     #endif
     if (_ptt_active)
-    {
-      pinMode(_ptt_pin, OUTPUT);
-      digitalWrite(_ptt_pin, HIGH);
-    }
-    else
-    { // Open Collector to LOW
-      pinMode(_ptt_pin, OUTPUT_OPEN_DRAIN);
-      digitalWrite(_ptt_pin, LOW);
-    }
+      pttDrive(false, 1);
+    else // Open Collector to LOW
+      pttDrive(true, 0);
     LED_Status2(255, 0, 0);
   }
   else
@@ -914,15 +943,9 @@ void setPtt(bool state)
     setTransmit(false);
     // adcq.flush();
     if (_ptt_active)
-    {
-      pinMode(_ptt_pin, OUTPUT);
-      digitalWrite(_ptt_pin, LOW);
-    }
-    else
-    { // Open Collector to HIGH
-      pinMode(_ptt_pin, OUTPUT_OPEN_DRAIN);
-      digitalWrite(_ptt_pin, HIGH);
-    }
+      pttDrive(false, 0);
+    else // Open Collector to HIGH
+      pttDrive(true, 1);
     LED_Status2(0, 0, 0);
     #ifdef TTGO_TWR
     digitalWrite(MIC_CTL_SEL_PIN, LOW);

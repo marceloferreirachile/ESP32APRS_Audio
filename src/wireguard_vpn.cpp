@@ -75,7 +75,7 @@ wg_config.preshared_key = NULL;
 
 /* If the device is behind NAT or stateful firewall, set persistent_keepalive.
    persistent_keepalive is disabled by default */
-// wg_config.persistent_keepalive = 10;
+wg_config.persistent_keepalive = 25; // LU6JMF 2.1.9: keeps the tunnel open through the home router (NAT), so the board can be reached from the Internet at any time
 
 wireguard_ctx_t ctx = {0};
 err = esp_wireguard_init(&wg_config, &ctx);

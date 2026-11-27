@@ -11,6 +11,7 @@
 #include <SPIFFS.h>
 #include "FS.h"
 #include <ArduinoJson.h>
+#include <stddef.h> // offsetof
 //#include <StreamUtils.h>
 #include "AFSK.h"
 #include <esp_task_wdt.h>
@@ -26,6 +27,235 @@ extern volatile int8_t adcEn;
 extern volatile int8_t dacEn;
 
 // Saves the configuration to a file
+// LU6JMF 2.1.9: the ~160 plain "one JSON key <-> one config field" lines of save/load are a
+// table now (same keys, same values, same types and defaults - the JSON file does not change;
+// only the order of the keys inside it). Arrays, old-version conversions and fields with special
+// handling stay written out below, exactly as before. Saves flash.
+enum : uint8_t { CF_B, CF_U8, CF_I8, CF_U16, CF_I16, CF_INT, CF_UINT, CF_LONG, CF_ULONG, CF_I32, CF_U32, CF_F, CF_D, CF_S };
+struct CfgField { const char *key; uint8_t type; uint16_t off; uint16_t size; const char *dflt; };
+static const CfgField CFG_FIELDS[] = {
+    {"syncTime", CF_B, offsetof(Configuration, synctime), sizeof(((Configuration*)0)->synctime), nullptr},
+    {"timeZone", CF_F, offsetof(Configuration, timeZone), sizeof(((Configuration*)0)->timeZone), nullptr},
+    {"WiFiPwr", CF_I8, offsetof(Configuration, wifi_power), sizeof(((Configuration*)0)->wifi_power), nullptr},
+    {"WiFiAPCH", CF_U8, offsetof(Configuration, wifi_ap_ch), sizeof(((Configuration*)0)->wifi_ap_ch), nullptr},
+    {"fx25Mode", CF_U8, offsetof(Configuration, fx25_mode), sizeof(((Configuration*)0)->fx25_mode), nullptr},
+    {"rfEnable", CF_B, offsetof(Configuration, rf_en), sizeof(((Configuration*)0)->rf_en), nullptr},
+    {"rfType", CF_U8, offsetof(Configuration, rf_type), sizeof(((Configuration*)0)->rf_type), nullptr},
+    {"rfModem", CF_U8, offsetof(Configuration, modem_type), sizeof(((Configuration*)0)->modem_type), nullptr},
+    {"rfPreamble", CF_U8, offsetof(Configuration, preamble), sizeof(((Configuration*)0)->preamble), nullptr},
+    {"rfFreqRX", CF_F, offsetof(Configuration, freq_rx), sizeof(((Configuration*)0)->freq_rx), nullptr},
+    {"rfFreqTX", CF_F, offsetof(Configuration, freq_tx), sizeof(((Configuration*)0)->freq_tx), nullptr},
+    {"rfToneRX", CF_INT, offsetof(Configuration, tone_rx), sizeof(((Configuration*)0)->tone_rx), nullptr},
+    {"rfToneTX", CF_INT, offsetof(Configuration, tone_tx), sizeof(((Configuration*)0)->tone_tx), nullptr},
+    {"rfSql", CF_U8, offsetof(Configuration, sql_level), sizeof(((Configuration*)0)->sql_level), nullptr},
+    {"rfVolume", CF_U8, offsetof(Configuration, volume), sizeof(((Configuration*)0)->volume), nullptr},
+    {"rfBand", CF_U8, offsetof(Configuration, band), sizeof(((Configuration*)0)->band), nullptr},
+    {"audioLPF", CF_B, offsetof(Configuration, audio_lpf), sizeof(((Configuration*)0)->audio_lpf), nullptr},
+    {"igateEn", CF_B, offsetof(Configuration, igate_en), sizeof(((Configuration*)0)->igate_en), nullptr},
+    {"igateBcn", CF_B, offsetof(Configuration, igate_bcn), sizeof(((Configuration*)0)->igate_bcn), nullptr},
+    {"rf2inet", CF_B, offsetof(Configuration, rf2inet), sizeof(((Configuration*)0)->rf2inet), nullptr},
+    {"inet2rf", CF_B, offsetof(Configuration, inet2rf), sizeof(((Configuration*)0)->inet2rf), nullptr},
+    {"igatePos2rf", CF_B, offsetof(Configuration, igate_loc2rf), sizeof(((Configuration*)0)->igate_loc2rf), nullptr},
+    {"igatePos2inet", CF_B, offsetof(Configuration, igate_loc2inet), sizeof(((Configuration*)0)->igate_loc2inet), nullptr},
+    {"rf2inetFilter", CF_U16, offsetof(Configuration, rf2inetFilter), sizeof(((Configuration*)0)->rf2inetFilter), nullptr},
+    {"inet2rfFiltger", CF_U16, offsetof(Configuration, inet2rfFilter), sizeof(((Configuration*)0)->inet2rfFilter), nullptr},
+    {"igateSSID", CF_U8, offsetof(Configuration, aprs_ssid), sizeof(((Configuration*)0)->aprs_ssid), nullptr},
+    {"igatePort", CF_U16, offsetof(Configuration, aprs_port), sizeof(((Configuration*)0)->aprs_port), nullptr},
+    {"igateMycall", CF_S, offsetof(Configuration, aprs_mycall), sizeof(((Configuration*)0)->aprs_mycall), "NOCALL"},
+    {"igateHost", CF_S, offsetof(Configuration, aprs_host), sizeof(((Configuration*)0)->aprs_host), ""},
+    {"igateFilter", CF_S, offsetof(Configuration, aprs_filter), sizeof(((Configuration*)0)->aprs_filter), ""},
+    {"igateGPS", CF_B, offsetof(Configuration, igate_gps), sizeof(((Configuration*)0)->igate_gps), nullptr},
+    {"igateLAT", CF_F, offsetof(Configuration, igate_lat), sizeof(((Configuration*)0)->igate_lat), nullptr},
+    {"igateLON", CF_F, offsetof(Configuration, igate_lon), sizeof(((Configuration*)0)->igate_lon), nullptr},
+    {"igateALT", CF_F, offsetof(Configuration, igate_alt), sizeof(((Configuration*)0)->igate_alt), nullptr},
+    {"igateINV", CF_U16, offsetof(Configuration, igate_interval), sizeof(((Configuration*)0)->igate_interval), nullptr},
+    {"igateObject", CF_S, offsetof(Configuration, igate_object), sizeof(((Configuration*)0)->igate_object), ""},
+    {"igatePHG", CF_S, offsetof(Configuration, igate_phg), sizeof(((Configuration*)0)->igate_phg), ""},
+    {"igatePath", CF_U8, offsetof(Configuration, igate_path), sizeof(((Configuration*)0)->igate_path), nullptr},
+    {"igateComment", CF_S, offsetof(Configuration, igate_comment), sizeof(((Configuration*)0)->igate_comment), ""},
+    {"igateSTSIntv", CF_U16, offsetof(Configuration, igate_sts_interval), sizeof(((Configuration*)0)->igate_sts_interval), nullptr},
+    {"digiEn", CF_B, offsetof(Configuration, digi_en), sizeof(((Configuration*)0)->digi_en), nullptr},
+    {"digiAuto", CF_B, offsetof(Configuration, digi_auto), sizeof(((Configuration*)0)->digi_auto), nullptr},
+    {"digiPos2rf", CF_B, offsetof(Configuration, digi_loc2rf), sizeof(((Configuration*)0)->digi_loc2rf), nullptr},
+    {"digiPos2inet", CF_B, offsetof(Configuration, digi_loc2inet), sizeof(((Configuration*)0)->digi_loc2inet), nullptr},
+    {"digiTime", CF_B, offsetof(Configuration, digi_timestamp), sizeof(((Configuration*)0)->digi_timestamp), nullptr},
+    {"digiSSID", CF_U8, offsetof(Configuration, digi_ssid), sizeof(((Configuration*)0)->digi_ssid), nullptr},
+    {"digiMycall", CF_S, offsetof(Configuration, digi_mycall), sizeof(((Configuration*)0)->digi_mycall), ""},
+    {"digiPath", CF_U8, offsetof(Configuration, digi_path), sizeof(((Configuration*)0)->digi_path), nullptr},
+    {"digiDelay", CF_U16, offsetof(Configuration, digi_delay), sizeof(((Configuration*)0)->digi_delay), nullptr},
+    {"digiFilter", CF_U16, offsetof(Configuration, digiFilter), sizeof(((Configuration*)0)->digiFilter), nullptr},
+    {"digiBcn", CF_B, offsetof(Configuration, digi_bcn), sizeof(((Configuration*)0)->digi_bcn), nullptr},
+    {"digiAlt", CF_F, offsetof(Configuration, digi_alt), sizeof(((Configuration*)0)->digi_alt), nullptr},
+    {"digiGPS", CF_B, offsetof(Configuration, digi_gps), sizeof(((Configuration*)0)->digi_gps), nullptr},
+    {"digiLAT", CF_F, offsetof(Configuration, digi_lat), sizeof(((Configuration*)0)->digi_lat), nullptr},
+    {"digiLON", CF_F, offsetof(Configuration, digi_lon), sizeof(((Configuration*)0)->digi_lon), nullptr},
+    {"digiINV", CF_U16, offsetof(Configuration, digi_interval), sizeof(((Configuration*)0)->digi_interval), nullptr},
+    {"digiPHG", CF_S, offsetof(Configuration, digi_phg), sizeof(((Configuration*)0)->digi_phg), ""},
+    {"digiComment", CF_S, offsetof(Configuration, digi_comment), sizeof(((Configuration*)0)->digi_comment), ""},
+    {"digiSTSIntv", CF_U16, offsetof(Configuration, digi_sts_interval), sizeof(((Configuration*)0)->digi_sts_interval), nullptr},
+    {"trkEn", CF_B, offsetof(Configuration, trk_en), sizeof(((Configuration*)0)->trk_en), nullptr},
+    {"trkPos2rf", CF_B, offsetof(Configuration, trk_loc2rf), sizeof(((Configuration*)0)->trk_loc2rf), nullptr},
+    {"trkPos2inet", CF_B, offsetof(Configuration, trk_loc2inet), sizeof(((Configuration*)0)->trk_loc2inet), nullptr},
+    {"trkTime", CF_B, offsetof(Configuration, trk_timestamp), sizeof(((Configuration*)0)->trk_timestamp), nullptr},
+    {"trkSSID", CF_U8, offsetof(Configuration, trk_ssid), sizeof(((Configuration*)0)->trk_ssid), nullptr},
+    {"trkMycall", CF_S, offsetof(Configuration, trk_mycall), sizeof(((Configuration*)0)->trk_mycall), ""},
+    {"trkPath", CF_U8, offsetof(Configuration, trk_path), sizeof(((Configuration*)0)->trk_path), nullptr},
+    {"trkGPS", CF_B, offsetof(Configuration, trk_gps), sizeof(((Configuration*)0)->trk_gps), nullptr},
+    {"trkLAT", CF_F, offsetof(Configuration, trk_lat), sizeof(((Configuration*)0)->trk_lat), nullptr},
+    {"trkLON", CF_F, offsetof(Configuration, trk_lon), sizeof(((Configuration*)0)->trk_lon), nullptr},
+    {"trkALT", CF_F, offsetof(Configuration, trk_alt), sizeof(((Configuration*)0)->trk_alt), nullptr},
+    {"trkComment", CF_S, offsetof(Configuration, trk_comment), sizeof(((Configuration*)0)->trk_comment), ""},
+    {"trkSTSIntv", CF_U16, offsetof(Configuration, trk_sts_interval), sizeof(((Configuration*)0)->trk_sts_interval), nullptr},
+    {"wxEn", CF_B, offsetof(Configuration, wx_en), sizeof(((Configuration*)0)->wx_en), nullptr},
+    {"wxTx2rf", CF_B, offsetof(Configuration, wx_2rf), sizeof(((Configuration*)0)->wx_2rf), nullptr},
+    {"wxTx2inet", CF_B, offsetof(Configuration, wx_2inet), sizeof(((Configuration*)0)->wx_2inet), nullptr},
+    {"wxTime", CF_B, offsetof(Configuration, wx_timestamp), sizeof(((Configuration*)0)->wx_timestamp), nullptr},
+    {"wxSSID", CF_U8, offsetof(Configuration, wx_ssid), sizeof(((Configuration*)0)->wx_ssid), nullptr},
+    {"wxMycall", CF_S, offsetof(Configuration, wx_mycall), sizeof(((Configuration*)0)->wx_mycall), ""},
+    {"wxPath", CF_U8, offsetof(Configuration, wx_path), sizeof(((Configuration*)0)->wx_path), nullptr},
+    {"wxGPS", CF_B, offsetof(Configuration, wx_gps), sizeof(((Configuration*)0)->wx_gps), nullptr},
+    {"wxLAT", CF_F, offsetof(Configuration, wx_lat), sizeof(((Configuration*)0)->wx_lat), nullptr},
+    {"wxLON", CF_F, offsetof(Configuration, wx_lon), sizeof(((Configuration*)0)->wx_lon), nullptr},
+    {"wxALT", CF_F, offsetof(Configuration, wx_alt), sizeof(((Configuration*)0)->wx_alt), nullptr},
+    {"wxInv", CF_U16, offsetof(Configuration, wx_interval), sizeof(((Configuration*)0)->wx_interval), nullptr},
+    {"wxFlage", CF_U32, offsetof(Configuration, wx_flage), sizeof(((Configuration*)0)->wx_flage), nullptr},
+    {"wxObject", CF_S, offsetof(Configuration, wx_object), sizeof(((Configuration*)0)->wx_object), ""},
+    {"wxComment", CF_S, offsetof(Configuration, wx_comment), sizeof(((Configuration*)0)->wx_comment), ""},
+    {"tlmEn", CF_B, offsetof(Configuration, tlm0_en), sizeof(((Configuration*)0)->tlm0_en), nullptr},
+    {"tlmTx2rf", CF_B, offsetof(Configuration, tlm0_2rf), sizeof(((Configuration*)0)->tlm0_2rf), nullptr},
+    {"tlmTx2inet", CF_B, offsetof(Configuration, tlm0_2inet), sizeof(((Configuration*)0)->tlm0_2inet), nullptr},
+    {"tlmSSID", CF_U8, offsetof(Configuration, tlm0_ssid), sizeof(((Configuration*)0)->tlm0_ssid), nullptr},
+    {"tlmMycall", CF_S, offsetof(Configuration, tlm0_mycall), sizeof(((Configuration*)0)->tlm0_mycall), ""},
+    {"tlmPath", CF_U8, offsetof(Configuration, tlm0_path), sizeof(((Configuration*)0)->tlm0_path), nullptr},
+    {"tlmInfoInv", CF_U16, offsetof(Configuration, tlm0_info_interval), sizeof(((Configuration*)0)->tlm0_info_interval), nullptr},
+    {"tlmDataInv", CF_U16, offsetof(Configuration, tlm0_data_interval), sizeof(((Configuration*)0)->tlm0_data_interval), nullptr},
+    {"tlmBIT", CF_U8, offsetof(Configuration, tlm0_BITS_Active), sizeof(((Configuration*)0)->tlm0_BITS_Active), nullptr},
+    {"dspEn", CF_B, offsetof(Configuration, oled_enable), sizeof(((Configuration*)0)->oled_enable), nullptr},
+    {"dspTOut", CF_INT, offsetof(Configuration, oled_timeout), sizeof(((Configuration*)0)->oled_timeout), nullptr},
+    {"dspDim", CF_U8, offsetof(Configuration, dim), sizeof(((Configuration*)0)->dim), nullptr},
+    {"dspContrast", CF_U8, offsetof(Configuration, contrast), sizeof(((Configuration*)0)->contrast), nullptr},
+    {"dspBright", CF_U8, offsetof(Configuration, disp_brightness), sizeof(((Configuration*)0)->disp_brightness), nullptr},
+    {"dspStartUp", CF_U8, offsetof(Configuration, startup), sizeof(((Configuration*)0)->startup), nullptr},
+    {"dspDelay", CF_UINT, offsetof(Configuration, dispDelay), sizeof(((Configuration*)0)->dispDelay), nullptr},
+    {"dspDxFilter", CF_UINT, offsetof(Configuration, filterDistant), sizeof(((Configuration*)0)->filterDistant), nullptr},
+    {"dspFilter", CF_U16, offsetof(Configuration, dispFilter), sizeof(((Configuration*)0)->dispFilter), nullptr},
+    {"dspRF", CF_B, offsetof(Configuration, dispRF), sizeof(((Configuration*)0)->dispRF), nullptr},
+    {"dspINET", CF_B, offsetof(Configuration, dispINET), sizeof(((Configuration*)0)->dispINET), nullptr},
+    {"dspFlip", CF_B, offsetof(Configuration, disp_flip), sizeof(((Configuration*)0)->disp_flip), nullptr},
+    {"dspType", CF_U8, offsetof(Configuration, disp_type), sizeof(((Configuration*)0)->disp_type), nullptr}, // 2.1.9
+    {"dspRotate", CF_U8, offsetof(Configuration, disp_rotate), sizeof(((Configuration*)0)->disp_rotate), nullptr}, // 2.1.9
+    {"dspBtn", CF_I8, offsetof(Configuration, disp_btn), sizeof(((Configuration*)0)->disp_btn), nullptr}, // 2.1.9 (missing = 0 = BOOT)
+    {"vpnEn", CF_B, offsetof(Configuration, vpn), sizeof(((Configuration*)0)->vpn), nullptr},
+    {"vpnPort", CF_U16, offsetof(Configuration, wg_port), sizeof(((Configuration*)0)->wg_port), nullptr},
+    {"vpnPeer", CF_S, offsetof(Configuration, wg_peer_address), sizeof(((Configuration*)0)->wg_peer_address), ""},
+    {"vpnLocal", CF_S, offsetof(Configuration, wg_local_address), sizeof(((Configuration*)0)->wg_local_address), ""},
+    {"vpnNetmark", CF_S, offsetof(Configuration, wg_netmask_address), sizeof(((Configuration*)0)->wg_netmask_address), ""},
+    {"vpnGW", CF_S, offsetof(Configuration, wg_gw_address), sizeof(((Configuration*)0)->wg_gw_address), ""},
+    {"vpnPubKey", CF_S, offsetof(Configuration, wg_public_key), sizeof(((Configuration*)0)->wg_public_key), ""},
+    {"vpnPriKey", CF_S, offsetof(Configuration, wg_private_key), sizeof(((Configuration*)0)->wg_private_key), ""},
+    {"httpUser", CF_S, offsetof(Configuration, http_username), sizeof(((Configuration*)0)->http_username), ""},
+    {"httpPass", CF_S, offsetof(Configuration, http_password), sizeof(((Configuration*)0)->http_password), ""},
+    {"gnssEn", CF_B, offsetof(Configuration, gnss_enable), sizeof(((Configuration*)0)->gnss_enable), nullptr},
+    {"gnssTCPPort", CF_U16, offsetof(Configuration, gnss_tcp_port), sizeof(((Configuration*)0)->gnss_tcp_port), nullptr},
+    {"gnssTCPHost", CF_S, offsetof(Configuration, gnss_tcp_host), sizeof(((Configuration*)0)->gnss_tcp_host), ""},
+    {"gnssAT", CF_S, offsetof(Configuration, gnss_at_command), sizeof(((Configuration*)0)->gnss_at_command), ""},
+    {"adcOffset", CF_U16, offsetof(Configuration, adc_dc_offset), sizeof(((Configuration*)0)->adc_dc_offset), nullptr},
+    {"rfBaudrate", CF_ULONG, offsetof(Configuration, rf_baudrate), sizeof(((Configuration*)0)->rf_baudrate), nullptr},
+    {"i2cEn", CF_B, offsetof(Configuration, i2c_enable), sizeof(((Configuration*)0)->i2c_enable), nullptr},
+    {"i2c1En", CF_B, offsetof(Configuration, i2c1_enable), sizeof(((Configuration*)0)->i2c1_enable), nullptr},
+    {"uart0BR", CF_ULONG, offsetof(Configuration, uart0_baudrate), sizeof(((Configuration*)0)->uart0_baudrate), nullptr},
+    {"uart1BR", CF_ULONG, offsetof(Configuration, uart1_baudrate), sizeof(((Configuration*)0)->uart1_baudrate), nullptr},
+#ifdef BLUETOOTH
+    {"btSlave", CF_B, offsetof(Configuration, bt_slave), sizeof(((Configuration*)0)->bt_slave), nullptr},
+    {"btMaster", CF_B, offsetof(Configuration, bt_master), sizeof(((Configuration*)0)->bt_master), nullptr},
+    {"btMode", CF_U8, offsetof(Configuration, bt_mode), sizeof(((Configuration*)0)->bt_mode), nullptr},
+    {"btPower", CF_U8, offsetof(Configuration, bt_power), sizeof(((Configuration*)0)->bt_power), nullptr},
+    {"btPin", CF_U32, offsetof(Configuration, bt_pin), sizeof(((Configuration*)0)->bt_pin), nullptr},
+    {"btName", CF_S, offsetof(Configuration, bt_name), sizeof(((Configuration*)0)->bt_name), ""},
+#endif
+#ifdef BLUETOOTH
+#if !defined(CONFIG_IDF_TARGET_ESP32)
+    {"btUUID", CF_S, offsetof(Configuration, bt_uuid), sizeof(((Configuration*)0)->bt_uuid), ""},
+    {"btUUIDRx", CF_S, offsetof(Configuration, bt_uuid_rx), sizeof(((Configuration*)0)->bt_uuid_rx), ""},
+    {"btUUIDTx", CF_S, offsetof(Configuration, bt_uuid_tx), sizeof(((Configuration*)0)->bt_uuid_tx), ""},
+#endif
+#endif
+    {"pppAPN", CF_S, offsetof(Configuration, ppp_apn), sizeof(((Configuration*)0)->ppp_apn), ""},
+    {"pppPin", CF_S, offsetof(Configuration, ppp_pin), sizeof(((Configuration*)0)->ppp_pin), ""},
+#ifdef MQTT
+    {"mqttEnable", CF_B, offsetof(Configuration, en_mqtt), sizeof(((Configuration*)0)->en_mqtt), nullptr},
+    {"mqttHost", CF_S, offsetof(Configuration, mqtt_host), sizeof(((Configuration*)0)->mqtt_host), ""},
+    {"mqttTopic", CF_S, offsetof(Configuration, mqtt_topic), sizeof(((Configuration*)0)->mqtt_topic), ""},
+    {"mqttSub", CF_S, offsetof(Configuration, mqtt_subscribe), sizeof(((Configuration*)0)->mqtt_subscribe), ""},
+    {"mqttTopicFlag", CF_U16, offsetof(Configuration, mqtt_topic_flag), sizeof(((Configuration*)0)->mqtt_topic_flag), nullptr},
+    {"mqttSubFlag", CF_U16, offsetof(Configuration, mqtt_subscribe_flag), sizeof(((Configuration*)0)->mqtt_subscribe_flag), nullptr},
+    {"mqttPort", CF_U16, offsetof(Configuration, mqtt_port), sizeof(((Configuration*)0)->mqtt_port), nullptr},
+    {"mqttUser", CF_S, offsetof(Configuration, mqtt_user), sizeof(((Configuration*)0)->mqtt_user), ""},
+    {"mqttPass", CF_S, offsetof(Configuration, mqtt_pass), sizeof(((Configuration*)0)->mqtt_pass), ""},
+#endif
+    {"trkMicEType", CF_U8, offsetof(Configuration, trk_mice_type), sizeof(((Configuration*)0)->trk_mice_type), nullptr},
+    {"trkTlmInv", CF_U8, offsetof(Configuration, trk_tlm_interval), sizeof(((Configuration*)0)->trk_tlm_interval), nullptr},
+    {"digiTlmInv", CF_U8, offsetof(Configuration, digi_tlm_interval), sizeof(((Configuration*)0)->digi_tlm_interval), nullptr},
+    {"igateTlmInv", CF_U8, offsetof(Configuration, igate_tlm_interval), sizeof(((Configuration*)0)->igate_tlm_interval), nullptr},
+    {"hostName", CF_S, offsetof(Configuration, host_name), sizeof(((Configuration*)0)->host_name), ""},
+    {"resetTimeout", CF_U16, offsetof(Configuration, reset_timeout), sizeof(((Configuration*)0)->reset_timeout), nullptr},
+    {"cmdOnMqtt", CF_B, offsetof(Configuration, at_cmd_mqtt), sizeof(((Configuration*)0)->at_cmd_mqtt), nullptr},
+    {"cmdOnMsg", CF_B, offsetof(Configuration, at_cmd_msg), sizeof(((Configuration*)0)->at_cmd_msg), nullptr},
+    {"cmdOnBluetooth", CF_B, offsetof(Configuration, at_cmd_bluetooth), sizeof(((Configuration*)0)->at_cmd_bluetooth), nullptr},
+    {"cmdOnUart", CF_U8, offsetof(Configuration, at_cmd_uart), sizeof(((Configuration*)0)->at_cmd_uart), nullptr},
+};
+
+static void cfgSaveTable(JsonDocument &doc, const Configuration &c)
+{
+    for (const CfgField &e : CFG_FIELDS)
+    {
+        const uint8_t *p = (const uint8_t *)&c + e.off;
+        switch (e.type)
+        {
+        case CF_B: doc[e.key] = *(const bool *)p; break;
+        case CF_U8: doc[e.key] = *(const uint8_t *)p; break;
+        case CF_I8: doc[e.key] = *(const int8_t *)p; break;
+        case CF_U16: doc[e.key] = *(const uint16_t *)p; break;
+        case CF_I16: doc[e.key] = *(const int16_t *)p; break;
+        case CF_INT: doc[e.key] = *(const int *)p; break;
+        case CF_UINT: doc[e.key] = *(const unsigned int *)p; break;
+        case CF_LONG: doc[e.key] = *(const long *)p; break;
+        case CF_ULONG: doc[e.key] = *(const unsigned long *)p; break;
+        case CF_I32: doc[e.key] = *(const int32_t *)p; break;
+        case CF_U32: doc[e.key] = *(const uint32_t *)p; break;
+        case CF_F: doc[e.key] = *(const float *)p; break;
+        case CF_D: doc[e.key] = *(const double *)p; break;
+        case CF_S: doc[e.key] = (const char *)p; break;
+        }
+    }
+}
+
+static void cfgLoadTable(JsonDocument &doc, Configuration &c)
+{
+    for (const CfgField &e : CFG_FIELDS)
+    {
+        uint8_t *p = (uint8_t *)&c + e.off;
+        JsonVariant v = doc[e.key];
+        switch (e.type)
+        {
+        case CF_B: *(bool *)p = v.as<bool>(); break;
+        case CF_U8: *(uint8_t *)p = v.as<uint8_t>(); break;
+        case CF_I8: *(int8_t *)p = v.as<int8_t>(); break;
+        case CF_U16: *(uint16_t *)p = v.as<uint16_t>(); break;
+        case CF_I16: *(int16_t *)p = v.as<int16_t>(); break;
+        case CF_INT: *(int *)p = v.as<int>(); break;
+        case CF_UINT: *(unsigned int *)p = v.as<unsigned int>(); break;
+        case CF_LONG: *(long *)p = v.as<long>(); break;
+        case CF_ULONG: *(unsigned long *)p = v.as<unsigned long>(); break;
+        case CF_I32: *(int32_t *)p = v.as<int32_t>(); break;
+        case CF_U32: *(uint32_t *)p = v.as<uint32_t>(); break;
+        case CF_F: *(float *)p = v.as<float>(); break;
+        case CF_D: *(double *)p = v.as<double>(); break;
+        case CF_S: strlcpy((char *)p, v | e.dflt, e.size); break;
+        }
+    }
+}
+
 bool saveConfiguration(const char *filename, const Configuration &config)
 {
     // Delete existing file, otherwise the configuration is appended to the file
@@ -51,16 +281,13 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     //delay(500);
     //StaticJsonDocument<6000> doc;    
     JsonDocument doc;
+    cfgSaveTable(doc, config); // 2.1.9: plain fields (table above)
     
     // Set the values in the document
     doc["cpuFreq"] = config.cpuFreq;
     doc["txTimeSlot"] = config.tx_timeslot;
-    doc["syncTime"] = config.synctime;
-    doc["timeZone"] = config.timeZone;
     doc["ntpHost"] = config.ntp_host;
     doc["WiFiMode"] = (signed char)config.wifi_mode;
-    doc["WiFiPwr"] = config.wifi_power;
-    doc["WiFiAPCH"] = config.wifi_ap_ch;
     doc["WiFiAP_SSID"] = config.wifi_ap_ssid;
     doc["WiFiAP_PASS"] = config.wifi_ap_pass;
     JsonArray wifiArray = doc["WiFiSTA"].to<JsonArray>();
@@ -71,20 +298,7 @@ bool saveConfiguration(const char *filename, const Configuration &config)
         wifiArray.add(config.wifi_sta[i].wifi_pass);
     }
 
-    doc["fx25Mode"] = config.fx25_mode;
-    doc["rfEnable"] = config.rf_en;
-    doc["rfType"] = config.rf_type;
-    doc["rfModem"] = config.modem_type;    
-    doc["rfPreamble"] = config.preamble;
-    doc["rfFreqRX"] = config.freq_rx;
-    doc["rfFreqTX"] = config.freq_tx;
-    doc["rfToneRX"] = config.tone_rx;
-    doc["rfToneTX"] = config.tone_tx;
-    doc["rfSql"] = config.sql_level;
-    doc["rfVolume"] = config.volume;
-    doc["rfBand"] = config.band;
     doc["rfPwr"] = config.rf_power;
-    doc["audioLPF"] = config.audio_lpf;
     doc["txAudioGain"] = config.tx_audio_gain;
     doc["txPreemphasis"] = config.tx_preemphasis;
     doc["txPreemphasisTilt"] = config.tx_preemphasis_tilt;
@@ -104,32 +318,9 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     // doc["rfEncoding"] = config.rf_encoding;
 
     // IGate group
-    doc["igateEn"] = config.igate_en;
-    doc["igateBcn"] = config.igate_bcn;
-    doc["rf2inet"] = config.rf2inet;
-    doc["inet2rf"] = config.inet2rf;
-    doc["igatePos2rf"] = config.igate_loc2rf;
-    doc["igatePos2inet"] = config.igate_loc2inet;
-    doc["rf2inetFilter"] = config.rf2inetFilter;
-    doc["inet2rfFiltger"] = config.inet2rfFilter;
 
-    doc["igateSSID"] = config.aprs_ssid;
-    doc["igatePort"] = config.aprs_port;
-    doc["igateMycall"] = config.aprs_mycall;
-    doc["igateHost"] = config.aprs_host;
     // doc["igatePassCode"]=config.aprs_passcode;
-    doc["igateFilter"] = config.aprs_filter;
-    doc["igateGPS"] = config.igate_gps;
-    doc["igateLAT"] = config.igate_lat;
-    doc["igateLON"] = config.igate_lon;
-    doc["igateALT"] = config.igate_alt;
-    doc["igateINV"] = config.igate_interval;
     doc["igateSymbol"] = config.igate_symbol;
-    doc["igateObject"] = config.igate_object;
-    doc["igatePHG"] = config.igate_phg;
-    doc["igatePath"] = config.igate_path;
-    doc["igateComment"] = config.igate_comment;
-    doc["igateSTSIntv"] = config.igate_sts_interval;
     doc["igateStatus"] = config.igate_status;
     JsonArray igateTlmAvg = doc["igateTlmAvg"].to<JsonArray>();
     for (int i = 0; i < 5; i++)
@@ -158,26 +349,7 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     }
 
     // Digi group
-    doc["digiEn"] = config.digi_en;
-    doc["digiAuto"] = config.digi_auto;
-    doc["digiPos2rf"] = config.digi_loc2rf;
-    doc["digiPos2inet"] = config.digi_loc2inet;
-    doc["digiTime"] = config.digi_timestamp;
-    doc["digiSSID"] = config.digi_ssid;
-    doc["digiMycall"] = config.digi_mycall;
-    doc["digiPath"] = config.digi_path;
-    doc["digiDelay"] = config.digi_delay;
-    doc["digiFilter"] = config.digiFilter;
-    doc["digiBcn"] = config.digi_bcn;
-    doc["digiAlt"] = config.digi_alt;
-    doc["digiGPS"] = config.digi_gps;
-    doc["digiLAT"] = config.digi_lat;
-    doc["digiLON"] = config.digi_lon;
-    doc["digiINV"] = config.digi_interval;
     doc["digiSymbol"] = config.digi_symbol;
-    doc["digiPHG"] = config.digi_phg;
-    doc["digiComment"] = config.digi_comment;
-    doc["digiSTSIntv"] = config.digi_sts_interval;
     doc["digiStatus"] = config.digi_status;
     JsonArray digiTlmAvg = doc["digiTlmAvg"].to<JsonArray>();
     for (int i = 0; i < 5; i++)
@@ -206,17 +378,6 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     }
 
     // Tracker group
-    doc["trkEn"] = config.trk_en;
-    doc["trkPos2rf"] = config.trk_loc2rf;
-    doc["trkPos2inet"] = config.trk_loc2inet;
-    doc["trkTime"] = config.trk_timestamp;
-    doc["trkSSID"] = config.trk_ssid;
-    doc["trkMycall"] = config.trk_mycall;
-    doc["trkPath"] = config.trk_path;
-    doc["trkGPS"] = config.trk_gps;
-    doc["trkLAT"] = config.trk_lat;
-    doc["trkLON"] = config.trk_lon;
-    doc["trkALT"] = config.trk_alt;
     doc["trkINV"] = config.trk_interval;
     doc["trkSmart"] = config.trk_smartbeacon;
     doc["trkCompress"] = config.trk_compress;
@@ -233,8 +394,6 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     doc["trkSymbolMove"] = config.trk_symmove;
     doc["trkSymbolStop"] = config.trk_symstop;
     doc["trkItem"] = config.trk_item;
-    doc["trkComment"] = config.trk_comment;
-    doc["trkSTSIntv"] = config.trk_sts_interval;
     doc["trkStatus"] = config.trk_status;
     JsonArray trkTlmAvg = doc["trkTlmAvg"].to<JsonArray>();
     for (int i = 0; i < 5; i++)
@@ -263,21 +422,6 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     }
 
     // WX group
-    doc["wxEn"] = config.wx_en;
-    doc["wxTx2rf"] = config.wx_2rf;
-    doc["wxTx2inet"] = config.wx_2inet;
-    doc["wxTime"] = config.wx_timestamp;
-    doc["wxSSID"] = config.wx_ssid;
-    doc["wxMycall"] = config.wx_mycall;
-    doc["wxPath"] = config.wx_path;
-    doc["wxGPS"] = config.wx_gps;
-    doc["wxLAT"] = config.wx_lat;
-    doc["wxLON"] = config.wx_lon;
-    doc["wxALT"] = config.wx_alt;
-    doc["wxInv"] = config.wx_interval;
-    doc["wxFlage"] = config.wx_flage;
-    doc["wxObject"] = config.wx_object;
-    doc["wxComment"] = config.wx_comment;
 
     JsonArray wxSenEn = doc["wxSenEn"].to<JsonArray>();
     for (int i = 0; i < WX_SENSOR_NUM; i++)
@@ -296,15 +440,6 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     }
 
     // Telemetry
-    doc["tlmEn"] = config.tlm0_en;
-    doc["tlmTx2rf"] = config.tlm0_2rf;
-    doc["tlmTx2inet"] = config.tlm0_2inet;
-    doc["tlmSSID"] = config.tlm0_ssid;
-    doc["tlmMycall"] = config.tlm0_mycall;
-    doc["tlmPath"] = config.tlm0_path;
-    doc["tlmInfoInv"] = config.tlm0_info_interval;
-    doc["tlmDataInv"] = config.tlm0_data_interval;
-    doc["tlmBIT"] = config.tlm0_BITS_Active;
     // doc["tlmDataCH"]=config.tml0_data_channel;
     JsonArray tlmEQNS = doc["tlmEQNS"].to<JsonArray>();
     for (int i = 0; i < 5; i++)
@@ -330,35 +465,13 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     }
 
     // OLED Display
-    doc["dspEn"] = config.oled_enable;
-    doc["dspTOut"] = config.oled_timeout;
-    doc["dspDim"] = config.dim;
-    doc["dspContrast"] = config.contrast;
-    doc["dspBright"] = config.disp_brightness;
-    doc["dspStartUp"] = config.startup;
-    doc["dspDelay"] = config.dispDelay;
-    doc["dspDxFilter"] = config.filterDistant;
     doc["dspHUp"] = config.h_up;
     doc["dspTX"] = config.tx_display;
     doc["dspRX"] = config.rx_display;
-    doc["dspFilter"] = config.dispFilter;
-    doc["dspRF"] = config.dispRF;
-    doc["dspINET"] = config.dispINET;
-    doc["dspFlip"] = config.disp_flip;
 
     // VPN Wireguard
-    doc["vpnEn"] = config.vpn;
-    doc["vpnPort"] = config.wg_port;
-    doc["vpnPeer"] = config.wg_peer_address;
-    doc["vpnLocal"] = config.wg_local_address;
-    doc["vpnNetmark"] = config.wg_netmask_address;
-    doc["vpnGW"] = config.wg_gw_address;
-    doc["vpnPubKey"] = config.wg_public_key;
-    doc["vpnPriKey"] = config.wg_private_key;
 
     // System
-    doc["httpUser"] = config.http_username;
-    doc["httpPass"] = config.http_password;
 
     JsonArray path = doc["path"].to<JsonArray>();
     for (int i = 0; i < 4; i++)
@@ -367,12 +480,8 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     }
 
     // MOD GNSS group
-    doc["gnssEn"] = config.gnss_enable;
     doc["gnssCH"] = config.gnss_channel;
     doc["gnssPPS"] = config.gnss_pps_gpio;
-    doc["gnssTCPPort"] = config.gnss_tcp_port;
-    doc["gnssTCPHost"] = config.gnss_tcp_host;
-    doc["gnssAT"] = config.gnss_at_command;
 
     // MOD RF group
     doc["rfTx"] = config.rf_tx_gpio;
@@ -386,8 +495,6 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     doc["rfPWRAct"] = config.rf_pwr_active;
     doc["rfPTTAct"] = config.rf_ptt_active;
     doc["adcAtten"] = config.adc_atten;
-    doc["adcOffset"] = config.adc_dc_offset;
-    doc["rfBaudrate"] = config.rf_baudrate;
 
     // doc["rfRST"] = config.rf_reset_gpio;
     // doc["rfDIO0"] = config.rf_dio0_gpio;
@@ -402,12 +509,10 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     // doc["rfRSTAct"] = config.rf_reset_active;
     // doc["rfNSSAct"] = config.rf_nss_active;
     // MOD I2C group
-    doc["i2cEn"] = config.i2c_enable;
     doc["i2cSDA"] = config.i2c_sda_pin;
     doc["i2cSCK"] = config.i2c_sck_pin;
     // doc["i2cRST"]=config.i2c_rst_pin;
     doc["i2cFreq"] = config.i2c_freq;
-    doc["i2c1En"] = config.i2c1_enable;
     doc["i2c1SDA"] = config.i2c1_sda_pin;
     doc["i2c1SCK"] = config.i2c1_sck_pin;
     doc["i2c1Freq"] = config.i2c1_freq;
@@ -417,12 +522,10 @@ bool saveConfiguration(const char *filename, const Configuration &config)
 
     // MOD UART
     doc["uart0En"] = config.uart0_enable;
-    doc["uart0BR"] = config.uart0_baudrate;
     doc["uart0TX"] = config.uart0_tx_gpio;
     doc["uart0RX"] = config.uart0_rx_gpio;
     doc["uart0RTS"] = config.uart0_rts_gpio;
     doc["uart1En"] = config.uart1_enable;
-    doc["uart1BR"] = config.uart1_baudrate;
     doc["uart1TX"] = config.uart1_tx_gpio;
     doc["uart1RX"] = config.uart1_rx_gpio;
     doc["uart1RTS"] = config.uart1_rts_gpio;
@@ -459,17 +562,8 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     doc["pwrStanby"] = config.pwr_stanby_delay;
 
 #ifdef BLUETOOTH
-        doc["btSlave"] = config.bt_slave;
-        doc["btMaster"] = config.bt_master;
-        doc["btMode"] = config.bt_mode;
-        doc["btPower"] = config.bt_power;
-        doc["btPin"] = config.bt_pin;
-        doc["btName"] = config.bt_name;
 #if !defined(CONFIG_IDF_TARGET_ESP32)
         // Bluetooth BLE
-        doc["btUUID"] = config.bt_uuid;
-        doc["btUUIDRx"] = config.bt_uuid_rx;
-        doc["btUUIDTx"] = config.bt_uuid_tx;
 #endif
 #endif
 
@@ -493,7 +587,6 @@ bool saveConfiguration(const char *filename, const Configuration &config)
 
      // PPP Modem
     doc["pppEn"] = config.ppp_enable;
-    doc["pppAPN"] = config.ppp_apn;
     doc["pppRST"] = config.ppp_rst_gpio;
     doc["pppRSTAct"] = config.ppp_rst_active;
     doc["pppTX"] = config.ppp_tx_gpio;
@@ -505,7 +598,6 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     doc["pppPWR"] = config.ppp_pwr_gpio;
     doc["pppPWRAct"] = config.ppp_pwr_active;
     doc["pppRSTDelay"] = config.ppp_rst_delay;
-    doc["pppPin"] = config.ppp_pin;
     doc["pppSerial"] = config.ppp_serial;
     doc["pppSerialBaudrate"] = config.ppp_serial_baudrate;
     doc["pppModel"] = config.ppp_model;
@@ -514,28 +606,9 @@ bool saveConfiguration(const char *filename, const Configuration &config)
     doc["pppNAPT"] = config.ppp_napt;
 
     #ifdef MQTT
-    doc["mqttEnable"] = config.en_mqtt;
-    doc["mqttHost"] = config.mqtt_host;
-    doc["mqttTopic"] = config.mqtt_topic;
-    doc["mqttSub"] = config.mqtt_subscribe;
-    doc["mqttTopicFlag"] = config.mqtt_topic_flag;
-    doc["mqttSubFlag"] = config.mqtt_subscribe_flag;
-    doc["mqttPort"] = config.mqtt_port;
-    doc["mqttUser"] = config.mqtt_user;
-    doc["mqttPass"] = config.mqtt_pass;
     #endif
 
-    doc["trkMicEType"] = config.trk_mice_type;
-    doc["trkTlmInv"] = config.trk_tlm_interval;
-    doc["digiTlmInv"] = config.digi_tlm_interval;
-    doc["igateTlmInv"] = config.igate_tlm_interval;
-    doc["hostName"] = config.host_name;
-    doc["resetTimeout"] = config.reset_timeout;
 
-    doc["cmdOnMqtt"] = config.at_cmd_mqtt;
-    doc["cmdOnMsg"] = config.at_cmd_msg;
-    doc["cmdOnBluetooth"] = config.at_cmd_bluetooth;
-    doc["cmdOnUart"] = config.at_cmd_uart;
 
     doc["msgEnable"] = config.msg_enable;
     doc["msgMycall"] = config.msg_mycall;
@@ -660,14 +733,13 @@ bool loadConfiguration(const char *filename, Configuration &config)
             return false;
         }
 
+        cfgLoadTable(doc, config); // 2.1.9: plain fields (table above)
+        if (doc["dspRotate"].isNull())
+            config.disp_rotate = 10; // 2.1.9: configuration saved before this option: screens change every 10 s
         config.cpuFreq = doc["cpuFreq"] | 160;
         config.tx_timeslot = doc["txTimeSlot"] | 2000;
-        config.synctime = doc["syncTime"];
-        config.timeZone = doc["timeZone"];
         strlcpy(config.ntp_host, doc["ntpHost"], sizeof(config.ntp_host));
         config.wifi_mode = doc["WiFiMode"];
-        config.wifi_power = doc["WiFiPwr"];
-        config.wifi_ap_ch = doc["WiFiAPCH"];
         strlcpy(config.wifi_ap_ssid, doc["WiFiAP_SSID"] | "ESP32LoRa", sizeof(config.wifi_ap_ssid));
         strlcpy(config.wifi_ap_pass, doc["WiFiAP_PASS"] | "", sizeof(config.wifi_ap_pass));
         // log_d("Load WiFiAP: SSID=%s Pass=%s",config.wifi_ap_ssid,config.wifi_ap_pass);
@@ -680,20 +752,7 @@ bool loadConfiguration(const char *filename, Configuration &config)
             // log_d("Load WiFiSTA[%i]: SSID=%s Pass=%s",i,config.wifi_sta[i].wifi_ssid,config.wifi_sta[i].wifi_pass);
         }
 
-        config.fx25_mode = doc["fx25Mode"];
-        config.rf_en = doc["rfEnable"];
-        config.rf_type = doc["rfType"];
         config.rf_power = doc["rfPwr"];
-        config.modem_type = doc["rfModem"];
-        config.preamble = doc["rfPreamble"];
-        config.freq_rx = doc["rfFreqRX"];
-        config.freq_tx = doc["rfFreqTX"];
-        config.tone_rx = doc["rfToneRX"];
-        config.tone_tx = doc["rfToneTX"];
-        config.sql_level = doc["rfSql"];
-        config.volume = doc["rfVolume"];
-        config.band = doc["rfBand"];
-        config.audio_lpf = doc["audioLPF"];
         config.tx_audio_gain = doc["txAudioGain"] | 100;
         config.tx_preemphasis = doc["txPreemphasis"] | false;
         config.tx_preemphasis_tilt = doc["txPreemphasisTilt"] | 20;
@@ -713,32 +772,9 @@ bool loadConfiguration(const char *filename, Configuration &config)
         // config.rf_encoding = doc["rfEncoding"];
 
         // IGate group
-        config.igate_en = doc["igateEn"];
-        config.igate_bcn = doc["igateBcn"];
-        config.rf2inet = doc["rf2inet"];
-        config.inet2rf = doc["inet2rf"];
-        config.igate_loc2rf = doc["igatePos2rf"];
-        config.igate_loc2inet = doc["igatePos2inet"];
-        config.rf2inetFilter = doc["rf2inetFilter"];
-        config.inet2rfFilter = doc["inet2rfFiltger"];
 
-        config.aprs_ssid = doc["igateSSID"];
-        config.aprs_port = doc["igatePort"];
-        strlcpy(config.aprs_mycall, doc["igateMycall"] | "NOCALL", sizeof(config.aprs_mycall));
-        strlcpy(config.aprs_host, doc["igateHost"] | "", sizeof(config.aprs_host));
-        strlcpy(config.aprs_filter, doc["igateFilter"] | "", sizeof(config.aprs_filter));
-        config.igate_gps = doc["igateGPS"];
-        config.igate_lat = doc["igateLAT"];
-        config.igate_lon = doc["igateLON"];
-        config.igate_alt = doc["igateALT"];
-        config.igate_interval = doc["igateINV"];
         strlcpy(config.igate_symbol, doc["igateSymbol"] | "", sizeof(config.igate_symbol));
-        strlcpy(config.igate_object, doc["igateObject"] | "", sizeof(config.igate_object));
-        strlcpy(config.igate_phg, doc["igatePHG"] | "", sizeof(config.igate_phg));
-        strlcpy(config.igate_comment, doc["igateComment"] | "", sizeof(config.igate_comment));
         strlcpy(config.igate_status, doc["igateStatus"] | "", sizeof(config.igate_status));
-        config.igate_sts_interval = doc["igateSTSIntv"];
-        config.igate_path = doc["igatePath"];
 
         for (int i = 0; i < 5; i++)
             config.igate_tlm_avg[i] = doc["igateTlmAvg"][i];
@@ -759,27 +795,8 @@ bool loadConfiguration(const char *filename, Configuration &config)
             config.igate_tlm_EQNS[i][2] = doc["igateTlmEQNS"][(i * 3) + 2];
         }
         // Digi group
-        config.digi_en = doc["digiEn"];
-        config.digi_auto = doc["digiAuto"];
-        config.digi_loc2rf = doc["digiPos2rf"];
-        config.digi_loc2inet = doc["digiPos2inet"];
-        config.digi_timestamp = doc["digiTime"];
-        config.digi_ssid = doc["digiSSID"];
-        strlcpy(config.digi_mycall, doc["digiMycall"] | "", sizeof(config.digi_mycall));
-        config.digi_path = doc["digiPath"];
-        config.digi_delay = doc["digiDelay"];
-        config.digiFilter = doc["digiFilter"];
-        config.digi_bcn = doc["digiBcn"];
-        config.digi_alt = doc["digiAlt"];
-        config.digi_gps = doc["digiGPS"];
-        config.digi_lat = doc["digiLAT"];
-        config.digi_lon = doc["digiLON"];
-        config.digi_interval = doc["digiINV"];
         strlcpy(config.digi_symbol, doc["digiSymbol"] | "", sizeof(config.digi_symbol));
-        strlcpy(config.digi_phg, doc["digiPHG"] | "", sizeof(config.digi_phg));
-        strlcpy(config.digi_comment, doc["digiComment"] | "", sizeof(config.digi_comment));
         strlcpy(config.digi_status, doc["digiStatus"] | "", sizeof(config.digi_status));
-        config.digi_sts_interval = doc["digiSTSIntv"];
         for (int i = 0; i < 5; i++)
             config.digi_tlm_avg[i] = doc["digiTlmAvg"][i];
         for (int i = 0; i < 5; i++)
@@ -799,17 +816,6 @@ bool loadConfiguration(const char *filename, Configuration &config)
             config.digi_tlm_EQNS[i][2] = doc["digiTlmEQNS"][(i * 3) + 2];
         }
         // Tracker group
-        config.trk_en = doc["trkEn"];
-        config.trk_loc2rf = doc["trkPos2rf"];
-        config.trk_loc2inet = doc["trkPos2inet"];
-        config.trk_timestamp = doc["trkTime"];
-        config.trk_ssid = doc["trkSSID"];
-        strlcpy(config.trk_mycall, doc["trkMycall"] | "", sizeof(config.trk_mycall));
-        config.trk_path = doc["trkPath"];
-        config.trk_gps = doc["trkGPS"];
-        config.trk_lat = doc["trkLAT"];
-        config.trk_lon = doc["trkLON"];
-        config.trk_alt = doc["trkALT"];
         config.trk_interval = doc["trkINV"];
         config.trk_smartbeacon = doc["trkSmart"];
         config.trk_compress = doc["trkCompress"];
@@ -826,9 +832,7 @@ bool loadConfiguration(const char *filename, Configuration &config)
         strlcpy(config.trk_symmove, doc["trkSymbolMove"] | "", sizeof(config.trk_symmove));
         strlcpy(config.trk_symstop, doc["trkSymbolStop"] | "", sizeof(config.trk_symstop));
         strlcpy(config.trk_item, doc["trkItem"] | "", sizeof(config.trk_item));
-        strlcpy(config.trk_comment, doc["trkComment"] | "", sizeof(config.trk_comment));
         strlcpy(config.trk_status, doc["trkStatus"] | "", sizeof(config.trk_status));
-        config.trk_sts_interval = doc["trkSTSIntv"];
         for (int i = 0; i < 5; i++)
             config.trk_tlm_avg[i] = doc["trkTlmAvg"][i];
         for (int i = 0; i < 5; i++)
@@ -848,21 +852,6 @@ bool loadConfiguration(const char *filename, Configuration &config)
             config.trk_tlm_EQNS[i][2] = doc["trkTlmEQNS"][(i * 3) + 2];
         }
         // WX group
-        config.wx_en = doc["wxEn"];
-        config.wx_2rf = doc["wxTx2rf"];
-        config.wx_2inet = doc["wxTx2inet"];
-        config.wx_timestamp = doc["wxTime"];
-        config.wx_ssid = doc["wxSSID"];
-        strlcpy(config.wx_mycall, doc["wxMycall"] | "", sizeof(config.wx_mycall));
-        config.wx_path = doc["wxPath"];
-        config.wx_gps = doc["wxGPS"];
-        config.wx_lat = doc["wxLAT"];
-        config.wx_lon = doc["wxLON"];
-        config.wx_alt = doc["wxALT"];
-        config.wx_interval = doc["wxInv"];
-        config.wx_flage = doc["wxFlage"];
-        strlcpy(config.wx_object, doc["wxObject"] | "", sizeof(config.wx_object));
-        strlcpy(config.wx_comment, doc["wxComment"] | "", sizeof(config.wx_comment));
 
         for (int i = 0; i < WX_SENSOR_NUM; i++)
         {
@@ -878,15 +867,6 @@ bool loadConfiguration(const char *filename, Configuration &config)
         }
 
         // Telemetry
-        config.tlm0_en = doc["tlmEn"];
-        config.tlm0_2rf = doc["tlmTx2rf"];
-        config.tlm0_2inet = doc["tlmTx2inet"];
-        config.tlm0_ssid = doc["tlmSSID"];
-        strlcpy(config.tlm0_mycall, doc["tlmMycall"] | "", sizeof(config.tlm0_mycall));
-        config.tlm0_path = doc["tlmPath"];
-        config.tlm0_info_interval = doc["tlmInfoInv"];
-        config.tlm0_data_interval = doc["tlmDataInv"];
-        config.tlm0_BITS_Active = doc["tlmBIT"];
 
         for (int i = 0; i < 5; i++)
         {
@@ -907,35 +887,13 @@ bool loadConfiguration(const char *filename, Configuration &config)
             config.tml0_data_channel[i] = doc["tlmDataCH"][i];
         }
         // OLED Display
-        config.oled_enable = doc["dspEn"];
-        config.oled_timeout = doc["dspTOut"];
-        config.dim = doc["dspDim"];
-        config.contrast = doc["dspContrast"];
-        config.disp_brightness = doc["dspBright"];
-        config.startup = doc["dspStartUp"];
-        config.dispDelay = doc["dspDelay"];
-        config.filterDistant = doc["dspDxFilter"];
         config.h_up = doc["dspHUp"];
         config.tx_display = doc["dspTX"];
         config.rx_display = doc["dspRX"];
-        config.dispFilter = doc["dspFilter"];
-        config.dispRF = doc["dspRF"];
-        config.dispINET = doc["dspINET"];
-        config.disp_flip = doc["dspFlip"];
 
         // VPN Wireguard
-        config.vpn = doc["vpnEn"];
-        config.wg_port = doc["vpnPort"];
-        strlcpy(config.wg_peer_address, doc["vpnPeer"] | "", sizeof(config.wg_peer_address));
-        strlcpy(config.wg_local_address, doc["vpnLocal"] | "", sizeof(config.wg_local_address));
-        strlcpy(config.wg_netmask_address, doc["vpnNetmark"] | "", sizeof(config.wg_netmask_address));
-        strlcpy(config.wg_gw_address, doc["vpnGW"] | "", sizeof(config.wg_gw_address));
-        strlcpy(config.wg_public_key, doc["vpnPubKey"] | "", sizeof(config.wg_public_key));
-        strlcpy(config.wg_private_key, doc["vpnPriKey"] | "", sizeof(config.wg_private_key));
 
         // System
-        strlcpy(config.http_username, doc["httpUser"] | "", sizeof(config.http_username));
-        strlcpy(config.http_password, doc["httpPass"] | "", sizeof(config.http_password));
 
         for (int i = 0; i < 4; i++)
         {
@@ -943,12 +901,8 @@ bool loadConfiguration(const char *filename, Configuration &config)
         }
 
         // MOD GNSS group
-        config.gnss_enable = doc["gnssEn"];
         config.gnss_channel = doc["gnssCH"];
         config.gnss_pps_gpio = doc["gnssPPS"];
-        config.gnss_tcp_port = doc["gnssTCPPort"];
-        strlcpy(config.gnss_tcp_host, doc["gnssTCPHost"] | "", sizeof(config.gnss_tcp_host));
-        strlcpy(config.gnss_at_command, doc["gnssAT"] | "", sizeof(config.gnss_at_command));
 
         // MOD RF group
         config.rf_tx_gpio = doc["rfTx"];
@@ -961,9 +915,7 @@ bool loadConfiguration(const char *filename, Configuration &config)
         config.rf_pd_active = doc["rfPDAct"];
         config.rf_pwr_active = doc["rfPWRAct"];
         config.rf_ptt_active = doc["rfPTTAct"];
-        config.rf_baudrate = doc["rfBaudrate"];
         config.adc_atten = doc["adcAtten"];
-        config.adc_dc_offset = doc["adcOffset"];          
 
         // config.rf_reset_gpio = doc["rfRST"];
         // config.rf_dio0_gpio = doc["rfDIO0"];
@@ -978,12 +930,10 @@ bool loadConfiguration(const char *filename, Configuration &config)
         // config.rf_reset_active = doc["rfRSTAct"];
         // config.rf_nss_active = doc["rfNSSAct"];
         // MOD I2C group
-        config.i2c_enable = doc["i2cEn"];
         config.i2c_sda_pin = doc["i2cSDA"];
         config.i2c_sck_pin = doc["i2cSCK"];
         // doc["i2cRST"]=config.i2c_rst_pin;
         config.i2c_freq = doc["i2cFreq"];
-        config.i2c1_enable = doc["i2c1En"];
         config.i2c1_sda_pin = doc["i2c1SDA"];
         config.i2c1_sck_pin = doc["i2c1SCK"];
         config.i2c1_freq = doc["i2c1Freq"];
@@ -993,12 +943,10 @@ bool loadConfiguration(const char *filename, Configuration &config)
 
         // MOD UART
         config.uart0_enable = doc["uart0En"];
-        config.uart0_baudrate = doc["uart0BR"];
         config.uart0_tx_gpio = doc["uart0TX"];
         config.uart0_rx_gpio = doc["uart0RX"];
         config.uart0_rts_gpio = doc["uart0RTS"];
         config.uart1_enable = doc["uart1En"];
-        config.uart1_baudrate = doc["uart1BR"];
         config.uart1_tx_gpio = doc["uart1TX"];
         config.uart1_rx_gpio = doc["uart1RX"];
         config.uart1_rts_gpio = doc["uart1RTS"];
@@ -1035,17 +983,8 @@ bool loadConfiguration(const char *filename, Configuration &config)
         config.pwr_stanby_delay = doc["pwrStanby"] | 30;
 
 #ifdef BLUETOOTH
-        config.bt_slave = doc["btSlave"];
-        config.bt_master = doc["btMaster"];
-        config.bt_mode = doc["btMode"];
-        config.bt_power = doc["btPower"];
-        config.bt_pin = doc["btPin"];
-        strlcpy(config.bt_name, doc["btName"] | "", sizeof(config.bt_name));
 #if !defined(CONFIG_IDF_TARGET_ESP32)
         // Bluetooth BLE
-        strlcpy(config.bt_uuid, doc["btUUID"] | "", sizeof(config.bt_uuid));
-        strlcpy(config.bt_uuid_rx, doc["btUUIDRx"] | "", sizeof(config.bt_uuid_rx));
-        strlcpy(config.bt_uuid_tx, doc["btUUIDTx"] | "", sizeof(config.bt_uuid_tx));
 #endif
 #endif
 
@@ -1068,8 +1007,6 @@ bool loadConfiguration(const char *filename, Configuration &config)
 
         // PPP Modem
         config.ppp_enable = doc["pppEn"];
-        strlcpy(config.ppp_apn, doc["pppAPN"] | "", sizeof(config.ppp_apn));
-        strlcpy(config.ppp_pin, doc["pppPin"] | "", sizeof(config.ppp_pin));
         config.ppp_rst_gpio = doc["pppRST"];
         config.ppp_rst_active = doc["pppRSTAct"];
         config.ppp_rst_delay = doc["pppRSTDelay"];
@@ -1089,27 +1026,8 @@ bool loadConfiguration(const char *filename, Configuration &config)
         config.ppp_napt = doc["pppNAPT"];
 
         #ifdef MQTT
-        config.en_mqtt = doc["mqttEnable"];
-        strlcpy(config.mqtt_host, doc["mqttHost"] | "", sizeof(config.mqtt_host));
-        strlcpy(config.mqtt_topic, doc["mqttTopic"] | "", sizeof(config.mqtt_topic));
-        strlcpy(config.mqtt_subscribe, doc["mqttSub"] | "", sizeof(config.mqtt_subscribe));
-        config.mqtt_topic_flag = doc["mqttTopicFlag"];
-        config.mqtt_subscribe_flag = doc["mqttSubFlag"];
-        config.mqtt_port = doc["mqttPort"];
-        strlcpy(config.mqtt_user, doc["mqttUser"] | "", sizeof(config.mqtt_user));
-        strlcpy(config.mqtt_pass, doc["mqttPass"] | "", sizeof(config.mqtt_pass));
         #endif
 
-        config.trk_mice_type = doc["trkMicEType"];
-        config.trk_tlm_interval = doc["trkTlmInv"];
-        config.digi_tlm_interval = doc["digiTlmInv"];
-        config.igate_tlm_interval = doc["igateTlmInv"];
-        strlcpy(config.host_name, doc["hostName"] | "", sizeof(config.host_name));
-        config.reset_timeout = doc["resetTimeout"];
-        config.at_cmd_mqtt = doc["cmdOnMqtt"];
-        config.at_cmd_msg = doc["cmdOnMsg"];
-        config.at_cmd_bluetooth = doc["cmdOnBluetooth"];
-        config.at_cmd_uart = doc["cmdOnUart"];
 
         if(doc["msgEnable"].isNull()){ //old version compatibility
             config.msg_enable = true;

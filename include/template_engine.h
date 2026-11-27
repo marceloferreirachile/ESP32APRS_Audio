@@ -37,5 +37,6 @@
 #include <ArduinoJson.h>
 
 String renderTemplate(const String &tpl, JsonVariant data);
+String renderTemplate(const char *tpl, JsonVariant data); // 2.1.9: page template in flash, no copy
 
 #endif // TEMPLATE_ENGINE_H

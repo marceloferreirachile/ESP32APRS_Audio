@@ -116,7 +116,9 @@ char *StringToCharPtr(const String &str)
 #include <PPP.h>
 #endif
 
-#ifdef SH1106
+#ifdef LU6_OLED
+#include "lu6_oled.h"
+#elif defined(SH1106)
 #include <Adafruit_SH1106.h>
 #else
 #include "Adafruit_SSD1306.h"
@@ -155,7 +157,9 @@ extern uint16_t blnSentCount[9];
 extern volatile bool blnRestartPending[9];
 
 #ifdef OLED
-#ifdef SH1106
+#ifdef LU6_OLED
+extern Lu6Oled display;
+#elif defined(SH1106)
 extern Adafruit_SH1106 display;
 #else
 extern Adafruit_SSD1306 display;
@@ -419,8 +423,11 @@ static void lu6LogoUpload(AsyncWebServerRequest *request, String filename, size_
 	}
 }
 
+void handle_sos(AsyncWebServerRequest *request); // 2.1.9: defined below
 void lu6jmfLogoRoutes()
 {
+	async_server.on("/sos", HTTP_POST, [](AsyncWebServerRequest *request)
+					{ handle_sos(request); }); // 2.1.9: SOS from the DashBoard
 	// 2.1.8: browser tab icon (project mark) - no login needed, cached by the browser
 	async_server.on("/favicon.svg", HTTP_GET, [](AsyncWebServerRequest *request)
 					{ AsyncWebServerResponse *r = request->beginResponse_P(200, "image/svg+xml", LU6_FAVICON_SVG, LU6_FAVICON_SVG_LEN);
@@ -456,6 +463,44 @@ void lu6jmfLogoRoutes()
 
 String lu6jmfUpdateBanner(); // 2.1.8: defined with the update code (near handle_check_version)
 String lu6jmfUpdateBox();
+// LU6JMF 2.1.9 (as AR-LORA 1.4.1): SOS on the DashBoard, for a tracker that is out of reach (hidden in a car, a box...)
+extern bool lu6SosActive;
+extern bool lu6SosSet(bool on);
+static String lu6jmfSosBox()
+{
+	if (!config.trk_en && !lu6SosActive)
+		// Tracker off: the button is shown greyed; hover or click explains how to enable it
+		return String("<div style=\"clear:both;box-sizing:border-box;width:100%;text-align:right;margin:2px 0 6px 0;\">"
+					  "<span id=\"lu6sosinfo\" style=\"font-size:12px;color:#555;margin-right:8px;\"></span>"
+					  "<input type=\"button\" value=\"SOS Emergency\" title=\"To use the SOS, enable the Tracker on the TRACKER page\" "
+					  "onclick=\"document.getElementById('lu6sosinfo').innerHTML='To use the SOS, enable the Tracker on the <b>TRACKER</b> page.';\" "
+					  "style=\"padding:3px 12px;font-weight:bold;background:#bdbdbd;color:#fff;border:1px solid #9e9e9e;border-radius:5px;cursor:help;\"></div>");
+	String s = "<script>function lu6Sos(on){"
+			   "if(on&&!confirm('Send an EMERGENCY (SOS)?\\n\\nThe tracker sends the APRS emergency beacon every minute (RF and Internet) and a message to the SOS contact, until you cancel it.'))return;"
+			   "if(!on&&!confirm('Cancel the SOS?'))return;"
+			   "$.ajax({url:'/sos',type:'POST',data:{on:on?1:0},success:function(){$('#contentmain').load('/dashboard');},"
+			   "error:function(x){alert(x.responseText||'Error');}});}</script>";
+	if (lu6SosActive)
+		s += "<div style=\"clear:both;box-sizing:border-box;width:100%;background:#fde8e8;border:2px solid #c62828;border-radius:8px;padding:8px 10px;margin:4px 0 8px 0;text-align:center;font-size:14px;color:#8b0000;\">"
+			 "<b>&#x26A0; SOS ACTIVE</b> - emergency beacon every minute (RF and Internet). "
+			 "<input type=\"button\" value=\"Cancel SOS\" onclick=\"lu6Sos(0)\" style=\"padding:3px 12px;font-weight:bold;background:#43a047;color:#fff;border:1px solid #2e7d32;border-radius:5px;cursor:pointer;\"></div>";
+	else
+		s += "<div style=\"clear:both;box-sizing:border-box;width:100%;text-align:right;margin:2px 0 6px 0;\">"
+			 "<input type=\"button\" value=\"SOS Emergency\" title=\"Send an APRS emergency (SOS)\" onclick=\"lu6Sos(1)\" style=\"padding:3px 12px;font-weight:bold;background:#c62828;color:#fff;border:1px solid #8b0000;border-radius:5px;cursor:pointer;\"></div>";
+	return s;
+}
+void handle_sos(AsyncWebServerRequest *request)
+{
+	if (!request->authenticate(config.http_username, config.http_password))
+		return request->requestAuthentication();
+	bool on = request->hasArg("on") && request->arg("on") == "1";
+	if (!lu6SosSet(on))
+	{
+		request->send(409, "text/plain", "SOS needs the Tracker: enable it on the TRACKER page first.");
+		return;
+	}
+	request->send(200, "text/plain", on ? "SOS ACTIVE" : "SOS cancelled");
+}
 static String lu6jmfHeaderInfo()
 {
 	String call = String(config.host_name);
@@ -466,7 +511,8 @@ static String lu6jmfHeaderInfo()
 	call.replace("<", "&lt;");
 	call.replace(">", "&gt;");
 	// 2.1.8: station info moved to the right side (above [LOG OUT]); the logo takes the left side
-	String h = "<div style=\"position:absolute;right:14px;top:-13px;text-align:right;font-size:11px;line-height:15px;color:#d7d7d7;\">";
+	// 2.1.9: shared page styles (short classes instead of the same inline style repeated hundreds of times)
+	String h = "<style>td.l{text-align:left}</style><div style=\"position:absolute;right:14px;top:-13px;text-align:right;font-size:11px;line-height:15px;color:#d7d7d7;\">";
 	if (call.length())
 		h += "<b style=\"font-size:15px;color:#fff;\">" + call + "</b><br>";
 	else
@@ -1192,6 +1238,7 @@ void handle_dashboard(AsyncWebServerRequest *request)
 	data["tzStr"] = temp_buffer;
 
 	String html = lu6jmfUpdateBox(); // 2.1.8: "new version available" box on top
+	html += lu6jmfSosBox();			  // 2.1.9: SOS button (tracker out of reach)
 	html += renderTemplate(DASHBOARD_TEMPLATE, data.as<JsonVariant>());
 	sendHtmlChunked(request, html, "dashboard");
 	lastHeardTimeout = millis() + 500;
@@ -1223,8 +1270,10 @@ static const char *SIDEBAR_TEMPLATE =
 	"{{#if vpn}}<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">VPN</th>\n"
 	"{{else}}<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">VPN</th>\n{{/if}}"
 	"</tr>\n<tr>\n"
+	"{{#if ppposCompiled}}"
 	"{{#if pppos}}<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">PPPoS</th>\n"
 	"{{else}}<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">PPPoS</th>\n{{/if}}"
+	"{{/if}}"
 	"{{#if mqttCompiled}}"
 	"{{#if mqtt}}<th style=\"background:#0b0; color:#030; width:50%;border-radius: 10px;border: 2px solid white;\">MQTT</th>\n"
 	"{{else}}<th style=\"background:#606060; color:#b0b0b0;border-radius: 10px;border: 2px solid white;\" aria-disabled=\"true\">MQTT</th>\n{{/if}}"
@@ -1267,6 +1316,7 @@ void handle_sidebar(AsyncWebServerRequest *request)
 	data["vpn"] = wireguard_active();
 #ifdef PPPOS
 	data["pppos"] = PPP.connected();
+	data["ppposCompiled"] = true;
 #else
 	data["pppos"] = false;
 #endif
@@ -1900,7 +1950,7 @@ String event_chatMessage(bool gethtml)
 			html += pkg.callsign;
 			html += "</td>";
 
-			html += "<td style=\"text-align: left;\">";
+			html += "<td class=\"l\">";
 			html += pkg.text;
 			html += "</td>";
 
@@ -2540,11 +2590,11 @@ static const char *RADIO_TEMPLATE =
 	"<th colspan=\"2\"><span><b>RF Analog Module</b></span></th>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Enable:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"radioEnable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"radioEnable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Module Type:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"rf_type\" id=\"rf_type\" onchange=\"rfType()\">\n"
 	"{{#each rfTypeOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
@@ -2552,17 +2602,17 @@ static const char *RADIO_TEMPLATE =
 	"</td>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>TX Frequency:</b></td>\n"
-	"<td style=\"text-align: left;\"><input type=\"number\" id=\"tx_freq\" name=\"tx_freq\" min=\"{{freqMin}}\" max=\"{{freqMax}}\"\n"
+	"<td class=\"l\"><input type=\"number\" id=\"tx_freq\" name=\"tx_freq\" min=\"{{freqMin}}\" max=\"{{freqMax}}\"\n"
 	"step=\"0.0001\" value=\"{{txFreq}}\" /> MHz</td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>RX Frequency:</b></td>\n"
-	"<td style=\"text-align: left;\"><input type=\"number\" id=\"rx_freq\" name=\"rx_freq\" min=\"{{freqMin}}\" max=\"{{freqMax}}\"\n"
+	"<td class=\"l\"><input type=\"number\" id=\"rx_freq\" name=\"rx_freq\" min=\"{{freqMin}}\" max=\"{{freqMax}}\"\n"
 	"step=\"0.0001\" value=\"{{rxFreq}}\" /> Mhz</td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>TX CTCSS:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"tx_ctcss\" id=\"tx_ctcss\">\n"
 	"{{#each txCtcssOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
@@ -2571,7 +2621,7 @@ static const char *RADIO_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>RX CTCSS:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"rx_ctcss\" id=\"rx_ctcss\">\n"
 	"<option value=\"0\" selected>0.0</option>\n"
 	"{{#each rxCtcssOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
@@ -2581,7 +2631,7 @@ static const char *RADIO_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Narrow/Wide:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"nw_band\" id=\"nw_band\">\n"
 	"<option value=\"0\" {{#if band}}{{else}}selected{{/if}}>12.5KHz</option>\n"
 	"<option value=\"1\" {{#if band}}selected{{/if}}>25.0KHz</option>\n"
@@ -2590,7 +2640,7 @@ static const char *RADIO_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>TX Power:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"rf_power\" id=\"rf_power\">\n"
 	"<option value=\"1\" {{#if rfPower}}selected{{/if}}>HIGH</option>\n"
 	"<option value=\"0\" {{#if rfPower}}{{else}}selected{{/if}}>LOW</option>\n"
@@ -2599,11 +2649,11 @@ static const char *RADIO_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>VOLUME:</b></td>\n"
-	"<td style=\"text-align: left;\"><input id=\"sliderVolume\" name=\"volume\" type=\"range\"\nmin=\"1\" max=\"8\" value=\"{{volume}}\" /><b><span style=\"font-size: 14pt;\" id=\"volShow\">{{volume}}</span></b></td>\n"
+	"<td class=\"l\"><input id=\"sliderVolume\" name=\"volume\" type=\"range\"\nmin=\"1\" max=\"8\" value=\"{{volume}}\" /><b><span style=\"font-size: 14pt;\" id=\"volShow\">{{volume}}</span></b></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>SQL Level:</b></td>\n"
-	"<td style=\"text-align: left;\"><input id=\"sliderSql\" name=\"sql_level\" type=\"range\"\nmin=\"0\" max=\"8\" value=\"{{sqlLevel}}\" /><b><span style=\"font-size: 14pt;\" id=\"sqlShow\">{{sqlLevel}}</span></b></td>\n"
+	"<td class=\"l\"><input id=\"sliderSql\" name=\"sql_level\" type=\"range\"\nmin=\"0\" max=\"8\" value=\"{{sqlLevel}}\" /><b><span style=\"font-size: 14pt;\" id=\"sqlShow\">{{sqlLevel}}</span></b></td>\n"
 	"</tr>\n"
 	"<tr><td colspan=\"2\" align=\"right\">\n"
 	"<div><button class=\"button\" type='submit' id='submitRadio'  name=\"commitRadio\"> Apply Change </button></div>\n"
@@ -2615,7 +2665,7 @@ static const char *RADIO_TEMPLATE =
 	"<th colspan=\"2\"><span><b>AFSK/TNC Configuration</b></span></th>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Modem Type:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"modem_type\" id=\"modem_type\" \">\n"
 	"{{#each modemOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
@@ -2623,7 +2673,7 @@ static const char *RADIO_TEMPLATE =
 	"</td>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>FX.25 Mode:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"fx25_mode\" id=\"fx25_mode\" \">\n"
 	"{{#each fx25Options}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
@@ -2632,11 +2682,11 @@ static const char *RADIO_TEMPLATE =
 	"<tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Deemphasis Audio:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"LPF\" value=\"OK\" {{#if lpfEnabled}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Audio low pass filter 1hz-2.5KHz</i></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"LPF\" value=\"OK\" {{#if lpfEnabled}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Audio low pass filter 1hz-2.5KHz</i></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>TX Audio Level:</b></td>\n"
-	"<td style=\"text-align: left;\"><input id=\"sliderTxGain\" name=\"txAudioGain\" type=\"range\"\nmin=\"0\" max=\"100\" value=\"{{txAudioGain}}\" /><b><span style=\"font-size: 14pt;\" id=\"txGainShow\">{{txAudioGain}}</span></b> %</td>\n"
+	"<td class=\"l\"><input id=\"sliderTxGain\" name=\"txAudioGain\" type=\"range\"\nmin=\"0\" max=\"100\" value=\"{{txAudioGain}}\" /><b><span style=\"font-size: 14pt;\" id=\"txGainShow\">{{txAudioGain}}</span></b> %</td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td></td>\n"
@@ -2644,7 +2694,7 @@ static const char *RADIO_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>TX Pre-emphasis:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"txPreemphasis\" value=\"OK\" {{#if txPreemphasisEnabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"txPreemphasis\" value=\"OK\" {{#if txPreemphasisEnabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td></td>\n"
@@ -2652,15 +2702,15 @@ static const char *RADIO_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Pre-emphasis Tilt:</b></td>\n"
-	"<td style=\"text-align: left;\"><input id=\"sliderTxTilt\" name=\"txPreemphasisTilt\" type=\"range\"\nmin=\"0\" max=\"100\" value=\"{{txPreemphasisTilt}}\" /><b><span style=\"font-size: 14pt;\" id=\"txTiltShow\">{{txPreemphasisTilt}}</span></b> %</td>\n"
+	"<td class=\"l\"><input id=\"sliderTxTilt\" name=\"txPreemphasisTilt\" type=\"range\"\nmin=\"0\" max=\"100\" value=\"{{txPreemphasisTilt}}\" /><b><span style=\"font-size: 14pt;\" id=\"txTiltShow\">{{txPreemphasisTilt}}</span></b> %</td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>TX Time Slot:</b></td>\n"
-	"<td style=\"text-align: left;\"><input type=\"number\" name=\"timeSlot\" min=\"0\" max=\"99999\"\nstep=\"100\" value=\"{{timeSlot}}\" /> mSec.</td>\n"
+	"<td class=\"l\"><input type=\"number\" name=\"timeSlot\" min=\"0\" max=\"99999\"\nstep=\"100\" value=\"{{timeSlot}}\" /> mSec.</td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Preamble:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"preamble\">\n"
 	"{{#each preambleOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
@@ -3272,22 +3322,22 @@ static const char *VPN_TEMPLATE =
 	"<form accept-charset=\"UTF-8\" action=\"#\" class=\"form-horizontal\" id=\"fromVPN\" method=\"post\">\n"
 	"<table>\n"
 	"<th colspan=\"2\"><span><b>Wireguard Configuration</b></span></th>\n"
-	"<tr><td align=\"right\"><b>Status</b></td><td style=\"text-align: left;\">{{vpnStatus}}</td></tr>\n"
+	"<tr><td align=\"right\"><b>Status</b></td><td class=\"l\">{{vpnStatus}}</td></tr>\n"
 	"<tr>"
 	"<td align=\"right\"><b>Enable</b></td>\n"
 	"{{#if vpnEnabled}}"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"wg_enable\" name=\"vpnEnable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" id=\"wg_enable\" name=\"vpnEnable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n"
 	"{{else}}"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"wg_enable\" name=\"vpnEnable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" id=\"wg_enable\" name=\"vpnEnable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n"
 	"{{/if}}"
 	"</tr>\n"
-	"<tr>\n<td align=\"right\"><b>Server Address</b></td>\n<td style=\"text-align: left;\"><input  size=\"20\" maxlength=\"32\" id=\"wg_peer_address\" name=\"wg_peer_address\" type=\"text\" value=\"{{peerAddress}}\" /></td>\n</tr>\n"
-	"<tr>\n<td align=\"right\"><b>Server Port</b></td>\n<td style=\"text-align: left;\"><input id=\"wg_port\" size=\"5\" name=\"wg_port\" type=\"number\" value=\"{{port}}\" /></td>\n</tr>\n"
-	"<tr>\n<td align=\"right\"><b>Local Address</b></td>\n<td style=\"text-align: left;\"><input id=\"wg_local_address\" name=\"wg_local_address\" type=\"text\" value=\"{{localAddress}}\" /></td>\n</tr>\n"
-	"<tr>\n<td align=\"right\"><b>Netmask</b></td>\n<td style=\"text-align: left;\"><input id=\"wg_netmask_address\" name=\"wg_netmask_address\" type=\"text\" value=\"{{netmask}}\" /></td>\n</tr>\n"
-	"<tr>\n<td align=\"right\"><b>Gateway</b></td>\n<td style=\"text-align: left;\"><input id=\"wg_gw_address\" name=\"wg_gw_address\" type=\"text\" value=\"{{gateway}}\" /></td>\n</tr>\n"
-	"<tr>\n<td align=\"right\"><b>Public Server Key</b></td>\n<td style=\"text-align: left;\"><input size=\"50\" maxlength=\"44\" id=\"wg_public_key\" name=\"wg_public_key\" type=\"text\" value=\"{{publicKey}}\" /></td>\n</tr>\n"
-	"<tr>\n<td align=\"right\"><b>Private Client Key</b></td>\n<td style=\"text-align: left;\"><input size=\"50\" maxlength=\"44\" id=\"wg_private_key\" name=\"wg_private_key\" type=\"text\" value=\"{{privateKey}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Server Address</b></td>\n<td class=\"l\"><input  size=\"20\" maxlength=\"32\" id=\"wg_peer_address\" name=\"wg_peer_address\" type=\"text\" value=\"{{peerAddress}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Server Port</b></td>\n<td class=\"l\"><input id=\"wg_port\" size=\"5\" name=\"wg_port\" type=\"number\" value=\"{{port}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Local Address</b></td>\n<td class=\"l\"><input id=\"wg_local_address\" name=\"wg_local_address\" type=\"text\" value=\"{{localAddress}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Netmask</b></td>\n<td class=\"l\"><input id=\"wg_netmask_address\" name=\"wg_netmask_address\" type=\"text\" value=\"{{netmask}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Gateway</b></td>\n<td class=\"l\"><input id=\"wg_gw_address\" name=\"wg_gw_address\" type=\"text\" value=\"{{gateway}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Public Server Key</b></td>\n<td class=\"l\"><input size=\"50\" maxlength=\"44\" id=\"wg_public_key\" name=\"wg_public_key\" type=\"text\" value=\"{{publicKey}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Private Client Key</b></td>\n<td class=\"l\"><input size=\"50\" maxlength=\"44\" id=\"wg_private_key\" name=\"wg_private_key\" type=\"text\" value=\"{{privateKey}}\" /></td>\n</tr>\n"
 	"<tr><td colspan=\"2\" align=\"right\">\n"
 	"<div><button class=\"button\" type='submit' id='submitVPN'  name=\"commitVPN\"> Apply Change </button></div>\n"
 	"<input type=\"hidden\" name=\"commitVPN\"/>\n"
@@ -3462,7 +3512,7 @@ void handle_vpn(AsyncWebServerRequest *request)
 		if (wg_local_addr.startsWith("10.66.1."))
 		{
 			int lastoct = wg_local_addr.substring(wg_local_addr.lastIndexOf('.') + 1).toInt();
-			data["directUrl"] = "http://vpn.tracktotal.ar:" + String(20000 + lastoct);
+			data["directUrl"] = "http://vpn.tracktotal.ar:" + String(20000 + lastoct) + "/"; // 2.1.9: with the final "/" (the link without it did not open for some users)
 		}
 		// Original server (HS5TQA, 10.44.x.y) - kept for boards still registered there
 		else if (wg_local_addr.startsWith("10.44."))
@@ -3507,16 +3557,16 @@ static const char *MQTT_TEMPLATE =
 	"<tr>"
 	"<td align=\"right\"><b>Enable</b></td>\n"
 	"{{#if enabled}}"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" checked><span class=\"slider round\"></span></label></td>\n"
 	"{{else}}"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" ><span class=\"slider round\"></span></label></td>\n"
 	"{{/if}}"
 	"</tr>\n"
-	"<tr>\n<td align=\"right\"><b>Server Address:</b></td>\n<td style=\"text-align: left;\"><input  size=\"30\" maxlength=\"32\" name=\"host\" type=\"text\" value=\"{{host}}\" /></td>\n</tr>\n"
-	"<tr>\n<td align=\"right\"><b>Server Port:</b></td>\n<td style=\"text-align: left;\"><input size=\"5\"  maxlength=\"5\"  name=\"port\" type=\"number\" value=\"{{port}}\" /></td>\n</tr>\n"
-	"<tr>\n<td align=\"right\"><b>User:</b></td>\n<td style=\"text-align: left;\"><input maxlength=\"32\" name=\"user\" type=\"text\" value=\"{{user}}\" /></td>\n</tr>\n"
-	"<tr>\n<td align=\"right\"><b>Password:</b></td>\n<td style=\"text-align: left;\"><input size=\"40\" maxlength=\"63\" name=\"pass\" type=\"password\" value=\"{{pass}}\" /></td>\n</tr>\n"
-	"<tr>\n<td align=\"right\"><b>Topic:</b></td>\n<td style=\"text-align: left;\"><input size=\"50\" maxlength=\"32\" id=\"topic\" name=\"topic\" type=\"text\" value=\"{{topic}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Server Address:</b></td>\n<td class=\"l\"><input  size=\"30\" maxlength=\"32\" name=\"host\" type=\"text\" value=\"{{host}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Server Port:</b></td>\n<td class=\"l\"><input size=\"5\"  maxlength=\"5\"  name=\"port\" type=\"number\" value=\"{{port}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>User:</b></td>\n<td class=\"l\"><input maxlength=\"32\" name=\"user\" type=\"text\" value=\"{{user}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Password:</b></td>\n<td class=\"l\"><input size=\"40\" maxlength=\"63\" name=\"pass\" type=\"password\" value=\"{{pass}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Topic:</b></td>\n<td class=\"l\"><input size=\"50\" maxlength=\"32\" id=\"topic\" name=\"topic\" type=\"text\" value=\"{{topic}}\" /></td>\n</tr>\n"
 	"<tr>\n<td align=\"right\"><b>Topic Flag:</b></td>\n"
 	"<td align=\"center\">\n<fieldset id=\"TopicGrp\">\n"
 	"<legend>Topic Flags Send out MQTT</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">"
@@ -3528,7 +3578,7 @@ static const char *MQTT_TEMPLATE =
 	"<td style=\"border:unset;\"><input class=\"field_checkbox\" name=\"TopicSensor\" type=\"checkbox\" value=\"OK\" {{#if topicSensor}}checked{{/if}}/>Sensor</td>\n"
 	"<td style=\"border:unset;\"></td>"
 	"</tr></table></fieldset>\n</td></tr>\n"
-	"<tr>\n<td align=\"right\"><b>Subscription:</b></td>\n<td style=\"text-align: left;\"><input size=\"50\" maxlength=\"32\" name=\"subscribe\" type=\"text\" value=\"{{subscribe}}\" /></td>\n</tr>\n"
+	"<tr>\n<td align=\"right\"><b>Subscription:</b></td>\n<td class=\"l\"><input size=\"50\" maxlength=\"32\" name=\"subscribe\" type=\"text\" value=\"{{subscribe}}\" /></td>\n</tr>\n"
 	"<tr>\n<td align=\"right\"><b>Subscription Flag:</b></td>\n"
 	"<td align=\"center\">\n<fieldset id=\"SubGrp\">\n"
 	"<legend>Subscription Flags Receive</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">"
@@ -3807,32 +3857,32 @@ static const char *MSG_TEMPLATE =
 	"<th colspan=\"2\"><span><b>Message Configuration</b></span></th>\n"
 	"<tr>"
 	"<td align=\"right\"><b>Enable</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" {{#if msgEnabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"enable\" value=\"OK\" {{#if msgEnabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>My Callsign:</b></td>\n"
-	"<td style=\"text-align: left;\"><input  size=\"20\" maxlength=\"9\" name=\"mycall\" type=\"text\" value=\"{{myCall}}\" /> *<i>Callsign with SSID (Ex. HS5TQA-12)</i></td>\n"
+	"<td class=\"l\"><input  size=\"20\" maxlength=\"9\" name=\"mycall\" type=\"text\" value=\"{{myCall}}\" /> *<i>Callsign with SSID (Ex. HS5TQA-12)</i></td>\n"
 	"</tr>\n"
-	"<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"msgRf\" value=\"OK\" {{#if msgRf}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"msgInet\" value=\"OK\" {{#if msgInet}}checked{{/if}}/>Internet </td></tr>\n"
+	"<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td class=\"l\"><input type=\"checkbox\" name=\"msgRf\" value=\"OK\" {{#if msgRf}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"msgInet\" value=\"OK\" {{#if msgInet}}checked{{/if}}/>Internet </td></tr>\n"
 	"<tr>"
 	"<td align=\"right\"><b>Encryption</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"encrypt\" value=\"OK\" {{#if msgEncrypt}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"encrypt\" value=\"OK\" {{#if msgEncrypt}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>AES Key:</b></td>\n"
-	"<td style=\"text-align: left;\"><input  size=\"40\" maxlength=\"33\" name=\"key\" type=\"text\" value=\"{{key}}\" /> *<i>ASCII HEX 16Byte</i></td>\n"
+	"<td class=\"l\"><input  size=\"40\" maxlength=\"33\" name=\"key\" type=\"text\" value=\"{{key}}\" /> *<i>ASCII HEX 16Byte</i></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Send Retry:</b></td>\n"
-	"<td style=\"text-align: left;\"><input  min=\"0\" max=\"99\"   name=\"retry\" type=\"number\" value=\"{{retry}}\" /></td>\n"
+	"<td class=\"l\"><input  min=\"0\" max=\"99\"   name=\"retry\" type=\"number\" value=\"{{retry}}\" /></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Send Timeout:</b></td>\n"
-	"<td style=\"text-align: left;\"><input  min=\"1\" max=\"9999\"   name=\"timeout\" type=\"number\" value=\"{{timeout}}\" /> Sec.</td>\n"
+	"<td class=\"l\"><input  min=\"1\" max=\"9999\"   name=\"timeout\" type=\"number\" value=\"{{timeout}}\" /> Sec.</td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>PATH:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"path\" id=\"path\">\n"
 	"{{#each pathOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
@@ -3877,11 +3927,11 @@ static const char *MSG_TEMPLATE =
 	"{{else}}<td align=\"center\"><b>BLN{{num}}</b></td>\n"
 	"{{/if}}"
 	"<td align=\"center\"><label class=\"switch\"><input type=\"checkbox\" name=\"blnEn{{num}}\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
-	"<td style=\"text-align: left;\"><input id=\"blnTxt{{num}}\" style=\"width:96%;box-sizing:border-box;\" maxlength=\"{{maxLen}}\" name=\"blnText{{num}}\" type=\"text\" value=\"{{text}}\" oninput=\"var n=this.maxLength-this.value.length;var c=document.getElementById('blnCnt{{num}}');c.textContent=n+' left';c.style.color=(n<0)?'red':'#2e7d32';\" /><br />"
+	"<td class=\"l\"><input id=\"blnTxt{{num}}\" style=\"width:96%;box-sizing:border-box;\" maxlength=\"{{maxLen}}\" name=\"blnText{{num}}\" type=\"text\" value=\"{{text}}\" oninput=\"var n=this.maxLength-this.value.length;var c=document.getElementById('blnCnt{{num}}');c.textContent=n+' left';c.style.color=(n<0)?'red':'#2e7d32';\" /><br />"
 	"<span id=\"blnCnt{{num}}\" style=\"font-size:8pt;color:{{charsLeftColor}};\">{{charsLeft}} left</span></td>\n"
-	"<td style=\"text-align: left;\"><select style=\"width:96%;box-sizing:border-box;\" name=\"blnInv{{num}}\">{{#each intervalOptions}}<option value=\"{{value}}\"{{#if selected}} selected{{/if}}>{{label}}</option>{{/each}}</select></td>\n"
-	"<td style=\"text-align: left;\"><input style=\"width:90%;box-sizing:border-box;\" min=\"0\" max=\"65535\" name=\"blnLim{{num}}\" type=\"number\" value=\"{{limit}}\" /></td>\n"
-	"<td style=\"text-align: left;\"><select style=\"width:96%;box-sizing:border-box;\" name=\"blnDur{{num}}\">{{#each durationOptions}}<option value=\"{{value}}\"{{#if selected}} selected{{/if}}>{{label}}</option>{{/each}}</select></td>\n"
+	"<td class=\"l\"><select style=\"width:96%;box-sizing:border-box;\" name=\"blnInv{{num}}\">{{#each intervalOptions}}<option value=\"{{value}}\"{{#if selected}} selected{{/if}}>{{label}}</option>{{/each}}</select></td>\n"
+	"<td class=\"l\"><input style=\"width:90%;box-sizing:border-box;\" min=\"0\" max=\"65535\" name=\"blnLim{{num}}\" type=\"number\" value=\"{{limit}}\" /></td>\n"
+	"<td class=\"l\"><select style=\"width:96%;box-sizing:border-box;\" name=\"blnDur{{num}}\">{{#each durationOptions}}<option value=\"{{value}}\"{{#if selected}} selected{{/if}}>{{label}}</option>{{/each}}</select></td>\n"
 	"<td align=\"center\">{{sentCount}}</td>\n"
 	"</tr>\n"
 	"{{#if isNews}}<tr><td colspan=\"2\"></td><td colspan=\"5\" style=\"text-align:left;font-size:7pt;color:#555;padding-top:0;padding-bottom:4px;\">sends: {{schedPreview}}</td></tr>\n"
@@ -4620,23 +4670,23 @@ alert("An error occurred.");
 <th colspan="2"><span><b>UART0 Modify</b></span></th>
 <tr>
 <td align="right"><b>Enable</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if uart0En}}checked{{/if}}><span class="slider round"></span></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if uart0En}}checked{{/if}}><span class="slider round"></span></label></td>
 </tr>
 <tr>
 <td align="right"><b>RX GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="rx" type="number" value="{{uart0Rx}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}" name="rx" type="number" value="{{uart0Rx}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>TX GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="tx" type="number" value="{{uart0Tx}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}" name="tx" type="number" value="{{uart0Tx}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>RTS/DE GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}"  name="rts" type="number" value="{{uart0Rts}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}"  name="rts" type="number" value="{{uart0Rts}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>Baudrate:</b></td>
-<td style="text-align: left;">
+<td class="l">
 <select name="baudrate" id="baudrate">
 {{#each uart0Baud}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}} </option>
 {{/each}}</select> bps
@@ -4653,23 +4703,23 @@ alert("An error occurred.");
 <th colspan="2"><span><b>UART1 Modify</b></span></th>
 <tr>
 <td align="right"><b>Enable</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if uart1En}}checked{{/if}}><span class="slider round"></span></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if uart1En}}checked{{/if}}><span class="slider round"></span></label></td>
 </tr>
 <tr>
 <td align="right"><b>RX GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="rx" type="number" value="{{uart1Rx}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}" name="rx" type="number" value="{{uart1Rx}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>TX GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="tx" type="number" value="{{uart1Tx}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}" name="tx" type="number" value="{{uart1Tx}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>RTS/DE GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}"  name="rts" type="number" value="{{uart1Rts}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}"  name="rts" type="number" value="{{uart1Rts}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>Baudrate:</b></td>
-<td style="text-align: left;">
+<td class="l">
 <select name="baudrate" id="baudrate">
 {{#each uart1Baud}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}} </option>
 {{/each}}</select> bps
@@ -4688,7 +4738,7 @@ alert("An error occurred.");
 <tr>
 <tr>
 <td align="right"><b>ADC Attenuation:</b></td>
-<td style="text-align: left;">
+<td class="l">
 <select name="atten" id="atten">
 {{#each attenOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}} </option>
 {{/each}}</select> DC-Offset: {{adcOffset}} mV
@@ -4696,7 +4746,7 @@ alert("An error occurred.");
 </tr>
 <tr>
 <td align="right"><b>UART Baudrate:</b></td>
-<td style="text-align: left;">
+<td class="l">
 <select name="baudrate" id="baudrate">
 {{#each rfBaud}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}} </option>
 {{/each}}</select> bps
@@ -4704,27 +4754,27 @@ alert("An error occurred.");
 </tr>
 <tr>
 <td align="right"><b>UART RX GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="rx" type="number" value="{{rfRx}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}" name="rx" type="number" value="{{rfRx}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>UART TX GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="tx" type="number" value="{{rfTx}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}" name="tx" type="number" value="{{rfTx}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>PD GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}"  name="pd" type="number" value="{{rfPdGpio}}" /> Active:<input type="radio" name="pd_active" value="0" {{#if rfPdHigh}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="pd_active" value="1" {{#if rfPdHigh}}checked="checked"{{/if}}/>HIGH </td>
+<td class="l"><input min="-1" max="{{gpioMax}}"  name="pd" type="number" value="{{rfPdGpio}}" /> Active:<input type="radio" name="pd_active" value="0" {{#if rfPdHigh}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="pd_active" value="1" {{#if rfPdHigh}}checked="checked"{{/if}}/>HIGH </td>
 </tr>
 <tr>
 <td align="right"><b>H/L GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}"  name="pwr" type="number" value="{{rfPwrGpio}}" /> Active:<input type="radio" name="pwr_active" value="0" {{#if rfPwrHigh}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="pwr_active" value="1" {{#if rfPwrHigh}}checked="checked"{{/if}}/>HIGH </td>
+<td class="l"><input min="-1" max="{{gpioMax}}"  name="pwr" type="number" value="{{rfPwrGpio}}" /> Active:<input type="radio" name="pwr_active" value="0" {{#if rfPwrHigh}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="pwr_active" value="1" {{#if rfPwrHigh}}checked="checked"{{/if}}/>HIGH </td>
 </tr>
 <tr>
 <td align="right"><b>SQL GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}"  name="sql" type="number" value="{{rfSqlGpio}}" /> Active:<input type="radio" name="sql_active" value="0" {{#if rfSqlHigh}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="sql_active" value="1" {{#if rfSqlHigh}}checked="checked"{{/if}}/>HIGH </td>
+<td class="l"><input min="-1" max="{{gpioMax}}"  name="sql" type="number" value="{{rfSqlGpio}}" /> Active:<input type="radio" name="sql_active" value="0" {{#if rfSqlHigh}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="sql_active" value="1" {{#if rfSqlHigh}}checked="checked"{{/if}}/>HIGH </td>
 </tr>
 <tr>
 <td align="right"><b>PTT GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}"  name="ptt" type="number" value="{{rfPttGpio}}" /> Active:<input type="radio" name="ptt_active" value="0" {{#if rfPttHigh}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="ptt_active" value="1" {{#if rfPttHigh}}checked="checked"{{/if}}/>HIGH </td>
+<td class="l"><input min="-1" max="{{gpioMax}}"  name="ptt" type="number" value="{{rfPttGpio}}" /> Active:<input type="radio" name="ptt_active" value="0" {{#if rfPttHigh}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="ptt_active" value="1" {{#if rfPttHigh}}checked="checked"{{/if}}/>HIGH </td>
 </tr>
 <tr><td colspan="2" align="right">
 <input class="button" id="submitRF" name="commitRF" type="submit" value="Apply" maxlength="80"/>
@@ -4739,11 +4789,11 @@ alert("An error occurred.");
 <th colspan="2"><span><b>External TNC Modify</b></span></th>
 <tr>
 <td align="right"><b>Enable</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if tncEn}}checked{{/if}}><span class="slider round"></span></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if tncEn}}checked{{/if}}><span class="slider round"></span></label></td>
 </tr>
 <tr>
 <td align="right"><b>PORT:</b></td>
-<td style="text-align: left;">
+<td class="l">
 <select name="channel" id="channel">
 {{#each tncPortOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}} </option>
 {{/each}}</select>
@@ -4751,7 +4801,7 @@ alert("An error occurred.");
 </tr>
 <tr>
 <td align="right"><b>MODE:</b></td>
-<td style="text-align: left;">
+<td class="l">
 <select name="mode" id="mode">
 {{#each tncModeOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}} </option>
 {{/each}}</select>
@@ -4767,15 +4817,15 @@ alert("An error occurred.");
 <th colspan="2"><span><b>TCP KISS Server Modify</b></span></th>
 <tr>
 <td align="right"><b>Enable</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if tcpKissEn}}checked{{/if}}><span class="slider round"></span></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if tcpKissEn}}checked{{/if}}><span class="slider round"></span></label></td>
 </tr>
 <tr>
 <td align="right"><b>PORT 1:</b></td>
-<td style="text-align: left;"><input type="text" name="port1" value="{{tcpKissPort1}}" maxlength="5" size="6"/></td>
+<td class="l"><input type="text" name="port1" value="{{tcpKissPort1}}" maxlength="5" size="6"/></td>
 </tr>
 <tr>
 <td align="right"><b>PORT 2:</b></td>
-<td style="text-align: left;"><input type="text" name="port2" value="{{tcpKissPort2}}" maxlength="5" size="6"/></td>
+<td class="l"><input type="text" name="port2" value="{{tcpKissPort2}}" maxlength="5" size="6"/></td>
 </tr>
 <tr><td colspan="2" align="center"><b>Status:</b></td></tr>
 <tr><td colspan="2" align="center">{{tcpKissStatus1}}</td></tr>
@@ -4788,35 +4838,6 @@ alert("An error occurred.");
 </form>
 </td></tr></table>
 <br />
-<table style="text-align:unset;border-width:0px;background:unset"><tr style="background:unset;vertical-align:top"><td width="50%" style="border:unset;vertical-align:top">
-<form id='formATCommand' method="POST" action='#' enctype='multipart/form-data'>
-<table>
-<th colspan="2"><span><b>AT-COMMAND CHANNEL</b></span></th>
-<tr>
-<td width="150" align="right"><b>MQTT:</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="mqtt" value="OK" {{#if cmdMqtt}}checked{{/if}}><span class="slider round"></span></label></td>
-</tr>
-<tr>
-<td align="right"><b>MESSAGE:</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="msg" value="OK" {{#if cmdMsg}}checked{{/if}}><span class="slider round"></span></label></td>
-</tr>
-<tr>
-<td align="right"><b>BLUETOOTH:</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="bluetooth" value="OK" {{#if cmdBluetooth}}checked{{/if}}><span class="slider round"></span></label></td>
-</tr>
-<tr>
-<td align="right"><b>UART PORT:</b></td>
-<td style="text-align: left;">
-<select name="uart" id="cmdUart">
-{{#each cmdUartOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}} </option>
-{{/each}}</select>
-</td>
-</tr>
-<tr><td colspan="2" align="right">
-<div><button class="button" type='submit' id='submitCMD'  name="commit"> Apply Change </button></div>
-<input type="hidden" name="commitCMD"/>
-</td></tr></table><br />
-</form><br />
 {{#if pppos}}<br />
 <table style="text-align:unset;border-width:0px;background:unset"><tr style="background:unset;vertical-align:top"><td width="50%" style="border:unset;vertical-align:top">
 <form id='formPPPoS' method="POST" action='#' enctype='multipart/form-data'>
@@ -4824,42 +4845,42 @@ alert("An error occurred.");
 <th colspan="2"><span><b>PPP Over Serial (GSM/4G-LTE)</b></span></th>
 <tr>
 <td align="right"><b>Enable:</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="pppEn" value="OK" {{#if pppEn}}checked{{/if}}><span class="slider round"></span></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="pppEn" value="OK" {{#if pppEn}}checked{{/if}}><span class="slider round"></span></label></td>
 </tr>
 <td align="right"><b>GNSS:</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="pppGnss" value="OK" {{#if pppGnss}}checked{{/if}}><span class="slider round"></span></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="pppGnss" value="OK" {{#if pppGnss}}checked{{/if}}><span class="slider round"></span></label></td>
 </tr>
 <tr>
 <td align="right"><b>NAPT:</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="pppNapt" value="OK" {{#if pppNapt}}checked{{/if}}><span class="slider round"></span></label> *WiFi NAT</td>
+<td class="l"><label class="switch"><input type="checkbox" name="pppNapt" value="OK" {{#if pppNapt}}checked{{/if}}><span class="slider round"></span></label> *WiFi NAT</td>
 </tr>
 <tr>
 <td align="right"><b>APN:</b></td>
-<td style="text-align: left;"><input maxlength="20" name="pppAPN" type="text" value="{{pppApn}}" /></td>
+<td class="l"><input maxlength="20" name="pppAPN" type="text" value="{{pppApn}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>PIN:</b></td>
-<td style="text-align: left;"><input min="0" max="999999" name="pppPin" type="number" value="{{pppPin}}" /> <i>*PIN of SIM</i></td>
+<td class="l"><input min="0" max="999999" name="pppPin" type="number" value="{{pppPin}}" /> <i>*PIN of SIM</i></td>
 </tr>
 <tr>
 <td align="right"><b>RX GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="50" name="rx" type="number" value="{{pppRx}}" /></td>
+<td class="l"><input min="-1" max="50" name="rx" type="number" value="{{pppRx}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>TX GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="50" name="tx" type="number" value="{{pppTx}}" /></td>
+<td class="l"><input min="-1" max="50" name="tx" type="number" value="{{pppTx}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>RESET GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="50"  name="rst" type="number" value="{{pppRstGpio}}" /> Active:<input type="radio" name="rst_active" value="0" {{#if pppRstHigh}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="rst_active" value="1" {{#if pppRstHigh}}checked="checked"{{/if}}/>HIGH </td>
+<td class="l"><input min="-1" max="50"  name="rst" type="number" value="{{pppRstGpio}}" /> Active:<input type="radio" name="rst_active" value="0" {{#if pppRstHigh}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="rst_active" value="1" {{#if pppRstHigh}}checked="checked"{{/if}}/>HIGH </td>
 </tr>
 <td align="right"><b>RESET DELAY:</b></td>
-<td style="text-align: left;"><input min="0" max="999999" name="rstDly" type="number" value="{{pppRstDelay}}" /> mSec.</td>
+<td class="l"><input min="0" max="999999" name="rstDly" type="number" value="{{pppRstDelay}}" /> mSec.</td>
 </tr>
 <tr>
 <tr>
 <td align="right"><b>PORT:</b></td>
-<td style="text-align: left;">
+<td class="l">
 <select name="port" id="port">
 {{#each pppPortOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}} </option>
 {{/each}}</select>
@@ -4867,7 +4888,7 @@ alert("An error occurred.");
 </tr>
 <tr>
 <td align="right"><b>Baudrate:</b></td>
-<td style="text-align: left;">
+<td class="l">
 <select name="baudrate" id="baudrate">
 {{#each pppBaud}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}} </option>
 {{/each}}</select> bps
@@ -5241,70 +5262,6 @@ void handle_mod(AsyncWebServerRequest *request)
 		String html = "OK";
 		request->send(200, "text/html", html);
 	}
-	else if (request->hasArg("commitCMD"))
-	{
-		bool mqtt = false;
-		bool msg = false;
-		bool bluetooth = false;
-		for (uint8_t i = 0; i < request->args(); i++)
-		{
-			if (request->argName(i) == "mqtt")
-			{
-				if (request->arg(i) != "")
-				{
-					if (String(request->arg(i)) == "OK")
-					{
-						mqtt = true;
-					}
-				}
-			}
-
-			if (request->argName(i) == "msg")
-			{
-				if (request->arg(i) != "")
-				{
-					if (String(request->arg(i)) == "OK")
-					{
-						msg = true;
-					}
-				}
-			}
-
-			if (request->argName(i) == "bluetooth")
-			{
-				if (request->arg(i) != "")
-				{
-					if (String(request->arg(i)) == "OK")
-					{
-						bluetooth = true;
-					}
-				}
-			}
-
-			if (request->argName(i) == "uart")
-			{
-				if (request->arg(i) != "")
-				{
-					if (isValidNumber(request->arg(i)))
-						config.at_cmd_uart = request->arg(i).toInt();
-				}
-			}
-		}
-		config.at_cmd_mqtt = mqtt;
-		config.at_cmd_msg = msg;
-		config.at_cmd_bluetooth = bluetooth;
-		String html;
-		if (saveConfiguration("/default.cfg", config))
-		{
-			html = "Setup completed successfully";
-			request->send(200, "text/html", html); // send to someones browser when asked
-		}
-		else
-		{
-			html = "Save config failed.";
-			request->send(501, "text/html", html); // Not Implemented
-		}
-	}
 #ifdef PPPOS
 	else if (request->hasArg("commitPPPoS"))
 	{
@@ -5516,17 +5473,12 @@ void handle_mod(AsyncWebServerRequest *request)
 
 		data["tncEn"] = config.ext_tnc_enable;
 		JsonArray tncPortOptions = data["tncPortOptions"].to<JsonArray>();
-		JsonArray cmdUartOptions = data["cmdUartOptions"].to<JsonArray>();
 		for (int i = 0; i < 5; i++)
 		{
 			JsonObject o = tncPortOptions.add<JsonObject>();
 			o["value"] = i;
 			o["label"] = TNC_PORT[i];
 			o["selected"] = (config.ext_tnc_channel == i);
-			JsonObject oc = cmdUartOptions.add<JsonObject>();
-			oc["value"] = i;
-			oc["label"] = TNC_PORT[i];
-			oc["selected"] = (config.at_cmd_uart == i);
 		}
 		JsonArray tncModeOptions = data["tncModeOptions"].to<JsonArray>();
 		for (int i = 0; i < 4; i++)
@@ -5555,9 +5507,6 @@ void handle_mod(AsyncWebServerRequest *request)
 			data["tcpKissStatus2"] = tcpKissStatus2;
 		}
 
-		data["cmdMqtt"] = config.at_cmd_mqtt;
-		data["cmdMsg"] = config.at_cmd_msg;
-		data["cmdBluetooth"] = config.at_cmd_bluetooth;
 
 #ifdef PPPOS
 		data["pppos"] = true;
@@ -5632,11 +5581,11 @@ alert("An error occurred.");
 <th colspan="2"><span><b>1-Wire Bus Modify</b></span></th>
 <tr>
 <td align="right"><b>Enable</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if oneWireEn}}checked{{/if}}><span class="slider round"></span></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if oneWireEn}}checked{{/if}}><span class="slider round"></span></label></td>
 </tr>
 <tr>
 <td align="right"><b>GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="data" type="number" value="{{oneWireGpio}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}" name="data" type="number" value="{{oneWireGpio}}" /></td>
 </tr>
 <tr><td colspan="2" align="right">
 <input class="button" id="submitONEWIRE" name="commitONEWIRE" type="submit" value="Apply" maxlength="80"/>
@@ -5651,19 +5600,19 @@ alert("An error occurred.");
 <th colspan="2"><span><b>I2C_0(OLED) Modify</b></span></th>
 <tr>
 <td align="right"><b>Enable</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if i2c0En}}checked{{/if}}><span class="slider round"></span></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if i2c0En}}checked{{/if}}><span class="slider round"></span></label></td>
 </tr>
 <tr>
 <td align="right"><b>SDA GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="sda" type="number" value="{{i2c0Sda}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}" name="sda" type="number" value="{{i2c0Sda}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>SCK GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="sck" type="number" value="{{i2c0Sck}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}" name="sck" type="number" value="{{i2c0Sck}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>Frequency:</b></td>
-<td style="text-align: left;"><input min="1000" max="800000" name="freq" type="number" value="{{i2c0Freq}}" /></td>
+<td class="l"><input min="1000" max="800000" name="freq" type="number" value="{{i2c0Freq}}" /></td>
 </tr>
 <tr><td colspan="2" align="right">
 <input class="button" id="submitI2C0" name="commitI2C0" type="submit" value="Apply" maxlength="80"/>
@@ -5675,15 +5624,15 @@ alert("An error occurred.");
 <th colspan="2"><span><b>Counter_0 Modify</b></span></th>
 <tr>
 <td align="right"><b>Enable</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if counter0En}}checked{{/if}}><span class="slider round"></span></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if counter0En}}checked{{/if}}><span class="slider round"></span></label></td>
 </tr>
 <tr>
 <td align="right"><b>INPUT GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="gpio" type="number" value="{{counter0Gpio}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}" name="gpio" type="number" value="{{counter0Gpio}}" /></td>
 </tr>
 <tr>
 <td align="right">Active</td>
-<td style="text-align: left;"><input type="radio" name="active" value="0" {{#if counter0High}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="active" value="1" {{#if counter0High}}checked="checked"{{/if}}/>HIGH </td>
+<td class="l"><input type="radio" name="active" value="0" {{#if counter0High}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="active" value="1" {{#if counter0High}}checked="checked"{{/if}}/>HIGH </td>
 </tr>
 <tr><td colspan="2" align="right">
 <input class="button" id="submitCOUNTER0" name="commitCOUNTER0" type="submit" value="Apply" maxlength="80"/>
@@ -5696,19 +5645,19 @@ alert("An error occurred.");
 <th colspan="2"><span><b>I2C_1 Modify</b></span></th>
 <tr>
 <td align="right"><b>Enable</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if i2c1En}}checked{{/if}}><span class="slider round"></span></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if i2c1En}}checked{{/if}}><span class="slider round"></span></label></td>
 </tr>
 <tr>
 <td align="right"><b>SDA GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="sda" type="number" value="{{i2c1Sda}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}" name="sda" type="number" value="{{i2c1Sda}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>SCK GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="sck" type="number" value="{{i2c1Sck}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}" name="sck" type="number" value="{{i2c1Sck}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>Frequency:</b></td>
-<td style="text-align: left;"><input min="1000" max="800000" name="freq" type="number" value="{{i2c1Freq}}" /></td>
+<td class="l"><input min="1000" max="800000" name="freq" type="number" value="{{i2c1Freq}}" /></td>
 </tr>
 <tr><td colspan="2" align="right">
 <input class="button" id="submitI2C1" name="commitI2C1" type="submit" value="Apply" maxlength="80"/>
@@ -5720,15 +5669,15 @@ alert("An error occurred.");
 <th colspan="2"><span><b>Counter_1 Modify</b></span></th>
 <tr>
 <td align="right"><b>Enable</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if counter1En}}checked{{/if}}><span class="slider round"></span></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if counter1En}}checked{{/if}}><span class="slider round"></span></label></td>
 </tr>
 <tr>
 <td align="right"><b>INPUT GPIO:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="gpio" type="number" value="{{counter1Gpio}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}" name="gpio" type="number" value="{{counter1Gpio}}" /></td>
 </tr>
 <tr>
 <td align="right">Active</td>
-<td style="text-align: left;"><input type="radio" name="active" value="0" {{#if counter1High}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="active" value="1" {{#if counter1High}}checked="checked"{{/if}}/>HIGH </td>
+<td class="l"><input type="radio" name="active" value="0" {{#if counter1High}}{{else}}checked="checked"{{/if}}/>LOW <input type="radio" name="active" value="1" {{#if counter1High}}checked="checked"{{/if}}/>HIGH </td>
 </tr>
 <tr><td colspan="2" align="right">
 <input class="button" id="submitCOUNTER1" name="commitCOUNTER1" type="submit" value="Apply" maxlength="80"/>
@@ -5743,25 +5692,25 @@ alert("An error occurred.");
 <th colspan="2"><span><b>GNSS Modify</b></span></th>
 <tr>
 <td align="right"><b>Enable</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if gnssEn}}checked{{/if}}><span class="slider round"></span></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if gnssEn}}checked{{/if}}><span class="slider round"></span></label></td>
 </tr>
 <tr>
 <td align="right"><b>PORT:</b></td>
-<td style="text-align: left;">
+<td class="l">
 <select name="channel" id="channel">
 {{#each gnssPortOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}} </option>
 {{/each}}</select>
 </td>
 </tr>
 <td align="right"><b>AT Command:</b></td>
-<td style="text-align: left;"><input maxlength="30" size="20" id="atc" name="atc" type="text" value="{{gnssAtCommand}}" /></td>
+<td class="l"><input maxlength="30" size="20" id="atc" name="atc" type="text" value="{{gnssAtCommand}}" /></td>
 </tr>
 <td align="right"><b>TCP Host:</b></td>
-<td style="text-align: left;"><input maxlength="20" size="15" id="Host" name="Host" type="text" value="{{gnssTcpHost}}" /></td>
+<td class="l"><input maxlength="20" size="15" id="Host" name="Host" type="text" value="{{gnssTcpHost}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>TCP Port:</b></td>
-<td style="text-align: left;"><input min="1024" max="65535"  id="Port" name="Port" type="number" value="{{gnssTcpPort}}" /></td>
+<td class="l"><input min="1024" max="65535"  id="Port" name="Port" type="number" value="{{gnssTcpPort}}" /></td>
 </tr>
 <tr><td colspan="2" align="right">
 <input class="button" id="submitGNSS" name="commitGNSS" type="submit" value="Apply" maxlength="80"/>
@@ -5774,11 +5723,11 @@ alert("An error occurred.");
 <th colspan="2"><span><b>MODBUS Modify</b></span></th>
 <tr>
 <td align="right"><b>Enable</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if modbusEn}}checked{{/if}}><span class="slider round"></span></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="Enable" value="OK" {{#if modbusEn}}checked{{/if}}><span class="slider round"></span></label></td>
 </tr>
 <tr>
 <td align="right"><b>PORT:</b></td>
-<td style="text-align: left;">
+<td class="l">
 <select name="channel" id="channel">
 {{#each modbusPortOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}} </option>
 {{/each}}</select>
@@ -5786,11 +5735,11 @@ alert("An error occurred.");
 </tr>
 <tr>
 <td align="right"><b>Address:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="address" type="number" value="{{modbusAddress}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}" name="address" type="number" value="{{modbusAddress}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>DE:</b></td>
-<td style="text-align: left;"><input min="-1" max="{{gpioMax}}" name="de" type="number" value="{{modbusDeGpio}}" /></td>
+<td class="l"><input min="-1" max="{{gpioMax}}" name="de" type="number" value="{{modbusDeGpio}}" /></td>
 </tr>
 <tr><td colspan="2" align="right">
 <input class="button" id="submitMODBUS" name="commitMODBUS" type="submit" value="Apply" maxlength="80"/>
@@ -6216,14 +6165,14 @@ alert("An error occurred.");
 <th colspan="2"><span><b>System Setting</b></span></th>
 <tr>
 <td style="text-align: right;">Host Name:</td>
-<td style="text-align: left;"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formHostName" method="post"><input name="SetHostName" type="text" value="{{hostName}}" />
+<td class="l"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formHostName" method="post"><input name="SetHostName" type="text" value="{{hostName}}" />
 <button type='submit' id='updateHostName'  name="updateHostName"> Apply </button>
 <input type="hidden" name="updateHostName"/></form>
 </td>
 </tr>
 <tr>
 <td style="text-align: right;">LOCAL DATE/TIME </td>
-<td style="text-align: left;"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formTime" method="post">
+<td class="l"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formTime" method="post">
 <input name="SetTime" type="text" value="{{setTime}}" />
 <span class="input-group-addon">
 <span class="glyphicon glyphicon-calendar">
@@ -6234,21 +6183,21 @@ alert("An error occurred.");
 </tr>
 <tr>
 <td style="text-align: right;">NTP Host </td>
-<td style="text-align: left;"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formNTP" method="post"><input name="SetTimeNtp" type="text" value="{{ntpHost}}" />
+<td class="l"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formNTP" method="post"><input name="SetTimeNtp" type="text" value="{{ntpHost}}" />
 <button type='submit' id='updateTimeNtp'  name="commit"> NTP Update </button>
 <input type="hidden" name="updateTimeNtp"/></form>
 </td>
 </tr>
 <tr>
 <td style="text-align: right;">Auto REBOOT:</td>
-<td style="text-align: left;"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formAutoReset" method="post"><input  min="0" max="65535"  name="SetAutoReset" type="number" value="{{resetTimeout}}" /> Minutes
+<td class="l"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formAutoReset" method="post"><input  min="0" max="65535"  name="SetAutoReset" type="number" value="{{resetTimeout}}" /> Minutes
 <button type='submit' id='updateAutoReset'  name="commit"> Update </button> *<i>0=No reset</i>
 <input type="hidden" name="updateAutoReset"/></form>
 </td>
 </tr>
 <tr>
 <td style="text-align: right;">Time Zone </td>
-<td style="text-align: left;"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formTimeZone" method="post">
+<td class="l"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formTimeZone" method="post">
 <select name="SetTimeZone" id="SetTimeZone">
 {{#each tzOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}} Sec</option>
 {{/each}}</select><button type='submit' id='updateTimeZone'  name="commit"> TZ Update </button>
@@ -6257,7 +6206,7 @@ alert("An error occurred.");
 </tr>
 <tr>
 <td style="text-align: right;">SYSTEM CONTROL </td>
-<td style="text-align: left;"><table><tr><td width="100"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formReboot" method="post"> <button type='submit' id='REBOOT'  name="commit" style="background-color:red;color:white"> REBOOT </button>
+<td class="l"><table><tr><td width="100"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formReboot" method="post"> <button type='submit' id='REBOOT'  name="commit" style="background-color:red;color:white"> REBOOT </button>
  <input type="hidden" name="REBOOT"/></form></td><td width="100"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formFactory" method="post"> <button type='submit' id='Factory'  name="commit" style="background-color:orange;color:white"> Factory Reset </button>
  <input type="hidden" name="Factory"/></form></td><td width="100"><form accept-charset="UTF-8" action="#" enctype='multipart/form-data' id="formLoad" method="post"> <button type='submit' id='LoadCFG'  name="commit" style="background-color:green;color:white"> Load Default </button>
  <input type="hidden" name="LoadCFG"/></form></td></tr></table></td>
@@ -6267,11 +6216,11 @@ alert("An error occurred.");
 <th colspan="2"><span><b>Web Authentication</b></span></th>
 <tr>
 <td align="right"><b>Web USER:</b></td>
-<td style="text-align: left;"><input size="32" maxlength="32" class="form-control" name="webauth_user" type="text" value="{{webUser}}" /></td>
+<td class="l"><input size="32" maxlength="32" class="form-control" name="webauth_user" type="text" value="{{webUser}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>Web PASSWORD:</b></td>
-<td style="text-align: left;"><input size="63" maxlength="63" class="form-control" name="webauth_pass" type="password" value="{{webPass}}" /></td>
+<td class="l"><input size="63" maxlength="63" class="form-control" name="webauth_pass" type="password" value="{{webPass}}" /></td>
 </tr>
 <tr><td colspan="2" align="right">
 <div><button class="button" type='submit' id='submitWebAuth'  name="commit"> Apply Change </button></div>
@@ -6283,7 +6232,7 @@ alert("An error occurred.");
 <th colspan="2"><span><b>Display StandBy</b></span></th>
 <tr>
 <td align="right"><b>StandBy Delay:</b></td>
-<td style="text-align: left;"><input min="0" max="9999" name="stb" type="number" value="{{pwrStandbyDelay}}" /></td>
+<td class="l"><input min="0" max="9999" name="stb" type="number" value="{{pwrStandbyDelay}}" /></td>
 </tr>
 <tr><td colspan="2" align="right">
 <div><button class="button" type='submit' id='submitPWR'  name="commitPWR"> Apply Change </button></div>
@@ -6295,7 +6244,7 @@ alert("An error occurred.");
 <th colspan="2"><span><b>Log File</b></span></th>
 <tr>
 <td align="right"><b>Activate:</b></td>
-<td style="text-align: left;">
+<td class="l">
 <fieldset id="FilterGrp">
 <legend>Events</legend>
 <table style="text-align:unset;border-width:0px;background:unset">
@@ -6317,19 +6266,19 @@ alert("An error occurred.");
 <th colspan="2"><span><b>PATH USER Define</b></span></th>
 <tr>
 <td align="right"><b>PATH_1:</b></td>
-<td style="text-align: left;"><input size="72" maxlength="72" class="form-control" name="path1" type="text" value="{{path1}}" /></td>
+<td class="l"><input size="72" maxlength="72" class="form-control" name="path1" type="text" value="{{path1}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>PATH_2:</b></td>
-<td style="text-align: left;"><input size="72" maxlength="72" class="form-control" name="path2" type="text" value="{{path2}}" /></td>
+<td class="l"><input size="72" maxlength="72" class="form-control" name="path2" type="text" value="{{path2}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>PATH_3:</b></td>
-<td style="text-align: left;"><input size="72" maxlength="72" class="form-control" name="path3" type="text" value="{{path3}}" /></td>
+<td class="l"><input size="72" maxlength="72" class="form-control" name="path3" type="text" value="{{path3}}" /></td>
 </tr>
 <tr>
 <td align="right"><b>PATH_4:</b></td>
-<td style="text-align: left;"><input size="72" maxlength="72" class="form-control" name="path4" type="text" value="{{path4}}" /></td>
+<td class="l"><input size="72" maxlength="72" class="form-control" name="path4" type="text" value="{{path4}}" /></td>
 </tr>
 <tr><td colspan="2" align="right">
 <div><button class="button" type='submit' id='submitPath'  name="commitPath"> Apply Change </button></div>
@@ -6340,49 +6289,61 @@ alert("An error occurred.");
 <th colspan="2"><span><b>Display Setting</b></span></th>
 <tr>
 <td style="text-align: right;"><b>OLED/TFT Enable</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="oledEnable" value="OK" {{#if oledEnable}}checked{{/if}}><span class="slider round"></span></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="oledEnable" value="OK" {{#if oledEnable}}checked{{/if}}><span class="slider round"></span></label></td>
+</tr>
+{{#if dispTypeSel}}<tr>
+<td style="text-align: right;"><b>OLED Screen</b></td>
+<td class="l"><select name="dispType"><option value="0" {{#if dispType0}}selected{{/if}}>Automatic</option><option value="1" {{#if dispType1}}selected{{/if}}>0.96" (SSD1306)</option><option value="2" {{#if dispType2}}selected{{/if}}>1.3" (SH1106)</option></select><label style="vertical-align: bottom;font-size: 8pt;"> <i>in use: {{dispTypeNow}} (takes effect after restart)</i></label></td>
 </tr>
 <tr>
+<td style="text-align: right;"><b>Auto Change</b></td>
+<td class="l"><select name="dispRotate"><option value="0" {{#if dispRot0}}selected{{/if}}>Off (button only)</option><option value="5" {{#if dispRot5}}selected{{/if}}>every 5 Sec</option><option value="10" {{#if dispRot10}}selected{{/if}}>every 10 Sec (default)</option><option value="20" {{#if dispRot20}}selected{{/if}}>every 20 Sec</option><option value="30" {{#if dispRot30}}selected{{/if}}>every 30 Sec</option></select><label style="vertical-align: bottom;font-size: 8pt;"> <i>*the screen changes by itself (keeps the screen on).</i></label></td>
+</tr>
+<tr>
+<td style="text-align: right;"><b>Menu Button GPIO</b></td>
+<td class="l"><input type="number" name="dispBtn" min="-1" max="39" value="{{dispBtn}}" style="width:60px"><label style="vertical-align: bottom;font-size: 8pt;"> <i>*0 = BOOT button (default), -1 = no menu button.</i></label></td>
+</tr>{{/if}}
+<tr>
 <td style="text-align: right;"><b>Flip Rotate</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="dispFlip" value="OK" {{#if dispFlip}}checked{{/if}}><span class="slider round"></span></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="dispFlip" value="OK" {{#if dispFlip}}checked{{/if}}><span class="slider round"></span></label></td>
 </tr>
 <tr>
 <td style="text-align: right;"><b>TX Display</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="txdispEnable" value="OK" {{#if txDisplay}}checked{{/if}}><span class="slider round"></span></label><label style="vertical-align: bottom;font-size: 8pt;"> <i>*All TX Packet for display affter filter.</i></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="txdispEnable" value="OK" {{#if txDisplay}}checked{{/if}}><span class="slider round"></span></label><label style="vertical-align: bottom;font-size: 8pt;"> <i>*All TX Packet for display affter filter.</i></label></td>
 </tr>
 <tr>
 <td style="text-align: right;"><b>RX Display</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="rxdispEnable" value="OK" {{#if rxDisplay}}checked{{/if}}><span class="slider round"></span></label><label style="vertical-align: bottom;font-size: 8pt;"> <i>*All RX Packet for display affter filter.</i></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="rxdispEnable" value="OK" {{#if rxDisplay}}checked{{/if}}><span class="slider round"></span></label><label style="vertical-align: bottom;font-size: 8pt;"> <i>*All RX Packet for display affter filter.</i></label></td>
 </tr>
 <tr>
 <td style="text-align: right;"><b>Head Up</b></td>
-<td style="text-align: left;"><label class="switch"><input type="checkbox" name="hupEnable" value="OK" {{#if hUp}}checked{{/if}}><span class="slider round"></span></label><label style="vertical-align: bottom;font-size: 8pt;"> <i>*The compass will rotate in the direction of movement.</i></label></td>
+<td class="l"><label class="switch"><input type="checkbox" name="hupEnable" value="OK" {{#if hUp}}checked{{/if}}><span class="slider round"></span></label><label style="vertical-align: bottom;font-size: 8pt;"> <i>*The compass will rotate in the direction of movement.</i></label></td>
 </tr>
 <tr>
 <td style="text-align: right;"><b>TFT Brightness</b></td>
-<td style="text-align: left;">
+<td class="l">
 <select name="dispBright" id="dispBright">
 {{#each brightOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}}</option>
 {{/each}}</select>
 </td></tr>
 <tr>
 <td style="text-align: right;"><b>Popup Delay</b></td>
-<td style="text-align: left;">
+<td class="l">
 <select name="dispDelay" id="dispDelay">
 {{#each delayOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}} Sec</option>
 {{/each}}</select>
 </td></tr>
 <tr>
 <td style="text-align: right;"><b>OLED/TFT Sleep</b></td>
-<td style="text-align: left;">
+<td class="l">
 <select name="oled_timeout" id="oled_timeout">
 {{#each timeoutOptions}}<option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}} Sec</option>
 {{/each}}</select>
 </td></tr>
-<tr><td style="text-align: right;"><b>RX Channel</b></td><td style="text-align: left;"><input type="checkbox" name="dispRF" value="OK" {{#if dispRF}}checked{{/if}}/>RF <input type="checkbox" name="dispINET" value="OK" {{#if dispINET}}checked{{/if}}/>Internet </td></tr>
+<tr><td style="text-align: right;"><b>RX Channel</b></td><td class="l"><input type="checkbox" name="dispRF" value="OK" {{#if dispRF}}checked{{/if}}/>RF <input type="checkbox" name="dispINET" value="OK" {{#if dispINET}}checked{{/if}}/>Internet </td></tr>
 <tr>
 <td align="right"><b>Filter DX:</b></td>
-<td style="text-align: left;"><input type="number" name="filterDX" min="0" max="9999"
+<td class="l"><input type="number" name="filterDX" min="0" max="9999"
 step="1" value="{{filterDistant}}" /> Km.  <label style="vertical-align: bottom;font-size: 8pt;"> <i>*Value 0 is all distant allow.</i></label></td>
 </tr>
 <tr>
@@ -6712,6 +6673,34 @@ void handle_system(AsyncWebServerRequest *request)
 					}
 				}
 			}
+#ifdef LU6_OLED
+			if (request->argName(i) == "dispBtn" && request->arg(i).length())
+			{
+				int b = request->arg(i).toInt();
+				// a pin already used by the radio, the screen bus, the LEDs or the flash is refused
+				bool used = (b >= 6 && b <= 11) || b == 2 || b == 4 || b == config.rf_tx_gpio || b == config.rf_rx_gpio ||
+							b == config.rf_ptt_gpio || b == config.rf_pd_gpio || b == config.rf_pwr_gpio || b == config.rf_sql_gpio ||
+							b == config.i2c_sda_pin || b == config.i2c_sck_pin;
+				if (b >= -1 && b <= 39 && (b <= 0 || !used))
+				{
+					config.disp_btn = b;
+					if (b > 0)
+						pinMode(b, INPUT_PULLUP);
+				}
+			}
+			if (request->argName(i) == "dispRotate")
+			{
+				int r = request->arg(i).toInt();
+				if (r >= 0 && r <= 60)
+					config.disp_rotate = r;
+			}
+			if (request->argName(i) == "dispType")
+			{
+				int t = request->arg(i).toInt();
+				if (t >= 0 && t <= 2)
+					config.disp_type = t;
+			}
+#endif
 			if (request->argName(i) == "dispFlip")
 			{
 				if (request->arg(i) != "")
@@ -6904,6 +6893,9 @@ void handle_system(AsyncWebServerRequest *request)
 		config.rx_display = dispRX;
 		config.tx_display = dispTX;
 		config.disp_flip = dispFlip;
+#ifdef LU6_OLED
+		display.setRotation(config.disp_flip ? 2 : 0); // 2.1.9: applied at once (next screen refresh)
+#endif
 #endif // OLED
 	   // config.filterMessage = filterMessage;
 	   // config.filterStatus = filterStatus;
@@ -6962,6 +6954,29 @@ void handle_system(AsyncWebServerRequest *request)
 		data["dispSupport"] = true;
 		data["oledEnable"] = config.oled_enable;
 		data["dispFlip"] = config.disp_flip;
+#ifdef LU6_OLED
+		data["dispTypeSel"] = true;
+		data["dispType0"] = config.disp_type == 0;
+		data["dispType1"] = config.disp_type == 1;
+		data["dispType2"] = config.disp_type == 2;
+		data["dispBtn"] = config.disp_btn;
+		data["dispRot0"] = config.disp_rotate == 0;
+		data["dispRot5"] = config.disp_rotate == 5;
+		data["dispRot10"] = config.disp_rotate == 10;
+		data["dispRot20"] = config.disp_rotate == 20;
+		data["dispRot30"] = config.disp_rotate == 30;
+		{
+			char now[48];
+			if (!display.present())
+				strcpy(now, "no screen found");
+			else if (!config.oled_enable)
+				strcpy(now, "screen off");
+			else
+				snprintf(now, sizeof(now), "%s%s", display.type() == LU6_OLED_SH1106 ? "1.3\" (SH1106)" : "0.96\" (SSD1306)",
+						 config.disp_type == 0 ? (display.detected() ? ", found automatically" : ", not recognised") : "");
+			data["dispTypeNow"] = now;
+		}
+#endif
 		data["txDisplay"] = config.tx_display;
 		data["rxDisplay"] = config.rx_display;
 		data["hUp"] = config.h_up;
@@ -7078,15 +7093,15 @@ static const char *IGATE_TEMPLATE =
 	"<th colspan=\"2\"><span><b>[IGATE] Internet Gateway Mode</b></span></th>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Enable:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"igateEnable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"igateEnable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Station Callsign:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"{{myCall}}\" /></td>\n"
+	"<td class=\"l\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"{{myCall}}\" /></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Station SSID:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"mySSID\" id=\"mySSID\">\n"
 	"{{#each ssidOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{value}}</option>\n"
 	"{{/each}}"
@@ -7094,15 +7109,15 @@ static const char *IGATE_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Station Symbol:</b></td>\n"
-	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"igateTable\" name=\"igateTable\" type=\"text\" value=\"{{symTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"igateSymbol\" name=\"igateSymbol\" type=\"text\" value=\"{{symSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"igateImgSymbol\" onclick=\"openWindowSymbol();\" src=\"/symbols/icons/{{symImgNum}}-{{symImgTable}}.png\"> <i>*Click icon for select symbol</i></td>\n"
+	"<td class=\"l\">Table:<input maxlength=\"1\" size=\"1\" id=\"igateTable\" name=\"igateTable\" type=\"text\" value=\"{{symTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"igateSymbol\" name=\"igateSymbol\" type=\"text\" value=\"{{symSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"igateImgSymbol\" onclick=\"openWindowSymbol();\" src=\"/symbols/icons/{{symImgNum}}-{{symImgTable}}.png\"> <i>*Click icon for select symbol</i></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Item/Obj Name:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"9\" size=\"9\" id=\"igateObject\" name=\"igateObject\" type=\"text\" value=\"{{object}}\" /><i> *If not used, leave it blank.In use 3-9 charactor</i></td>\n"
+	"<td class=\"l\"><input maxlength=\"9\" size=\"9\" id=\"igateObject\" name=\"igateObject\" type=\"text\" value=\"{{object}}\" /><i> *If not used, leave it blank.In use 3-9 charactor</i></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>PATH:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"igatePath\" id=\"igatePath\">\n"
 	"{{#each pathOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
@@ -7110,42 +7125,42 @@ static const char *IGATE_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Server Host:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"20\" size=\"20\" id=\"aprsHost\" name=\"aprsHost\" type=\"text\" value=\"{{aprsHost}}\" /> *Recommended: rotate.aprs2.net (<a href=\"https://www.aprs2.net\" target=\"_blank\">aprs2.net</a>)</td>\n"
+	"<td class=\"l\"><input maxlength=\"20\" size=\"20\" id=\"aprsHost\" name=\"aprsHost\" type=\"text\" value=\"{{aprsHost}}\" /> *Recommended: rotate.aprs2.net (<a href=\"https://www.aprs2.net\" target=\"_blank\">aprs2.net</a>)</td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Server Port:</b></td>\n"
-	"<td style=\"text-align: left;\"><input min=\"1\" max=\"65535\" step=\"1\" id=\"aprsPort\" name=\"aprsPort\" type=\"number\" value=\"{{aprsPort}}\" /> *Default: 14580</td>\n"
+	"<td class=\"l\"><input min=\"1\" max=\"65535\" step=\"1\" id=\"aprsPort\" name=\"aprsPort\" type=\"number\" value=\"{{aprsPort}}\" /> *Default: 14580</td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Server Filter:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"30\" size=\"30\" id=\"aprsFilter\" name=\"aprsFilter\" type=\"text\" value=\"{{aprsFilter}}\" /> *Filter: <a target=\"_blank\" href=\"http://www.aprs-is.net/javAPRSFilter.aspx\">http://www.aprs-is.net/javAPRSFilter.aspx</a></td>\n"
+	"<td class=\"l\"><input maxlength=\"30\" size=\"30\" id=\"aprsFilter\" name=\"aprsFilter\" type=\"text\" value=\"{{aprsFilter}}\" /> *Filter: <a target=\"_blank\" href=\"http://www.aprs-is.net/javAPRSFilter.aspx\">http://www.aprs-is.net/javAPRSFilter.aspx</a></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Text Comment:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"25\" size=\"30\" id=\"igateComment\" name=\"igateComment\" type=\"text\" value=\"{{comment}}\" /></td>\n"
+	"<td class=\"l\"><input maxlength=\"25\" size=\"30\" id=\"igateComment\" name=\"igateComment\" type=\"text\" value=\"{{comment}}\" /></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Text Status:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"60\" id=\"igateStatus\" name=\"igateStatus\" type=\"text\" value=\"{{status}}\" />  Interval:<input min=\"0\" max=\"3600\" step=\"1\" name=\"igateSTSInv\" type=\"number\" value=\"{{statusInterval}}\" />Sec.</td>\n"
+	"<td class=\"l\"><input maxlength=\"50\" size=\"60\" id=\"igateStatus\" name=\"igateStatus\" type=\"text\" value=\"{{status}}\" />  Interval:<input min=\"0\" max=\"3600\" step=\"1\" name=\"igateSTSInv\" type=\"number\" value=\"{{statusInterval}}\" />Sec.</td>\n"
 	"</tr>\n"
 	"<tr>\n"
-	"<td align=\"right\"><b>RF2INET:</b></td>\n<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"rf2inetEnable\" name=\"rf2inetEnable\" onclick=\"onRF2INETCheck()\" value=\"OK\" {{#if rf2inet}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch RF to Internet gateway</i></label></td>\n"
+	"<td align=\"right\"><b>RF2INET:</b></td>\n<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" id=\"rf2inetEnable\" name=\"rf2inetEnable\" onclick=\"onRF2INETCheck()\" value=\"OK\" {{#if rf2inet}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch RF to Internet gateway</i></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
-	"<td align=\"right\"><b>INET2RF:</b></td>\n<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"inet2rfEnable\" name=\"inet2rfEnable\" onclick=\"onINET2RFCheck()\" value=\"OK\" {{#if inet2rf}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch Internet to RF gateway</i></label></td>\n"
+	"<td align=\"right\"><b>INET2RF:</b></td>\n<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" id=\"inet2rfEnable\" name=\"inet2rfEnable\" onclick=\"onINET2RFCheck()\" value=\"OK\" {{#if inet2rf}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch Internet to RF gateway</i></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
-	"<td align=\"right\"><b>Time Stamp:</b></td>\n<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"igateTimeStamp\" value=\"OK\" {{#if timestamp}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td align=\"right\"><b>Time Stamp:</b></td>\n<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"igateTimeStamp\" value=\"OK\" {{#if timestamp}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n<tr>"
 	"<td align=\"right\"><b>POSITION:</b></td>\n"
 	"<td align=\"center\">\n"
 	"<table>"
-	"<tr><td style=\"text-align: right;\">Beacon:</td><td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"igateBcnEnable\" value=\"OK\" {{#if bcnEn}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\">  Interval:<input min=\"0\" max=\"3600\" step=\"1\" id=\"igatePosInv\" name=\"igatePosInv\" type=\"number\" value=\"{{posInterval}}\" />Sec.</label></td></tr>"
-	"<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"igatePosSel\" value=\"0\" {{#if posFix}}checked=\"checked\"{{/if}}/>Fix <input type=\"radio\" name=\"igatePosSel\" value=\"1\" {{#if posGPS}}checked=\"checked\"{{/if}}/>GPS </td></tr>\n"
-	"<tr><td style=\"text-align: right;\">TX Channel:</td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"igatePos2RF\" value=\"OK\" {{#if pos2RF}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"igatePos2INET\" value=\"OK\" {{#if pos2INET}}checked{{/if}}/>Internet </td></tr>\n"
-	"<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" id=\"igatePosLat\" name=\"igatePosLat\" type=\"number\" value=\"{{lat}}\" />degrees (positive for North, negative for South)</td></tr>\n"
-	"<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" id=\"igatePosLon\" name=\"igatePosLon\" type=\"number\" value=\"{{lon}}\" />degrees (positive for East, negative for West)</td></tr>\n"
-	"<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" id=\"igatePosAlt\" name=\"igatePosAlt\" type=\"number\" value=\"{{alt}}\" /> meter. *Value 0 is not send height</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Beacon:</td><td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"igateBcnEnable\" value=\"OK\" {{#if bcnEn}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\">  Interval:<input min=\"0\" max=\"3600\" step=\"1\" id=\"igatePosInv\" name=\"igatePosInv\" type=\"number\" value=\"{{posInterval}}\" />Sec.</label></td></tr>"
+	"<tr><td style=\"text-align: right;\">Location:</td><td class=\"l\"><input type=\"radio\" name=\"igatePosSel\" value=\"0\" {{#if posFix}}checked=\"checked\"{{/if}}/>Fix <input type=\"radio\" name=\"igatePosSel\" value=\"1\" {{#if posGPS}}checked=\"checked\"{{/if}}/>GPS </td></tr>\n"
+	"<tr><td style=\"text-align: right;\">TX Channel:</td><td class=\"l\"><input type=\"checkbox\" name=\"igatePos2RF\" value=\"OK\" {{#if pos2RF}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"igatePos2INET\" value=\"OK\" {{#if pos2INET}}checked{{/if}}/>Internet </td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Latitude:</td><td class=\"l\"><input min=\"-90\" max=\"90\" step=\"0.00001\" id=\"igatePosLat\" name=\"igatePosLat\" type=\"number\" value=\"{{lat}}\" />degrees (positive for North, negative for South)</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Longitude:</td><td class=\"l\"><input min=\"-180\" max=\"180\" step=\"0.00001\" id=\"igatePosLon\" name=\"igatePosLon\" type=\"number\" value=\"{{lon}}\" />degrees (positive for East, negative for West)</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Altitude:</td><td class=\"l\"><input min=\"0\" max=\"10000\" step=\"0.1\" id=\"igatePosAlt\" name=\"igatePosAlt\" type=\"number\" value=\"{{alt}}\" /> meter. *Value 0 is not send height</td></tr>\n"
 	"</table></td>"
 	"</tr>\n"
 	"<tr>\n"
@@ -7154,7 +7169,7 @@ static const char *IGATE_TEMPLATE =
 	"<table>"
 	"<tr>\n"
 	"<td align=\"right\">Radio TX Power</td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"power\" id=\"power\">\n"
 	"<option value=\"1\" selected>1</option>\n"
 	"<option value=\"5\">5</option>\n"
@@ -7167,10 +7182,10 @@ static const char *IGATE_TEMPLATE =
 	"<option value=\"80\">80</option>\n"
 	"</select> Watts</td>\n"
 	"</tr>\n"
-	"<tr><td style=\"text-align: right;\">Antenna Gain</td><td style=\"text-align: left;\"><input size=\"3\" min=\"0\" max=\"100\" step=\"0.1\" id=\"gain\" name=\"gain\" type=\"number\" value=\"6\" /> dBi</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Antenna Gain</td><td class=\"l\"><input size=\"3\" min=\"0\" max=\"100\" step=\"0.1\" id=\"gain\" name=\"gain\" type=\"number\" value=\"6\" /> dBi</td></tr>\n"
 	"<tr>\n"
 	"<td align=\"right\">Height</td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"haat\" id=\"haat\">\n"
 	"<option value=\"10\" selected>10</option>\n"
 	"<option value=\"20\">20</option>\n"
@@ -7186,7 +7201,7 @@ static const char *IGATE_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\">Antenna/Direction</td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"direction\" id=\"direction\">\n"
 	"<option>Omni</option><option>NE</option><option>E</option><option>SE</option><option>S</option><option>SW</option><option>W</option><option>NW</option><option>N</option>\n"
 	"</select></td>\n"
@@ -7291,21 +7306,21 @@ static const char *IGATE2_TEMPLATE =
 	"<tr>\n"
 	"<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n"
 	"<td align=\"center\"><table>\n"
-	"<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"igateTlmInv\" name=\"igateTlmInv\" type=\"number\" value=\"{{tlmInterval}}\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>"
+	"<tr><td style=\"text-align: right;\">Interval:</td><td class=\"l\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"igateTlmInv\" name=\"igateTlmInv\" type=\"number\" value=\"{{tlmInterval}}\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>"
 	"{{#each tlmChannels}}<tr><td align=\"right\"><b>CH A{{num}}:</b></td>\n"
 	"<td align=\"center\">\n"
 	"<table>"
 	"<tr><td style=\"text-align: right;\">Sensor:</td>\n"
-	"<td style=\"text-align: left;\">CH: "
+	"<td class=\"l\">CH: "
 	"<select name=\"sensorCH{{idx}}\" id=\"sensorCH{{idx}}\">\n"
 	"{{#each sensorOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
 	"</select></td>\n"
-	"<td style=\"text-align: left;\">Name: <input maxlength=\"10\" size=\"8\" name=\"param{{idx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
-	"<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{idx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
-	"<td style=\"text-align: left;\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision{{idx}}\" type=\"text\" value=\"{{precision}}\" onchange=\"selPrecision({{idx}})\"/></td></tr>\n"
+	"<td class=\"l\">Name: <input maxlength=\"10\" size=\"8\" name=\"param{{idx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
+	"<td class=\"l\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{idx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
+	"<td class=\"l\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision{{idx}}\" type=\"text\" value=\"{{precision}}\" onchange=\"selPrecision({{idx}})\"/></td></tr>\n"
 	"<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}a\" type=\"number\" value=\"{{eqnsA}}\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}b\" type=\"number\" value=\"{{eqnsB}}\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}c\" type=\"number\" value=\"{{eqnsC}}\" /> (av<sup>2</sup>+bv+c) </td>\n"
-	"<td style=\"text-align: left;\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset{{idx}}\" type=\"text\" value=\"{{offset}}\" onchange=\"selOffset({{idx}})\"/></td></tr>\n"
+	"<td class=\"l\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset{{idx}}\" type=\"text\" value=\"{{offset}}\" onchange=\"selOffset({{idx}})\"/></td></tr>\n"
 	"</table></td>"
 	"</tr>\n"
 	"{{/each}}"
@@ -8060,19 +8075,19 @@ static const char *DIGI_TEMPLATE =
 	"<th colspan=\"2\"><span><b>[DIGI] Digital Repeater Mode</b></span></th>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Enable:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiEnable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiEnable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Auto Enable:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiAuto\" value=\"OK\" {{#if digiAuto}}checked{{/if}}><span class=\"slider round\"></span></label> <i>*Automatic enable when APRS-IS disconnected</i></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiAuto\" value=\"OK\" {{#if digiAuto}}checked{{/if}}><span class=\"slider round\"></span></label> <i>*Automatic enable when APRS-IS disconnected</i></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Station Callsign:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"{{myCall}}\" /></td>\n"
+	"<td class=\"l\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"{{myCall}}\" /></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Station SSID:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"mySSID\" id=\"mySSID\">\n"
 	"{{#each ssidOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{value}}</option>\n"
 	"{{/each}}"
@@ -8080,11 +8095,11 @@ static const char *DIGI_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Station Symbol:</b></td>\n"
-	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"digiTable\" name=\"digiTable\" type=\"text\" value=\"{{symTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"digiSymbol\" name=\"digiSymbol\" type=\"text\" value=\"{{symSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"digiImgSymbol\" onclick=\"openWindowSymbol();\" src=\"/symbols/icons/{{symImgNum}}-{{symImgTable}}.png\"> <i>*Click icon for select symbol</i></td>\n"
+	"<td class=\"l\">Table:<input maxlength=\"1\" size=\"1\" id=\"digiTable\" name=\"digiTable\" type=\"text\" value=\"{{symTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"digiSymbol\" name=\"digiSymbol\" type=\"text\" value=\"{{symSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"digiImgSymbol\" onclick=\"openWindowSymbol();\" src=\"/symbols/icons/{{symImgNum}}-{{symImgTable}}.png\"> <i>*Click icon for select symbol</i></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>PATH:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"digiPath\" id=\"digiPath\">\n"
 	"{{#each pathOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
@@ -8092,26 +8107,26 @@ static const char *DIGI_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Text Comment:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"25\" size=\"30\" id=\"digiComment\" name=\"digiComment\" type=\"text\" value=\"{{comment}}\" /></td>\n"
+	"<td class=\"l\"><input maxlength=\"25\" size=\"30\" id=\"digiComment\" name=\"digiComment\" type=\"text\" value=\"{{comment}}\" /></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Text Status:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"60\" id=\"digiStatus\" name=\"digiStatus\" type=\"text\" value=\"{{status}}\" />  Interval:<input min=\"0\" max=\"3600\" step=\"1\" name=\"digiSTSInv\" type=\"number\" value=\"{{statusInterval}}\" />Sec.</td>\n"
+	"<td class=\"l\"><input maxlength=\"50\" size=\"60\" id=\"digiStatus\" name=\"digiStatus\" type=\"text\" value=\"{{status}}\" />  Interval:<input min=\"0\" max=\"3600\" step=\"1\" name=\"digiSTSInv\" type=\"number\" value=\"{{statusInterval}}\" />Sec.</td>\n"
 	"</tr>\n"
-	"<tr><td style=\"text-align: right;\"><b>Repeat Delay:</b></td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"100\" id=\"digiDelay\" name=\"digiDelay\" type=\"number\" value=\"{{delay}}\" /> mSec. <i>*0 is auto,Other random of delay time</i></td></tr>"
+	"<tr><td style=\"text-align: right;\"><b>Repeat Delay:</b></td><td class=\"l\"><input min=\"0\" max=\"10000\" step=\"100\" id=\"digiDelay\" name=\"digiDelay\" type=\"number\" value=\"{{delay}}\" /> mSec. <i>*0 is auto,Other random of delay time</i></td></tr>"
 	"<tr>\n"
 	"<td align=\"right\"><b>Time Stamp:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiTimeStamp\" value=\"OK\" {{#if timestamp}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiTimeStamp\" value=\"OK\" {{#if timestamp}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n"
 	"<tr><td align=\"right\"><b>POSITION:</b></td>\n"
 	"<td align=\"center\">\n"
 	"<table>"
-	"<tr><td style=\"text-align: right;\">Beacon:</td><td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiBcnEnable\" value=\"OK\" {{#if bcnEn}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\">  Interval:<input min=\"0\" max=\"3600\" step=\"1\" id=\"digiPosInv\" name=\"digiPosInv\" type=\"number\" value=\"{{posInterval}}\" />Sec.</label></td></tr>"
-	"<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"digiPosSel\" value=\"0\" {{#if posFix}}checked=\"checked\"{{/if}}/>Fix <input type=\"radio\" name=\"digiPosSel\" value=\"1\" {{#if posGPS}}checked=\"checked\"{{/if}}/>GPS </td></tr>\n"
-	"<tr><td style=\"text-align: right;\">TX Channel:</td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"digiPos2RF\" value=\"OK\" {{#if pos2RF}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"digiPos2INET\" value=\"OK\" {{#if pos2INET}}checked{{/if}}/>Internet </td></tr>\n"
-	"<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" id=\"digiPosLat\" name=\"digiPosLat\" type=\"number\" value=\"{{lat}}\" />degrees (positive for North, negative for South)</td></tr>\n"
-	"<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" id=\"digiPosLon\" name=\"digiPosLon\" type=\"number\" value=\"{{lon}}\" />degrees (positive for East, negative for West)</td></tr>\n"
-	"<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" id=\"digiPosAlt\" name=\"digiPosAlt\" type=\"number\" value=\"{{alt}}\" /> meter. *Value 0 is not send height</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Beacon:</td><td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"digiBcnEnable\" value=\"OK\" {{#if bcnEn}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\">  Interval:<input min=\"0\" max=\"3600\" step=\"1\" id=\"digiPosInv\" name=\"digiPosInv\" type=\"number\" value=\"{{posInterval}}\" />Sec.</label></td></tr>"
+	"<tr><td style=\"text-align: right;\">Location:</td><td class=\"l\"><input type=\"radio\" name=\"digiPosSel\" value=\"0\" {{#if posFix}}checked=\"checked\"{{/if}}/>Fix <input type=\"radio\" name=\"digiPosSel\" value=\"1\" {{#if posGPS}}checked=\"checked\"{{/if}}/>GPS </td></tr>\n"
+	"<tr><td style=\"text-align: right;\">TX Channel:</td><td class=\"l\"><input type=\"checkbox\" name=\"digiPos2RF\" value=\"OK\" {{#if pos2RF}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"digiPos2INET\" value=\"OK\" {{#if pos2INET}}checked{{/if}}/>Internet </td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Latitude:</td><td class=\"l\"><input min=\"-90\" max=\"90\" step=\"0.00001\" id=\"digiPosLat\" name=\"digiPosLat\" type=\"number\" value=\"{{lat}}\" />degrees (positive for North, negative for South)</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Longitude:</td><td class=\"l\"><input min=\"-180\" max=\"180\" step=\"0.00001\" id=\"digiPosLon\" name=\"digiPosLon\" type=\"number\" value=\"{{lon}}\" />degrees (positive for East, negative for West)</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Altitude:</td><td class=\"l\"><input min=\"0\" max=\"10000\" step=\"0.1\" id=\"digiPosAlt\" name=\"digiPosAlt\" type=\"number\" value=\"{{alt}}\" /> meter. *Value 0 is not send height</td></tr>\n"
 	"</table></td>"
 	"</tr>\n"
 	"<tr>\n"
@@ -8120,7 +8135,7 @@ static const char *DIGI_TEMPLATE =
 	"<table>"
 	"<tr>\n"
 	"<td align=\"right\">Radio TX Power</td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"power\" id=\"power\">\n"
 	"<option value=\"1\" selected>1</option>\n"
 	"<option value=\"5\">5</option>\n"
@@ -8133,10 +8148,10 @@ static const char *DIGI_TEMPLATE =
 	"<option value=\"80\">80</option>\n"
 	"</select> Watts</td>\n"
 	"</tr>\n"
-	"<tr><td style=\"text-align: right;\">Antenna Gain</td><td style=\"text-align: left;\"><input size=\"3\" min=\"0\" max=\"100\" step=\"0.1\" id=\"gain\" name=\"gain\" type=\"number\" value=\"6\" /> dBi</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Antenna Gain</td><td class=\"l\"><input size=\"3\" min=\"0\" max=\"100\" step=\"0.1\" id=\"gain\" name=\"gain\" type=\"number\" value=\"6\" /> dBi</td></tr>\n"
 	"<tr>\n"
 	"<td align=\"right\">Height</td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"haat\" id=\"haat\">\n"
 	"<option value=\"10\" selected>10</option>\n"
 	"<option value=\"20\">20</option>\n"
@@ -8152,7 +8167,7 @@ static const char *DIGI_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\">Antenna/Direction</td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"direction\" id=\"direction\">\n"
 	"<option>Omni</option><option>NE</option><option>E</option><option>SE</option><option>S</option><option>SW</option><option>W</option><option>NW</option><option>N</option>\n"
 	"</select></td>\n"
@@ -8183,21 +8198,21 @@ static const char *DIGI_TEMPLATE =
 	"<tr>\n"
 	"<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n"
 	"<td align=\"center\"><table>\n"
-	"<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"digiTlmInv\" name=\"digiTlmInv\" type=\"number\" value=\"{{tlmInterval}}\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>"
+	"<tr><td style=\"text-align: right;\">Interval:</td><td class=\"l\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"digiTlmInv\" name=\"digiTlmInv\" type=\"number\" value=\"{{tlmInterval}}\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>"
 	"{{#each tlmChannels}}<tr><td align=\"right\"><b>CH A{{num}}:</b></td>\n"
 	"<td align=\"center\">\n"
 	"<table>"
 	"<tr><td style=\"text-align: right;\">Sensor:</td>\n"
-	"<td style=\"text-align: left;\">CH: "
+	"<td class=\"l\">CH: "
 	"<select name=\"sensorCH{{idx}}\" id=\"sensorCH{{idx}}\">\n"
 	"{{#each sensorOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
 	"</select></td>\n"
-	"<td style=\"text-align: left;\">Name: <input maxlength=\"10\" size=\"8\" name=\"param{{idx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
-	"<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{idx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
-	"<td style=\"text-align: left;\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision{{idx}}\" type=\"text\" value=\"{{precision}}\" onchange=\"selPrecision({{idx}})\"/></td></tr>\n"
+	"<td class=\"l\">Name: <input maxlength=\"10\" size=\"8\" name=\"param{{idx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
+	"<td class=\"l\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{idx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
+	"<td class=\"l\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision{{idx}}\" type=\"text\" value=\"{{precision}}\" onchange=\"selPrecision({{idx}})\"/></td></tr>\n"
 	"<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}a\" type=\"number\" value=\"{{eqnsA}}\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}b\" type=\"number\" value=\"{{eqnsB}}\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}c\" type=\"number\" value=\"{{eqnsC}}\" /> (av<sup>2</sup>+bv+c) </td>\n"
-	"<td style=\"text-align: left;\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset{{idx}}\" type=\"text\" value=\"{{offset}}\" onchange=\"selOffset({{idx}})\" /></td></tr>\n"
+	"<td class=\"l\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset{{idx}}\" type=\"text\" value=\"{{offset}}\" onchange=\"selOffset({{idx}})\" /></td></tr>\n"
 	"</table></td>"
 	"</tr>\n"
 	"{{/each}}"
@@ -8728,15 +8743,15 @@ static const char *WX_TEMPLATE =
 	"<th colspan=\"2\"><span><b>[WX] Weather Station</b></span></th>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Enable:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Station Callsign:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"{{myCall}}\" /></td>\n"
+	"<td class=\"l\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"{{myCall}}\" /></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Station SSID:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"mySSID\" id=\"mySSID\">\n"
 	"{{#each ssidOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{value}}</option>\n"
 	"{{/each}}"
@@ -8744,11 +8759,11 @@ static const char *WX_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Object Name:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"9\" size=\"9\" name=\"Object\" type=\"text\" value=\"{{object}}\" /><i> *If not used, leave it blank.In use 3-9 charactor</i></td>\n"
+	"<td class=\"l\"><input maxlength=\"9\" size=\"9\" name=\"Object\" type=\"text\" value=\"{{object}}\" /><i> *If not used, leave it blank.In use 3-9 charactor</i></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>PATH:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"Path\" id=\"Path\">\n"
 	"{{#each pathOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
@@ -8756,21 +8771,21 @@ static const char *WX_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Text Comment:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"50\" name=\"Comment\" type=\"text\" value=\"{{comment}}\" /></td>\n"
+	"<td class=\"l\"><input maxlength=\"50\" size=\"50\" name=\"Comment\" type=\"text\" value=\"{{comment}}\" /></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Time Stamp:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wxTimeStamp\" value=\"OK\" {{#if timestamp}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"wxTimeStamp\" value=\"OK\" {{#if timestamp}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n"
 	"<tr><td align=\"right\"><b>POSITION:</b></td>\n"
 	"<td align=\"center\">\n"
 	"<table>"
-	"<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"3600\" step=\"1\" id=\"PosInv\" name=\"PosInv\" type=\"number\" value=\"{{posInterval}}\" />Sec.</td></tr>"
-	"<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"PosSel\" value=\"0\" {{#if posFix}}checked=\"checked\"{{/if}}/>Fix <input type=\"radio\" name=\"PosSel\" value=\"1\" {{#if posGPS}}checked=\"checked\"{{/if}}/>GPS </td></tr>\n"
-	"<tr><td style=\"text-align: right;\">TX Channel:</td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"Pos2RF\" value=\"OK\" {{#if pos2RF}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"Pos2INET\" value=\"OK\" {{#if pos2INET}}checked{{/if}}/>Internet </td></tr>\n"
-	"<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" name=\"PosLat\" type=\"number\" value=\"{{lat}}\" />degrees (positive for North, negative for South)</td></tr>\n"
-	"<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" name=\"PosLon\" type=\"number\" value=\"{{lon}}\" />degrees (positive for East, negative for West)</td></tr>\n"
-	"<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" name=\"PosAlt\" type=\"number\" value=\"{{alt}}\" /> meter. *The altitude in meters(m) above sea level</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Interval:</td><td class=\"l\"><input min=\"0\" max=\"3600\" step=\"1\" id=\"PosInv\" name=\"PosInv\" type=\"number\" value=\"{{posInterval}}\" />Sec.</td></tr>"
+	"<tr><td style=\"text-align: right;\">Location:</td><td class=\"l\"><input type=\"radio\" name=\"PosSel\" value=\"0\" {{#if posFix}}checked=\"checked\"{{/if}}/>Fix <input type=\"radio\" name=\"PosSel\" value=\"1\" {{#if posGPS}}checked=\"checked\"{{/if}}/>GPS </td></tr>\n"
+	"<tr><td style=\"text-align: right;\">TX Channel:</td><td class=\"l\"><input type=\"checkbox\" name=\"Pos2RF\" value=\"OK\" {{#if pos2RF}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"Pos2INET\" value=\"OK\" {{#if pos2INET}}checked{{/if}}/>Internet </td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Latitude:</td><td class=\"l\"><input min=\"-90\" max=\"90\" step=\"0.00001\" name=\"PosLat\" type=\"number\" value=\"{{lat}}\" />degrees (positive for North, negative for South)</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Longitude:</td><td class=\"l\"><input min=\"-180\" max=\"180\" step=\"0.00001\" name=\"PosLon\" type=\"number\" value=\"{{lon}}\" />degrees (positive for East, negative for West)</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Altitude:</td><td class=\"l\"><input min=\"0\" max=\"10000\" step=\"0.1\" name=\"PosAlt\" type=\"number\" value=\"{{alt}}\" /> meter. *The altitude in meters(m) above sea level</td></tr>\n"
 	"</table></td>"
 	"</tr>\n"
 	"<tr><td colspan=\"2\" align=\"right\">\n"
@@ -8815,7 +8830,7 @@ static const char *WX2_TEMPLATE =
 	"{{#each sensors}}<tr><td align=\"right\"><b>{{name}}:</b> \n"
 	"<label class=\"switch\"><input type=\"checkbox\" name=\"senEn{{idx}}\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label>"
 	"</td>\n"
-	"<td style=\"text-align: left;\">Sensor Channel: "
+	"<td class=\"l\">Sensor Channel: "
 	"<select name=\"sensorCH{{idx}}\" id=\"sensorCH{{idx}}\">\n"
 	"{{#each chOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
@@ -9172,15 +9187,15 @@ static const char *TLM_TEMPLATE =
 	"<th colspan=\"2\"><span><b>System Telemetry</b></span></th>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Enable:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"Enable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Station Callsign:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"{{myCall}}\" /></td>\n"
+	"<td class=\"l\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"{{myCall}}\" /></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Station SSID:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"mySSID\" id=\"mySSID\">\n"
 	"{{#each ssidOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{value}}</option>\n"
 	"{{/each}}"
@@ -9188,7 +9203,7 @@ static const char *TLM_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>PATH:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"Path\" id=\"Path\">\n"
 	"{{#each pathOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
@@ -9196,22 +9211,22 @@ static const char *TLM_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Text Comment:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"50\" name=\"Comment\" type=\"text\" value=\"{{comment}}\" /></td>\n"
+	"<td class=\"l\"><input maxlength=\"50\" size=\"50\" name=\"Comment\" type=\"text\" value=\"{{comment}}\" /></td>\n"
 	"</tr>\n"
-	"<tr><td style=\"text-align: right;\">Info Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"3600\" step=\"1\" name=\"infoInv\" type=\"number\" value=\"{{infoInterval}}\" />Sec.</td></tr>"
-	"<tr><td style=\"text-align: right;\">Data Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"3600\" step=\"1\" name=\"dataInv\" type=\"number\" value=\"{{dataInterval}}\" />Sec.</td></tr>"
-	"<tr><td style=\"text-align: right;\">TX Channel:</td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"Pos2RF\" value=\"OK\" {{#if pos2RF}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"Pos2INET\" value=\"OK\" {{#if pos2INET}}checked{{/if}}/>Internet </td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Info Interval:</td><td class=\"l\"><input min=\"0\" max=\"3600\" step=\"1\" name=\"infoInv\" type=\"number\" value=\"{{infoInterval}}\" />Sec.</td></tr>"
+	"<tr><td style=\"text-align: right;\">Data Interval:</td><td class=\"l\"><input min=\"0\" max=\"3600\" step=\"1\" name=\"dataInv\" type=\"number\" value=\"{{dataInterval}}\" />Sec.</td></tr>"
+	"<tr><td style=\"text-align: right;\">TX Channel:</td><td class=\"l\"><input type=\"checkbox\" name=\"Pos2RF\" value=\"OK\" {{#if pos2RF}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"Pos2INET\" value=\"OK\" {{#if pos2INET}}checked{{/if}}/>Internet </td></tr>\n"
 	"{{#each channelsA}}<tr><td align=\"right\"><b>Channel A{{num}}:</b></td>\n"
 	"<td align=\"center\">\n"
 	"<table>"
 	"<tr><td style=\"text-align: right;\">Type/Name:</td>\n"
-	"<td style=\"text-align: left;\">Sensor Type: "
+	"<td class=\"l\">Sensor Type: "
 	"<select name=\"sensorCH{{chIdx}}\" id=\"sensorCH{{chIdx}}\">\n"
 	"{{#each sensorOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
 	"</select></td>\n"
-	"<td style=\"text-align: left;\">Parameter: <input maxlength=\"10\" size=\"8\" name=\"param{{chIdx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
-	"<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{chIdx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
+	"<td class=\"l\">Parameter: <input maxlength=\"10\" size=\"8\" name=\"param{{chIdx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
+	"<td class=\"l\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{chIdx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
 	"</tr>\n"
 	"<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.0001\" name=\"eqns{{chIdx}}a\" type=\"number\" value=\"{{eqnsA}}\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.0001\" name=\"eqns{{chIdx}}b\" type=\"number\" value=\"{{eqnsB}}\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.0001\" name=\"eqns{{chIdx}}c\" type=\"number\" value=\"{{eqnsC}}\" /> (av<sup>2</sup>+bv+c)</td></tr>\n"
 	"</table></td>"
@@ -9220,14 +9235,14 @@ static const char *TLM_TEMPLATE =
 	"{{#each channelsB}}<tr><td align=\"right\"><b>Channel B{{num}}:</b></td>\n"
 	"<td align=\"center\">\n"
 	"<table>"
-	"<td style=\"text-align: left;\">Type: "
+	"<td class=\"l\">Type: "
 	"<select name=\"sensorCH{{selIdx}}\" id=\"sensorCH{{bitIdx}}\">\n"
 	"{{#each sensorOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
 	"</select></td>\n"
-	"<td style=\"text-align: left;\">Parameter: <input maxlength=\"10\" size=\"8\" name=\"param{{selIdx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
-	"<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{selIdx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
-	"<td style=\"text-align: left;\"> Active:<input type=\"radio\" name=\"bitact{{bitIdx}}\" value=\"0\" {{#if low}}checked=\"checked\"{{/if}}/>LOW <input type=\"radio\" name=\"bitact{{bitIdx}}\" value=\"1\" {{#if high}}checked=\"checked\"{{/if}}/>HIGH </td>\n"
+	"<td class=\"l\">Parameter: <input maxlength=\"10\" size=\"8\" name=\"param{{selIdx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
+	"<td class=\"l\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{selIdx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
+	"<td class=\"l\"> Active:<input type=\"radio\" name=\"bitact{{bitIdx}}\" value=\"0\" {{#if low}}checked=\"checked\"{{/if}}/>LOW <input type=\"radio\" name=\"bitact{{bitIdx}}\" value=\"1\" {{#if high}}checked=\"checked\"{{/if}}/>HIGH </td>\n"
 	"</tr>\n"
 	"</table></td>"
 	"</tr>\n"
@@ -9627,15 +9642,15 @@ static const char *SENSOR2_TEMPLATE =
 	"</td><td align=\"center\">\n"
 	"<table>"
 	"<tr><td style=\"text-align: right;\">Type:</td>\n"
-	"<td style=\"text-align: left;\"><select name=\"sensorCH{{idx}}\" id=\"sensorCH{{idx}}\" onchange=\"selSensorType({{idx}})\">\n"
+	"<td class=\"l\"><select name=\"sensorCH{{idx}}\" id=\"sensorCH{{idx}}\" onchange=\"selSensorType({{idx}})\">\n"
 	"</select></td>\n"
-	"<td style=\"text-align: left;\">Name: <input maxlength=\"15\" size=\"15\" name=\"param{{idx}}\" id=\"param{{idx}}\" type=\"text\" value=\"{{parm}}\" /></td>\n"
-	"<td style=\"text-align: left;\">Unit: <input maxlength=\"10\" size=\"5\" name=\"unit{{idx}}\" id=\"unit{{idx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
+	"<td class=\"l\">Name: <input maxlength=\"15\" size=\"15\" name=\"param{{idx}}\" id=\"param{{idx}}\" type=\"text\" value=\"{{parm}}\" /></td>\n"
+	"<td class=\"l\">Unit: <input maxlength=\"10\" size=\"5\" name=\"unit{{idx}}\" id=\"unit{{idx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
 	"</tr>\n"
-	"<tr><td style=\"text-align: right;\">PORT:</td>\n<td style=\"text-align: left;\">\n<select name=\"sensorP{{idx}}\" id=\"sensorP{{idx}}\" onchange=\"selSensor({{idx}})\">\n"
+	"<tr><td style=\"text-align: right;\">PORT:</td>\n<td class=\"l\">\n<select name=\"sensorP{{idx}}\" id=\"sensorP{{idx}}\" onchange=\"selSensor({{idx}})\">\n"
 	"</select></td>\n"
-	"<td style=\"text-align: left;\">Addr/Reg/GPIO: <input style=\"text-align:right;\" min=\"0\" max=\"6500\" step=\"1\" name=\"address{{idx}}\" id=\"address{{idx}}\" type=\"number\" value=\"{{port}}\" /></td>\n"
-	"<td style=\"text-align: left;\">Sample: <input style=\"text-align:right;\" min=\"0\" max=\"9999\" step=\"1\" name=\"sample{{idx}}\" type=\"number\" value=\"{{sample}}\" />Sec.\n"
+	"<td class=\"l\">Addr/Reg/GPIO: <input style=\"text-align:right;\" min=\"0\" max=\"6500\" step=\"1\" name=\"address{{idx}}\" id=\"address{{idx}}\" type=\"number\" value=\"{{port}}\" /></td>\n"
+	"<td class=\"l\">Sample: <input style=\"text-align:right;\" min=\"0\" max=\"9999\" step=\"1\" name=\"sample{{idx}}\" type=\"number\" value=\"{{sample}}\" />Sec.\n"
 	"Average: <input style=\"text-align:right;\" min=\"0\" max=\"999\" step=\"1\" name=\"avg{{idx}}\" type=\"number\" value=\"{{avg}}\" />Sec.</td></tr>\n"
 	"<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-999\" max=\"999\" step=\"0.00001\" name=\"eqns{{idx}}a\" type=\"number\" value=\"{{eqnsA}}\" />  b:<input min=\"-999\" max=\"999\" step=\"0.00001\" name=\"eqns{{idx}}b\" type=\"number\" value=\"{{eqnsB}}\" /> c:<input min=\"-999\" max=\"999\" step=\"0.00001\" name=\"eqns{{idx}}c\" type=\"number\" value=\"{{eqnsC}}\" /> (av<sup>2</sup>+bv+c)</td></tr>\n"
 	"</table></td>"
@@ -9950,15 +9965,15 @@ static const char *TRACKER_TEMPLATE =
 	"<th colspan=\"2\"><span><b>[TRACKER] Tracker Position Mode</b></span></th>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Enable:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"trackerEnable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"trackerEnable\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Station Callsign:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"{{myCall}}\" /></td>\n"
+	"<td class=\"l\"><input maxlength=\"7\" size=\"6\" id=\"myCall\" name=\"myCall\" type=\"text\" value=\"{{myCall}}\" /></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Station SSID:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"mySSID\" id=\"mySSID\">\n"
 	"{{#each ssidOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{value}}</option>\n"
 	"{{/each}}"
@@ -9966,11 +9981,11 @@ static const char *TRACKER_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Item/Obj Name:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"9\" size=\"9\" id=\"trackerObject\" name=\"trackerObject\" type=\"text\" value=\"{{object}}\" /><i> *If not used, leave it blank.In use 3-9 charactor</i></td>\n"
+	"<td class=\"l\"><input maxlength=\"9\" size=\"9\" id=\"trackerObject\" name=\"trackerObject\" type=\"text\" value=\"{{object}}\" /><i> *If not used, leave it blank.In use 3-9 charactor</i></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>PATH:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"trackerPath\" id=\"trackerPath\">\n"
 	"{{#each pathOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
@@ -9978,23 +9993,27 @@ static const char *TRACKER_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Text Comment:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"25\" size=\"30\" id=\"trackerComment\" name=\"trackerComment\" type=\"text\" value=\"{{comment}}\" /></td>\n"
+	"<td class=\"l\"><input maxlength=\"25\" size=\"30\" id=\"trackerComment\" name=\"trackerComment\" type=\"text\" value=\"{{comment}}\" /></td>\n"
+	"</tr>\n"
+	"<tr>\n"
+	"<td align=\"right\"><b>SOS message to:</b></td>\n"
+	"<td style=\"text-align: left;white-space:normal;\"><input maxlength=\"9\" size=\"12\" name=\"sosTo\" type=\"text\" value=\"{{sosTo}}\" oninput=\"this.value=this.value.toUpperCase();\" /> <i>gets a message on SOS (empty = none)</i></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Text Status:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"50\" size=\"60\" id=\"trkStatus\" name=\"trkStatus\" type=\"text\" value=\"{{status}}\" />  Interval:<input min=\"0\" max=\"3600\" step=\"1\" name=\"trkSTSInv\" type=\"number\" value=\"{{statusInterval}}\" />Sec.</td>\n"
+	"<td class=\"l\"><input maxlength=\"50\" size=\"60\" id=\"trkStatus\" name=\"trkStatus\" type=\"text\" value=\"{{status}}\" />  Interval:<input min=\"0\" max=\"3600\" step=\"1\" name=\"trkSTSInv\" type=\"number\" value=\"{{statusInterval}}\" />Sec.</td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Smart Beacon:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" id=\"smartBcnEnable\" name=\"smartBcnEnable\" onclick=\"onSmartCheck()\" value=\"OK\" {{#if smartBcnEn}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch use to smart beacon mode</i></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" id=\"smartBcnEnable\" name=\"smartBcnEnable\" onclick=\"onSmartCheck()\" value=\"OK\" {{#if smartBcnEn}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch use to smart beacon mode</i></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Compress:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"compressEnable\" value=\"OK\" {{#if compressEn}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch compress packet</i></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"compressEnable\" value=\"OK\" {{#if compressEn}}checked{{/if}}><span class=\"slider round\"></span></label><label style=\"vertical-align: bottom;font-size: 8pt;\"><i> *Switch compress packet</i></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Mic-E Type:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"trkMicEType\" id=\"trkMicEType\">\n"
 	"{{#each micEOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
@@ -10002,23 +10021,23 @@ static const char *TRACKER_TEMPLATE =
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Time Stamp:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"trackerTimeStamp\" value=\"OK\" {{#if timestamp}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"trackerTimeStamp\" value=\"OK\" {{#if timestamp}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n"
-	"<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"trackerPos2RF\" value=\"OK\" {{#if pos2RF}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"trackerPos2INET\" value=\"OK\" {{#if pos2INET}}checked{{/if}}/>Internet </td></tr>\n"
-	"<tr><td style=\"text-align: right;\"><b>Option:</b></td><td style=\"text-align: left;\"><input type=\"checkbox\" name=\"trackerOptCST\" value=\"OK\" {{#if optCST}}checked{{/if}}/>Telemetry <input type=\"checkbox\" name=\"trackerOptAlt\" value=\"OK\" {{#if optAlt}}checked{{/if}}/>Altutude <input type=\"checkbox\" name=\"trackerOptBat\" value=\"OK\" {{#if optBat}}checked{{/if}}/>Audio Request </td></tr>\n"
+	"<tr><td style=\"text-align: right;\"><b>TX Channel:</b></td><td class=\"l\"><input type=\"checkbox\" name=\"trackerPos2RF\" value=\"OK\" {{#if pos2RF}}checked{{/if}}/>RF <input type=\"checkbox\" name=\"trackerPos2INET\" value=\"OK\" {{#if pos2INET}}checked{{/if}}/>Internet </td></tr>\n"
+	"<tr><td style=\"text-align: right;\"><b>Option:</b></td><td class=\"l\"><input type=\"checkbox\" name=\"trackerOptCST\" value=\"OK\" {{#if optCST}}checked{{/if}}/>Telemetry <input type=\"checkbox\" name=\"trackerOptAlt\" value=\"OK\" {{#if optAlt}}checked{{/if}}/>Altutude <input type=\"checkbox\" name=\"trackerOptBat\" value=\"OK\" {{#if optBat}}checked{{/if}}/>Audio Request </td></tr>\n"
 	"<tr>"
 	"<td align=\"right\"><b>POSITION:</b></td>\n"
 	"<td align=\"center\">\n"
 	"<table>"
-	"<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"3600\" step=\"1\" id=\"trackerPosInv\" name=\"trackerPosInv\" type=\"number\" value=\"{{posInterval}}\" />Sec.</label></td></tr>"
-	"<tr><td style=\"text-align: right;\">Location:</td><td style=\"text-align: left;\"><input type=\"radio\" name=\"trackerPosSel\" value=\"0\" {{#if posFix}}checked=\"checked\"{{/if}}/>Fix <input type=\"radio\" name=\"trackerPosSel\" value=\"1\" {{#if posGPS}}checked=\"checked\"{{/if}}/>GPS </td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Interval:</td><td class=\"l\"><input min=\"0\" max=\"3600\" step=\"1\" id=\"trackerPosInv\" name=\"trackerPosInv\" type=\"number\" value=\"{{posInterval}}\" />Sec.</label></td></tr>"
+	"<tr><td style=\"text-align: right;\">Location:</td><td class=\"l\"><input type=\"radio\" name=\"trackerPosSel\" value=\"0\" {{#if posFix}}checked=\"checked\"{{/if}}/>Fix <input type=\"radio\" name=\"trackerPosSel\" value=\"1\" {{#if posGPS}}checked=\"checked\"{{/if}}/>GPS </td></tr>\n"
 	"<tr>\n"
 	"<td align=\"right\">Symbol Icon:</td>\n"
-	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"trackerTable\" name=\"trackerTable\" type=\"text\" value=\"{{symTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"trackerSymbol\" name=\"trackerSymbol\" type=\"text\" value=\"{{symSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"trackerImgSymbol\" onclick=\"openWindowSymbol(0);\" src=\"/symbols/icons/{{symImgNum}}-{{symImgTable}}.png\"> <i>*Click icon for select symbol</i></td>\n"
+	"<td class=\"l\">Table:<input maxlength=\"1\" size=\"1\" id=\"trackerTable\" name=\"trackerTable\" type=\"text\" value=\"{{symTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"trackerSymbol\" name=\"trackerSymbol\" type=\"text\" value=\"{{symSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"trackerImgSymbol\" onclick=\"openWindowSymbol(0);\" src=\"/symbols/icons/{{symImgNum}}-{{symImgTable}}.png\"> <i>*Click icon for select symbol</i></td>\n"
 	"</tr>\n"
-	"<tr><td style=\"text-align: right;\">Latitude:</td><td style=\"text-align: left;\"><input min=\"-90\" max=\"90\" step=\"0.00001\" id=\"trackerPosLat\" name=\"trackerPosLat\" type=\"number\" value=\"{{lat}}\" />degrees (positive for North, negative for South)</td></tr>\n"
-	"<tr><td style=\"text-align: right;\">Longitude:</td><td style=\"text-align: left;\"><input min=\"-180\" max=\"180\" step=\"0.00001\" id=\"trackerPosLon\" name=\"trackerPosLon\" type=\"number\" value=\"{{lon}}\" />degrees (positive for East, negative for West)</td></tr>\n"
-	"<tr><td style=\"text-align: right;\">Altitude:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"10000\" step=\"0.1\" id=\"trackerPosAlt\" name=\"trackerPosAlt\" type=\"number\" value=\"{{alt}}\" /> meter. *Value 0 is not send height</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Latitude:</td><td class=\"l\"><input min=\"-90\" max=\"90\" step=\"0.00001\" id=\"trackerPosLat\" name=\"trackerPosLat\" type=\"number\" value=\"{{lat}}\" />degrees (positive for North, negative for South)</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Longitude:</td><td class=\"l\"><input min=\"-180\" max=\"180\" step=\"0.00001\" id=\"trackerPosLon\" name=\"trackerPosLon\" type=\"number\" value=\"{{lon}}\" />degrees (positive for East, negative for West)</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Altitude:</td><td class=\"l\"><input min=\"0\" max=\"10000\" step=\"0.1\" id=\"trackerPosAlt\" name=\"trackerPosAlt\" type=\"number\" value=\"{{alt}}\" /> meter. *Value 0 is not send height</td></tr>\n"
 	"</table></td>"
 	"</tr>\n"
 	"<tr>\n"
@@ -10028,37 +10047,37 @@ static const char *TRACKER_TEMPLATE =
 	"<legend>Smart beacon configuration</legend>\n<table>"
 	"<tr>\n"
 	"<td align=\"right\">Move Symbol:</td>\n"
-	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"moveTable\" name=\"moveTable\" type=\"text\" value=\"{{moveTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"moveSymbol\" name=\"moveSymbol\" type=\"text\" value=\"{{moveSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"moveImgSymbol\" onclick=\"openWindowSymbol(1);\" src=\"/symbols/icons/{{moveImgNum}}-{{moveImgTable}}.png\"> <i>*Click icon for select MOVE symbol</i></td>\n"
+	"<td class=\"l\">Table:<input maxlength=\"1\" size=\"1\" id=\"moveTable\" name=\"moveTable\" type=\"text\" value=\"{{moveTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"moveSymbol\" name=\"moveSymbol\" type=\"text\" value=\"{{moveSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"moveImgSymbol\" onclick=\"openWindowSymbol(1);\" src=\"/symbols/icons/{{moveImgNum}}-{{moveImgTable}}.png\"> <i>*Click icon for select MOVE symbol</i></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\">Stop Symbol:</td>\n"
-	"<td style=\"text-align: left;\">Table:<input maxlength=\"1\" size=\"1\" id=\"stopTable\" name=\"stopTable\" type=\"text\" value=\"{{stopTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"stopSymbol\" name=\"stopSymbol\" type=\"text\" value=\"{{stopSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"stopImgSymbol\" onclick=\"openWindowSymbol(2);\" src=\"/symbols/icons/{{stopImgNum}}-{{stopImgTable}}.png\"> <i>*Click icon for select STOP symbol</i></td>\n"
+	"<td class=\"l\">Table:<input maxlength=\"1\" size=\"1\" id=\"stopTable\" name=\"stopTable\" type=\"text\" value=\"{{stopTable}}\" style=\"background-color: rgb(97, 239, 170);\" /> Symbol:<input maxlength=\"1\" size=\"1\" id=\"stopSymbol\" name=\"stopSymbol\" type=\"text\" value=\"{{stopSymbol}}\" style=\"background-color: rgb(97, 239, 170);\" /> <img border=\"1\" style=\"vertical-align: middle;\" id=\"stopImgSymbol\" onclick=\"openWindowSymbol(2);\" src=\"/symbols/icons/{{stopImgNum}}-{{stopImgTable}}.png\"> <i>*Click icon for select STOP symbol</i></td>\n"
 	"</tr>\n"
-	"<tr><td style=\"text-align: right;\">High Speed:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"10\" max=\"1000\" step=\"1\" id=\"hspeed\" name=\"hspeed\" type=\"number\" value=\"{{hspeed}}\" /> km/h</td></tr>\n"
-	"<tr><td style=\"text-align: right;\">Low Speed:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"1\" max=\"250\" step=\"1\" id=\"lspeed\" name=\"lspeed\" type=\"number\" value=\"{{lspeed}}\" /> km/h</td></tr>\n"
-	"<tr><td style=\"text-align: right;\">Slow Interval:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"60\" max=\"3600\" step=\"1\" id=\"slowInterval\" name=\"slowInterval\" type=\"number\" value=\"{{slowInterval}}\" /> Sec.</td></tr>\n"
-	"<tr><td style=\"text-align: right;\">Max Interval:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"10\" max=\"255\" step=\"1\" id=\"maxInterval\" name=\"maxInterval\" type=\"number\" value=\"{{maxInterval}}\" /> Sec.</td></tr>\n"
-	"<tr><td style=\"text-align: right;\">Min Interval:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"1\" max=\"100\" step=\"1\" id=\"minInterval\" name=\"minInterval\" type=\"number\" value=\"{{minInterval}}\" /> Sec.</td></tr>\n"
-	"<tr><td style=\"text-align: right;\">Min Angle:</td><td style=\"text-align: left;\"><input size=\"3\" min=\"1\" max=\"359\" step=\"1\" id=\"minAngle\" name=\"minAngle\" type=\"number\" value=\"{{minAngle}}\" /> Degree.</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">High Speed:</td><td class=\"l\"><input size=\"3\" min=\"10\" max=\"1000\" step=\"1\" id=\"hspeed\" name=\"hspeed\" type=\"number\" value=\"{{hspeed}}\" /> km/h</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Low Speed:</td><td class=\"l\"><input size=\"3\" min=\"1\" max=\"250\" step=\"1\" id=\"lspeed\" name=\"lspeed\" type=\"number\" value=\"{{lspeed}}\" /> km/h</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Slow Interval:</td><td class=\"l\"><input size=\"3\" min=\"60\" max=\"3600\" step=\"1\" id=\"slowInterval\" name=\"slowInterval\" type=\"number\" value=\"{{slowInterval}}\" /> Sec.</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Max Interval:</td><td class=\"l\"><input size=\"3\" min=\"10\" max=\"255\" step=\"1\" id=\"maxInterval\" name=\"maxInterval\" type=\"number\" value=\"{{maxInterval}}\" /> Sec.</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Min Interval:</td><td class=\"l\"><input size=\"3\" min=\"1\" max=\"100\" step=\"1\" id=\"minInterval\" name=\"minInterval\" type=\"number\" value=\"{{minInterval}}\" /> Sec.</td></tr>\n"
+	"<tr><td style=\"text-align: right;\">Min Angle:</td><td class=\"l\"><input size=\"3\" min=\"1\" max=\"359\" step=\"1\" id=\"minAngle\" name=\"minAngle\" type=\"number\" value=\"{{minAngle}}\" /> Degree.</td></tr>\n"
 	"</table></fieldset></tr>"
 	"<tr>\n"
 	"<td align=\"right\"><b>Telemetry:</b><br />(v=0->8280)</td>\n"
 	"<td align=\"center\"><table>\n"
-	"<tr><td style=\"text-align: right;\">Interval:</td><td style=\"text-align: left;\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"trkTlmInv\" name=\"trkTlmInv\" type=\"number\" value=\"{{tlmInterval}}\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>"
+	"<tr><td style=\"text-align: right;\">Interval:</td><td class=\"l\"><input min=\"0\" max=\"1000\" step=\"1\" id=\"trkTlmInv\" name=\"trkTlmInv\" type=\"number\" value=\"{{tlmInterval}}\" /> *Number of packets interval,<i>Example: 0 not send,1 send every packet</i></label></td></tr>"
 	"{{#each tlmChannels}}<tr><td align=\"right\"><b>CH A{{num}}:</b></td>\n"
 	"<td align=\"center\">\n"
 	"<table>"
 	"<tr><td style=\"text-align: right;\">Sensor:</td>\n"
-	"<td style=\"text-align: left;\">CH: "
+	"<td class=\"l\">CH: "
 	"<select name=\"sensorCH{{idx}}\" id=\"sensorCH{{idx}}\">\n"
 	"{{#each sensorOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
 	"</select></td>\n"
-	"<td style=\"text-align: left;\">Name: <input maxlength=\"10\" size=\"8\" name=\"param{{idx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
-	"<td style=\"text-align: left;\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{idx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
-	"<td style=\"text-align: left;\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision{{idx}}\" type=\"text\" value=\"{{precision}}\" onchange=\"selPrecision({{idx}})\" /></td></tr>\n"
+	"<td class=\"l\">Name: <input maxlength=\"10\" size=\"8\" name=\"param{{idx}}\" type=\"text\" value=\"{{param}}\" /></td>\n"
+	"<td class=\"l\">Unit: <input maxlength=\"8\" size=\"5\" name=\"unit{{idx}}\" type=\"text\" value=\"{{unit}}\" /></td>\n"
+	"<td class=\"l\">Precision: <input min=\"0\" max=\"5\" step=\"1\" type=\"number\" style=\"width: 2em\" name=\"precision{{idx}}\" type=\"text\" value=\"{{precision}}\" onchange=\"selPrecision({{idx}})\" /></td></tr>\n"
 	"<tr><td style=\"text-align: right;\">EQNS:</td><td colspan=\"3\" style=\"text-align: left;\">a:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}a\" type=\"number\" value=\"{{eqnsA}}\" />  b:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}b\" type=\"number\" value=\"{{eqnsB}}\" /> c:<input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" name=\"eqns{{idx}}c\" type=\"number\" value=\"{{eqnsC}}\" /> (av<sup>2</sup>+bv+c) </td>\n"
-	"<td style=\"text-align: left;\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset{{idx}}\" type=\"text\" value=\"{{offset}}\"  onchange=\"selOffset({{idx}})\" /></td></tr>\n"
+	"<td class=\"l\">Offset: <input min=\"-9999\" max=\"9999\" step=\"0.00001\" style=\"width: 5em\" type=\"number\" name=\"offset{{idx}}\" type=\"text\" value=\"{{offset}}\"  onchange=\"selOffset({{idx}})\" /></td></tr>\n"
 	"</table></td>"
 	"</tr>\n"
 	"{{/each}}"
@@ -10341,6 +10360,25 @@ void handle_tracker(AsyncWebServerRequest *request)
 						config.trk_mice_type = request->arg(i).toInt();
 				}
 			}
+			if (request->argName(i) == "sosTo") // LU6JMF 1.4: SOS message destination (kept in NVS)
+			{
+				String to = request->arg(i);
+				to.trim();
+				to.toUpperCase();
+				String clean = "";
+				for (unsigned k = 0; k < to.length() && clean.length() < 9; k++)
+				{
+					char ch = to[k];
+					if (isalnum((unsigned char)ch) || ch == '-')
+						clean += ch;
+				}
+				Preferences p;
+				if (p.begin("lu6sos", false))
+				{
+					p.putString("to", clean);
+					p.end();
+				}
+			}
 			if (request->argName(i) == "trackerComment")
 			{
 				if (request->arg(i) != "")
@@ -10486,6 +10524,16 @@ void handle_tracker(AsyncWebServerRequest *request)
 	}
 
 	data["comment"] = config.trk_comment;
+	{
+		Preferences p;
+		String to = "";
+		if (p.begin("lu6sos", true))
+		{
+			to = p.getString("to", "");
+			p.end();
+		}
+		data["sosTo"] = to;
+	}
 	data["status"] = config.trk_status;
 	data["statusInterval"] = config.trk_sts_interval;
 	data["smartBcnEn"] = config.trk_smartbeacon;
@@ -10628,15 +10676,15 @@ static const char *WIRELESS_TEMPLATE =
 	"<th colspan=\"2\"><span><b>WiFi Access Point</b></span></th>\n"
 	"<tr>\n"
 	"<td align=\"right\" width=\"120\"><b>Enable:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wifiAP\" value=\"OK\" {{#if wifiAPEnabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"wifiAP\" value=\"OK\" {{#if wifiAPEnabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>WiFi AP SSID:</b></td>\n"
-	"<td style=\"text-align: left;\"><input size=\"32\" maxlength=\"32\" class=\"form-control\" id=\"wifi_ssidAP\" name=\"wifi_ssidAP\" type=\"text\" value=\"{{apSSID}}\" /></td>\n"
+	"<td class=\"l\"><input size=\"32\" maxlength=\"32\" class=\"form-control\" id=\"wifi_ssidAP\" name=\"wifi_ssidAP\" type=\"text\" value=\"{{apSSID}}\" /></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>WiFi AP PASSWORD:</b></td>\n"
-	"<td style=\"text-align: left;\"><input size=\"63\" maxlength=\"63\" class=\"form-control\" id=\"wifi_passAP\" name=\"wifi_passAP\" type=\"password\" value=\"{{apPass}}\" /></td>\n"
+	"<td class=\"l\"><input size=\"63\" maxlength=\"63\" class=\"form-control\" id=\"wifi_passAP\" name=\"wifi_passAP\" type=\"password\" value=\"{{apPass}}\" /></td>\n"
 	"</tr>\n"
 	"<tr><td colspan=\"2\" align=\"right\">\n"
 	"<div><button class=\"button\" type='submit' id='submitWiFiAP'  name=\"commitWiFiAP\"> Apply Change </button></div>\n"
@@ -10649,11 +10697,11 @@ static const char *WIRELESS_TEMPLATE =
 	"<th colspan=\"2\"><span><b>WiFi Multi Station</b></span></th>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>WiFi STA Enable:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wificlient\" value=\"OK\" {{#if wifiClientEnabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"wificlient\" value=\"OK\" {{#if wifiClientEnabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>WiFi RF Power:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"wifi_pwr\" id=\"wifi_pwr\">\n"
 	"{{#each wifiPowerOptions}}<option value=\"{{value}}\" {{#if selected}}selected{{/if}}>{{label}}</option>\n"
 	"{{/each}}"
@@ -10667,15 +10715,15 @@ static const char *WIRELESS_TEMPLATE =
 	"<legend>WiFi Station #{{num}}</legend>\n<table style=\"text-align:unset;border-width:0px;background:unset\">"
 	"<tr style=\"background:unset;\">"
 	"<td align=\"right\" width=\"120\"><b>Enable:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"wifiStation{{n}}\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"wifiStation{{n}}\" value=\"OK\" {{#if enabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>WiFi SSID:</b></td>\n"
-	"<td style=\"text-align: left;\"><input size=\"32\" maxlength=\"32\" name=\"wifi_ssid{{n}}\" type=\"text\" value=\"{{ssid}}\" /></td>\n"
+	"<td class=\"l\"><input size=\"32\" maxlength=\"32\" name=\"wifi_ssid{{n}}\" type=\"text\" value=\"{{ssid}}\" /></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>WiFi PASSWORD:</b></td>\n"
-	"<td style=\"text-align: left;\"><input size=\"63\" maxlength=\"63\" name=\"wifi_pass{{n}}\" type=\"password\" value=\"{{pass}}\" /></td>\n"
+	"<td class=\"l\"><input size=\"63\" maxlength=\"63\" name=\"wifi_pass{{n}}\" type=\"password\" value=\"{{pass}}\" /></td>\n"
 	"</tr>\n"
 	"</tr></table></fieldset>\n"
 	"</td></tr>\n"
@@ -10692,32 +10740,32 @@ static const char *WIRELESS_TEMPLATE =
 	"<th colspan=\"2\"><span><b>Bluetooth Master (BLE)</b></span></th>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>Enable:</b></td>\n"
-	"<td style=\"text-align: left;\"><label class=\"switch\"><input type=\"checkbox\" name=\"btMaster\" value=\"OK\" {{#if btEnabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
+	"<td class=\"l\"><label class=\"switch\"><input type=\"checkbox\" name=\"btMaster\" value=\"OK\" {{#if btEnabled}}checked{{/if}}><span class=\"slider round\"></span></label></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>NAME:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"20\" id=\"bt_name\" name=\"bt_name\" type=\"text\" value=\"{{btName}}\" /></td>\n"
+	"<td class=\"l\"><input maxlength=\"20\" id=\"bt_name\" name=\"bt_name\" type=\"text\" value=\"{{btName}}\" /></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>PIN:</b></td>\n"
-	"<td style=\"text-align: left;\"><input min=\"0\" max=\"999999\" id=\"bt_pin\" name=\"bt_pin\" type=\"number\" value=\"{{btPin}}\" /></td> <i>*Value 0 is no auth.</i>\n"
+	"<td class=\"l\"><input min=\"0\" max=\"999999\" id=\"bt_pin\" name=\"bt_pin\" type=\"number\" value=\"{{btPin}}\" /></td> <i>*Value 0 is no auth.</i>\n"
 	"</tr>\n"
 	"{{#if btUuidSupport}}"
 	"<tr>\n"
 	"<td align=\"right\"><b>UUID:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"37\" size=\"38\" id=\"bt_uuid\" name=\"bt_uuid\" type=\"text\" value=\"{{btUuid}}\" /></td>\n"
+	"<td class=\"l\"><input maxlength=\"37\" size=\"38\" id=\"bt_uuid\" name=\"bt_uuid\" type=\"text\" value=\"{{btUuid}}\" /></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>UUID RX:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"37\" size=\"38\" id=\"bt_uuid_rx\" name=\"bt_uuid_rx\" type=\"text\" value=\"{{btUuidRx}}\" /></td>\n"
+	"<td class=\"l\"><input maxlength=\"37\" size=\"38\" id=\"bt_uuid_rx\" name=\"bt_uuid_rx\" type=\"text\" value=\"{{btUuidRx}}\" /></td>\n"
 	"</tr>\n"
 	"<tr>\n"
 	"<td align=\"right\"><b>UUID TX:</b></td>\n"
-	"<td style=\"text-align: left;\"><input maxlength=\"37\" size=\"38\" id=\"bt_uuid_tx\" name=\"bt_uuid_tx\" type=\"text\" value=\"{{btUuidTx}}\" /></td>\n"
+	"<td class=\"l\"><input maxlength=\"37\" size=\"38\" id=\"bt_uuid_tx\" name=\"bt_uuid_tx\" type=\"text\" value=\"{{btUuidTx}}\" /></td>\n"
 	"</tr>\n"
 	"{{/if}}"
 	"<td align=\"right\"><b>MODE:</b></td>\n"
-	"<td style=\"text-align: left;\">\n"
+	"<td class=\"l\">\n"
 	"<select name=\"bt_mode\" id=\"bt_mode\">\n"
 	"<option value=\"0\" {{#if btModeOff}}selected{{/if}}>NONE</option>\n"
 	"<option value=\"1\" {{#if btModeTNC2}}selected{{/if}}>TNC2</option>\n"
@@ -11206,12 +11254,14 @@ void handle_test(AsyncWebServerRequest *request)
 // 2.1.8: one-click update installs the published build (classic ESP32, no display). Boards
 // built with a display may use it too, but are warned that the display stops working.
 // Other chips / NO_OTA builds only get the notice.
-#if defined(CONFIG_IDF_TARGET_ESP32) && !defined(GUI_LCD) && !defined(NO_OTA)
+#if defined(LU6_OLED)
+#define LU6_OTA_PREFIX "ESP32_v" // 2.1.9: the single ESP32 firmware (any screen or none)
+#elif defined(CONFIG_IDF_TARGET_ESP32) && !defined(GUI_LCD) && !defined(NO_OTA)
 #define LU6_OTA_PREFIX "ESP32_NODISP_"
 #else
 #define LU6_OTA_PREFIX ""
 #endif
-#if defined(OLED)
+#if defined(OLED) && !defined(LU6_OLED)
 #define LU6_OTA_LOSES_DISPLAY true
 #else
 #define LU6_OTA_LOSES_DISPLAY false
@@ -11246,10 +11296,11 @@ struct Lu6jmfUpdate
 static Lu6jmfUpdate lu6Upd = {};
 static TaskHandle_t lu6OtaTaskHandle = NULL;
 
+extern "C" int siscanf(const char *, const char *, ...);
 static long lu6VerNum(const char *v, bool *dev)
 {
 	int a = 0, b = 0, c = 0;
-	sscanf(v, "%d.%d.%d", &a, &b, &c);
+	siscanf(v, "%d.%d.%d", &a, &b, &c); // integer-only scanf (2.1.9, smaller)
 	if (dev)
 		*dev = (strstr(v, "dev") != NULL);
 	return (long)a * 1000000L + (long)b * 1000L + c;
@@ -11268,7 +11319,15 @@ static bool lu6IsNewer(const char *latest, const char *current)
 
 static bool lu6OtaOneClick()
 {
-	return LU6_OTA_PREFIX[0] && strncmp(lu6Upd.file, LU6_OTA_PREFIX, strlen(LU6_OTA_PREFIX)) == 0;
+	if (LU6_OTA_PREFIX[0] && strncmp(lu6Upd.file, LU6_OTA_PREFIX, strlen(LU6_OTA_PREFIX)) == 0)
+		return true;
+#if defined(LU6_OLED)
+	// 2.1.9: the single ESP32 firmware is also published as ESP32_NODISP_..., the name the 2.1.8 boards
+	// look for; it is the same file, so it is accepted here too
+	if (strncmp(lu6Upd.file, "ESP32_NODISP_", 13) == 0)
+		return true;
+#endif
+	return false;
 }
 
 // Fetch version.json into lu6Upd. Returns the HTTP code (200 = ok).
@@ -11300,21 +11359,30 @@ static int lu6FetchVersion()
 	return httpCode;
 }
 
+// 2.1.9: the "Check version" button no longer downloads version.json inside the web server task
+// (the HTTPS handshake took longer than the watchdog allows -> "Task WDT" restart). The button wakes
+// this task, which does the check; the page asks again until the answer is ready.
+static TaskHandle_t lu6UpdTaskH = NULL;
+static volatile bool lu6UpdBusy = false;
 static void lu6UpdCheckTask(void *)
 {
-	vTaskDelay(pdMS_TO_TICKS(60000));
+	ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(60000)); // first check 1 min after boot (or when asked)
 	for (;;)
 	{
 		uint32_t waitMs = 600000UL; // no WiFi / failed: try again in 10 min
 		if (WiFi.status() == WL_CONNECTED && lu6Upd.state != 1 && lu6Upd.state != 2)
 		{
+			lu6UpdBusy = true;
 			int code = lu6FetchVersion();
 			lu6Upd.autoCode = code;
 			lu6Upd.autoAt = millis();
+			lu6UpdBusy = false;
 			if (code == HTTP_CODE_OK)
 				waitMs = 86400000UL; // ok: next check in 24 h
 		}
-		vTaskDelay(pdMS_TO_TICKS(waitMs));
+		else
+			lu6Upd.autoAt = millis(); // not checked now: the button gets the last result
+		ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(waitMs)); // next check, or earlier when the button asks
 	}
 }
 
@@ -11324,7 +11392,7 @@ void lu6jmfUpdateStart()
 	if (started)
 		return;
 	started = true;
-	xTaskCreatePinnedToCore(lu6UpdCheckTask, "lu6UpdChk", 12288, NULL, 1, NULL, 0);
+	xTaskCreatePinnedToCore(lu6UpdCheckTask, "lu6UpdChk", 12288, NULL, 1, &lu6UpdTaskH, 0);
 }
 
 // Header line shown on every page while a newer version exists.
@@ -11645,7 +11713,22 @@ void handle_check_version(AsyncWebServerRequest *request)
 		return request->requestAuthentication();
 	}
 
-	int httpCode = lu6FetchVersion();
+	// 2.1.9: answer from the background check (see lu6UpdCheckTask); a result older than 30 s or a
+	// check in progress -> {"checking":true} and the page asks again
+	static uint32_t askedAt = 0;
+	bool fresh = lu6Upd.autoAt && (millis() - lu6Upd.autoAt < 30000UL) && askedAt && (int32_t)(lu6Upd.autoAt - askedAt) >= 0;
+	if (lu6UpdBusy || !fresh)
+	{
+		if (!lu6UpdBusy && (!askedAt || millis() - askedAt > 20000UL) && lu6UpdTaskH)
+		{
+			askedAt = millis();
+			xTaskNotifyGive(lu6UpdTaskH);
+		}
+		request->send(200, "application/json", "{\"checking\":true}");
+		return;
+	}
+	askedAt = 0;
+	int httpCode = lu6Upd.autoCode;
 	if (httpCode != HTTP_CODE_OK)
 	{
 		char errBuf[100];
@@ -11823,11 +11906,14 @@ static const char *ABOUT_TEMPLATE =
 	"document.getElementById('check_ver_btn').addEventListener('click', function(){"
 	"document.getElementById('check_ver_btn').disabled = true;"
 	"document.getElementById('ota_prg').innerHTML = 'Checking...';"
+	"lu6Chk(0);});"
+	"function lu6Chk(n){"
 	"$.ajax({"
 	"url: '/check_version',"
 	"type: 'GET',"
 	"dataType: 'json',"
 	"success: function(d) {"
+	"if (d.checking) { if (n < 30) { setTimeout(function(){lu6Chk(n+1);}, 2000); } else { document.getElementById('check_ver_btn').disabled = false; document.getElementById('ota_prg').innerHTML = 'No answer from the update server. Try again later.'; } return; }"
 	"document.getElementById('check_ver_btn').disabled = false;"
 	"if (d.update_available) {"
 	"var newUrl = 'https://github.com/marceloferreirachile/ESP32APRS_Audio/releases/download/' + d.latest_tag + '/' + d.latest_filename;"
@@ -11850,10 +11936,10 @@ static const char *ABOUT_TEMPLATE =
 	"},"
 	"error: function(a, b, c) {"
 	"document.getElementById('check_ver_btn').disabled = false;"
-	"document.getElementById('ota_prg').innerHTML = 'Error checking version: ' + c;"
+	"document.getElementById('ota_prg').innerHTML = 'Error checking version: ' + (a.responseJSON && a.responseJSON.error ? a.responseJSON.error : c);"
 	"}"
 	"});"
-	"});"
+	"}"
 	"</script>"
 	"{{/if}}"
 	"</body></html>\n";
@@ -11884,7 +11970,10 @@ void handle_about(AsyncWebServerRequest *request)
 	strcpy(hwVersion, "LiLyGo T-TWRPlus");
 	sprintf(FirmwareOTA, "ESP32S3_TWR_%s", ver);
 #elif defined(CONFIG_IDF_TARGET_ESP32)
-	#ifdef SH1106
+	#ifdef LU6_OLED
+		strcpy(hwVersion, "ESP32-WROOM (screen: none, 0.96 or 1.3)");
+		sprintf(FirmwareOTA, "ESP32_%s", ver);
+	#elif defined(SH1106)
 		strcpy(hwVersion, "ESP32-WROOM+SH1106 OLED");
 		sprintf(FirmwareOTA, "ESP32_SH1106_%s", ver);
 	#elif defined(SSD1306)
@@ -12455,6 +12544,30 @@ void handle_prime(AsyncWebServerRequest *request)
 #include <esp_core_dump.h>
 #define LU6JMF_HAVE_COREDUMP_H 1
 #endif
+// 2.1.9: on a "Task WDT" reset the core dump only shows the task that was running on the CPU at that
+// moment (often an idle task). The watchdog itself knows WHICH task stopped answering: it is saved here
+// (RTC memory, survives the restart) and shown in LAST CRASH. Diagnostic only.
+#include <esp_task_wdt.h>
+RTC_NOINIT_ATTR static uint32_t lu6WdtMagic;
+RTC_NOINIT_ATTR static char lu6WdtTasks[96];
+static void lu6WdtMsg(void *, const char *msg)
+{
+	size_t n = strnlen(lu6WdtTasks, sizeof(lu6WdtTasks) - 1);
+	while (*msg && n < sizeof(lu6WdtTasks) - 1)
+	{
+		char c = *msg++;
+		lu6WdtTasks[n++] = (c == '\n' || c == '\r') ? ' ' : c;
+	}
+	lu6WdtTasks[n] = 0;
+}
+extern "C" void esp_task_wdt_isr_user_handler(void)
+{
+	lu6WdtTasks[0] = 0;
+	int cpusFail = 0;
+	esp_task_wdt_print_triggered_tasks(lu6WdtMsg, NULL, &cpusFail);
+	lu6WdtMagic = 0x57445431; // "WDT1"
+}
+
 static void lu6jmfCrashCard(AsyncResponseStream *response)
 {
 	response->print(
@@ -12462,6 +12575,15 @@ static void lu6jmfCrashCard(AsyncResponseStream *response)
 		"<h3>LAST CRASH</h3>"
 		"<small>where the code was at the last crash stored on the board (may be older than the last reset) | diagnostic</small>"
 		"<table>");
+	if (lu6WdtMagic == 0x57445431)
+	{
+		lu6WdtTasks[sizeof(lu6WdtTasks) - 1] = 0;
+		response->print("<tr><td>Watchdog: did not answer</td><td style='white-space:normal'>");
+		for (const char *p = lu6WdtTasks; *p; p++) // plain task names only
+			if (isalnum((unsigned char)*p) || strchr(" _-()/.:", *p))
+				response->write((uint8_t)*p);
+		response->print("</td></tr>");
+	}
 #if defined(LU6JMF_HAVE_COREDUMP_H) && CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH
 	size_t cdAddr = 0, cdSize = 0;
 	if (esp_core_dump_image_get(&cdAddr, &cdSize) != ESP_OK)
@@ -13642,6 +13764,115 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
 // }
 
 bool webServiceBegin = true;
+// -----------------------------------------------------------------------------
+// LU6JMF 2.1.9 / 1.4.2: protection against flashing the firmware of ANOTHER board with the
+// manual update (seen: a Wireless Tracker file on a Heltec V3 -> display off). Same-chip boards only;
+// a file for another chip is already refused by the ESP32 itself.
+//  1. file name of one of our releases (e.g. HELTEC_TRACKER_v1.4-lu6jmf.bin) for another board -> refused;
+//  2. every firmware from now on carries "LU6BOARD=<id>;" inside: a different id -> refused at the end,
+//     before the new firmware is switched on (renamed files too). Unknown names / older files: allowed.
+// -----------------------------------------------------------------------------
+#if defined(HELTEC_HTIT_TRACKER)
+#define LU6_BOARD_ID "HELTEC_TRACKER"
+#elif defined(HELTEC_V3_GPS)
+#define LU6_BOARD_ID "HELTEC_V3"
+#elif defined(CONFIG_IDF_TARGET_ESP32) && defined(LU6_OLED) && !defined(RADIO_LORA)
+// the single ESP32 firmware keeps the id of the classic ESP32 board, so boards already running a
+// 2.1.9-dev with this protection accept it by the normal web update
+#define LU6_BOARD_ID "ESP32_NODISP"
+#elif defined(CONFIG_IDF_TARGET_ESP32) && defined(OLED) && defined(SH1106) && !defined(RADIO_LORA)
+#define LU6_BOARD_ID "ESP32_SH1106"
+#elif defined(CONFIG_IDF_TARGET_ESP32) && defined(OLED) && !defined(RADIO_LORA)
+#define LU6_BOARD_ID "ESP32_SSD1306"
+#elif defined(CONFIG_IDF_TARGET_ESP32) && !defined(OLED) && !defined(GUI_LCD) && !defined(RADIO_LORA)
+#define LU6_BOARD_ID "ESP32_NODISP"
+#else
+#define LU6_BOARD_ID "" // other builds: no check
+#endif
+__attribute__((used)) static const char LU6_BOARD_MARK[] = "LU6BOARD=" LU6_BOARD_ID ";";
+
+static const char *lu6BoardFromName(const String &fn)
+{
+	static const char *const map[][2] = {
+		{"ESP32_NODISP_", "ESP32_NODISP"}, {"ESP32_SSD1306_", "ESP32_SSD1306"}, {"ESP32_SH1106_", "ESP32_SH1106"},
+		{"ESP32_v", "ESP32"},
+		{"HELTEC_V3_", "HELTEC_V3"}, {"HELTEC_LoRa32_V3_", "HELTEC_V3"},
+		{"HELTEC_TRACKER_", "HELTEC_TRACKER"}, {"HTITTracker_", "HELTEC_TRACKER"}};
+	int slash = fn.lastIndexOf('/');
+	String base = slash >= 0 ? fn.substring(slash + 1) : fn;
+	for (auto &m : map)
+		if (base.startsWith(m[0]))
+			return m[1];
+	return nullptr;
+}
+
+// marker scan across the uploaded chunks
+static uint8_t lu6BoardMatch = 0;
+static bool lu6BoardInId = false;
+static char lu6BoardBuf[24];
+static uint8_t lu6BoardIdLen = 0;
+static char lu6BoardFound[24] = ""; // id of the first complete marker in the file ("" = none)
+static void lu6BoardScanReset()
+{
+	lu6BoardMatch = 0;
+	lu6BoardInId = false;
+	lu6BoardIdLen = 0;
+	lu6BoardFound[0] = 0;
+}
+static void lu6BoardScan(const uint8_t *d, size_t n)
+{
+	static const char pat[] = "LU6BOARD=";
+	for (size_t i = 0; i < n && !lu6BoardFound[0]; i++)
+	{
+		char c = (char)d[i];
+		if (lu6BoardInId)
+		{
+			if (c == ';' && lu6BoardIdLen > 0)
+			{
+				lu6BoardBuf[lu6BoardIdLen] = 0;
+				strlcpy(lu6BoardFound, lu6BoardBuf, sizeof(lu6BoardFound)); // complete marker
+				lu6BoardInId = false;
+				continue;
+			}
+			if ((isupper((unsigned char)c) || isdigit((unsigned char)c) || c == '_') && lu6BoardIdLen < sizeof(lu6BoardBuf) - 1)
+			{
+				lu6BoardBuf[lu6BoardIdLen++] = c;
+				continue;
+			}
+			lu6BoardInId = false; // not a marker (e.g. the search text itself) - keep looking
+			lu6BoardIdLen = 0;
+		}
+		if (c == pat[lu6BoardMatch])
+		{
+			if (++lu6BoardMatch == sizeof(pat) - 1)
+			{
+				lu6BoardMatch = 0;
+				lu6BoardInId = true;
+				lu6BoardIdLen = 0;
+			}
+		}
+		else
+			lu6BoardMatch = (c == pat[0]) ? 1 : 0;
+	}
+}
+// true = the file may be installed on this board
+static bool lu6BoardFileOk(char *err, size_t errLen, const char *other)
+{
+	// own id read from the marker itself, so the linker keeps the marker inside the firmware file
+	const char *own = LU6_BOARD_MARK + 9; // after "LU6BOARD="
+	size_t ownLen = strlen(own) - 1;      // without the final ';'
+	if (ownLen == 0 || !other || !other[0] || (strlen(other) == ownLen && strncmp(other, own, ownLen) == 0))
+		return true;
+	// 2.1.9: the classic ESP32 files (no screen, 0.96" SSD1306, 1.3" SH1106 and the single ESP32 file)
+	// are the same board, only the screen differs: moving between them is allowed
+	auto oledFamily = [](const char *id, size_t n)
+	{ return (n == 5 && !strncmp(id, "ESP32", 5)) || (n == 12 && !strncmp(id, "ESP32_NODISP", 12)) || (n == 13 && !strncmp(id, "ESP32_SSD1306", 13)) || (n == 12 && !strncmp(id, "ESP32_SH1106", 12)); };
+	if (oledFamily(own, ownLen) && oledFamily(other, strlen(other)))
+		return true;
+	snprintf(err, errLen, "This file is for another board (%s); this board is %.*s. Use the file for your board.", other, (int)ownLen, own);
+	return false;
+}
+
 static bool lu6ManualOk = false;  // 2.1.8: manual firmware upload result
 static char lu6ManualErr[160] = "";
 
@@ -13775,7 +14006,9 @@ void webService()
   		// 2.1.8: report what really happened (Update.begin() can fail without setting an error code)
   		bool espShouldReboot = lu6ManualOk && !Update.hasError();
   		String r = espShouldReboot ? String("<h1><strong>Update DONE</strong></h1><br><a href='/'>Return Home</a>")
-  		                           : String("<h1><strong>Update FAILED</strong></h1><p>") + lu6ManualErr + "</p><p>Nothing was changed: the board keeps running the current version. Tip: restart the board and send the file again right after it comes back.</p><a href='/'>Return Home</a>";
+  		                           : String("<h1><strong>Update FAILED</strong></h1><p>") + lu6ManualErr + "</p><p>Nothing was changed: the board keeps running the current version." +
+  		                                 (strncmp(lu6ManualErr, "This file is for another board", 30) == 0 ? String("") : String(" Tip: restart the board and send the file again right after it comes back.")) +
+  		                                 "</p><a href='/'>Return Home</a>";
   		AsyncWebServerResponse *response = request->beginResponse(200, "text/html", r);
   		response->addHeader("Connection", "close");
   		request->send(response); },
@@ -13786,9 +14019,14 @@ void webService()
 				log_d("Update Start: %s\n", filename.c_str());
 				lu6ManualOk = false;
 				lu6ManualErr[0] = 0;
+				lu6BoardScanReset();
 				if (Update.isRunning())
 					Update.abort();
-				if (!Update.begin((ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000))
+				if (!lu6BoardFileOk(lu6ManualErr, sizeof(lu6ManualErr), lu6BoardFromName(filename)))
+				{
+					log_e("[OTA] %s", lu6ManualErr); // wrong board by file name: nothing is written
+				}
+				else if (!Update.begin((ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000))
 				{
 					Update.printError(Serial);
 					snprintf(lu6ManualErr, sizeof(lu6ManualErr), "Could not prepare the update (%s, heap %u/%u).", Update.errorString(), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
@@ -13811,6 +14049,7 @@ void webService()
 			}
 			if (Update.isRunning() && !Update.hasError())
 			{
+				lu6BoardScan(data, len); // look for the board marker inside the file
 				if (Update.write(data, len) != len)
 				{
 					Update.printError(Serial);
@@ -13820,7 +14059,9 @@ void webService()
 			}
 			if (final)
 			{
-				if (Update.isRunning() && Update.end(true))
+				// the board marker found inside the file must be ours (checked before the new firmware is switched on)
+				bool boardOk = !Update.isRunning() || lu6BoardFileOk(lu6ManualErr, sizeof(lu6ManualErr), lu6BoardFound);
+				if (Update.isRunning() && boardOk && Update.end(true))
 				{
 					log_d("Update Success: %uByte\n", index + len);
 					lu6ManualOk = true;
